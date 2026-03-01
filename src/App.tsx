@@ -8,12 +8,13 @@ import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship,
 // 1. הגדרות FIREBASE פרטיות (הדבק כאן את שלך)
 // ==========================================
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDpXEMAmwEGzp4AqxRH72ijm1dVcANfIkU",
+  authDomain: "ds-logistics-crm.firebaseapp.com",
+  projectId: "ds-logistics-crm",
+  storageBucket: "ds-logistics-crm.firebasestorage.app",
+  messagingSenderId: "745458915751",
+  appId: "1:745458915751:web:12dff3d86b6e97479cbe82",
+  measurementId: "G-HF46RL74F7"
 };
 
 // ==========================================
