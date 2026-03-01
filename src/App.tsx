@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Clock } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle } from 'lucide-react';
 
 // ==========================================
 // 1. הגדרות FIREBASE פרטיות (הדבק כאן את שלך)
@@ -16,23 +16,24 @@ const firebaseConfig = {
   appId: "1:745458915751:web:12dff3d86b6e97479cbe82",
   measurementId: "G-HF46RL74F7"
 };
-
 // ==========================================
 // 2. מפתח GEMINI (לבינה מלאכותית - אופציונלי)
 // ==========================================
-const geminiApiKey = "YOUR_GEMINI_API_KEY";
+const geminiApiKey = "YOUR_GEMINI_API_KEY"; // קבל בחינם מ- Google AI Studio
 
+// אתחול פיירבייס
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-const STATUS_MAP = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
-const SHIPMENT_STATUS_MAP = { 'ordered': 'בייצור בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'הגיע למחסן' };
-const STATUS_COLORS = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800' };
-const defaultSettings = { 'Prime': { cbm: 1.2 }, 'Night': { cbm: 1.0 }, 'Urban': { cbm: 1.5 }, 'Events': { cbm: 2.0 } };
+// קבועים
+const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
+const SHIPMENT_STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'הגיע למחסן' };
+const STATUS_COLORS: Record<string, string> = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800' };
+const defaultSettings: any = { 'Prime': { cbm: 1.2 }, 'Night': { cbm: 1.0 }, 'Urban': { cbm: 1.5 }, 'Events': { cbm: 2.0 } };
 
 export default function App() {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<any>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -42,10 +43,10 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   // Data States
-  const [settings, setSettings] = useState(defaultSettings);
-  const [shipments, setShipments] = useState([]);
-  const [items, setItems] = useState([]);
-  const [campaigns, setCampaigns] = useState([]);
+  const [settings, setSettings] = useState<any>(defaultSettings);
+  const [shipments, setShipments] = useState<any[]>([]);
+  const [items, setItems] = useState<any[]>([]);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
 
   const modelsList = useMemo(() => Object.keys(settings), [settings]);
 
@@ -54,20 +55,21 @@ export default function App() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
-  
-  const [editingData, setEditingData] = useState(null);
+  const [editingData, setEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isFabOpen, setIsFabOpen] = useState(false);
   
+  const [newModelName, setNewModelName] = useState('');
   const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
-  const [expandedGroups, setExpandedGroups] = useState({});
-  const [arrivalPrompt, setArrivalPrompt] = useState({ isOpen: false, shipment: null, date: '' });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [arrivalPrompt, setArrivalPrompt] = useState<{isOpen: boolean, shipment: any, date: string}>({ isOpen: false, shipment: null, date: '' });
 
   // AI Feature States
   const [aiInsight, setAiInsight] = useState('');
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
 
+  // --- Auth & Data Fetching ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
@@ -79,142 +81,215 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+
     const unsubSettings = onSnapshot(collection(db, 'crm_settings'), (snap) => {
-      const settingsDoc = snap.docs.find(d => d.id === 'general_cbm');
-      if (settingsDoc && settingsDoc.data().models) setSettings(settingsDoc.data().models);
+      const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      const settingsDoc = docs.find((d: any) => d.id === 'general_cbm');
+      if (settingsDoc && settingsDoc.models) setSettings(settingsDoc.models);
     });
+
     const unsubShipments = onSnapshot(collection(db, 'crm_shipments'), (snap) => {
       let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      data.sort((a, b) => new Date(b.date) - new Date(a.date));
+      data.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
       setShipments(data);
     });
+
     const unsubItems = onSnapshot(collection(db, 'crm_items'), (snap) => {
       let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      data.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setItems(data);
     });
+
     const unsubCampaigns = onSnapshot(collection(db, 'crm_campaigns'), (snap) => {
       setCampaigns(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setLoading(false);
     });
+
     return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); };
   }, [user]);
 
-  const handleLogin = async (e) => {
-    e.preventDefault(); setAuthError('');
-    try { await signInWithEmailAndPassword(auth, email, password); } catch (err) { setAuthError('אימייל או סיסמה שגויים'); }
+  // --- Login Handler ---
+  const handleLogin = async (e: any) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      setAuthError('אימייל או סיסמה שגויים');
+    }
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = () => {
+    signOut(auth);
+  };
 
   // --- Core Calculations ---
   const calculatedData = useMemo(() => {
-    const shipmentStats = {};
+    const shipmentStats: any = {};
     shipments.forEach(s => {
       const shippingTotalILS = (Number(s.shippingCostUSD) * Number(s.exchangeRate)) + Number(s.shippingCostILS);
       const totalCbm = Number(s.totalCbm);
-      shipmentStats[s.id] = { exchangeRate: Number(s.exchangeRate) || 1, costPerCbmILS: totalCbm > 0 ? shippingTotalILS / totalCbm : 0, name: s.name, status: s.status || 'ordered', arrivalDate: s.arrivalDate };
+      shipmentStats[s.id] = {
+        exchangeRate: Number(s.exchangeRate) || 1,
+        costPerCbmILS: totalCbm > 0 ? shippingTotalILS / totalCbm : 0,
+        name: s.name,
+        status: s.status || 'ordered',
+        arrivalDate: s.arrivalDate
+      };
     });
 
-    const campaignStats = {};
+    const campaignStats: any = {};
     campaigns.forEach(c => { campaignStats[c.id] = { cost: Number(c.totalCost), itemCount: 0, name: c.name }; });
-    items.forEach(i => { if (i.campaignId && campaignStats[i.campaignId]) campaignStats[i.campaignId].itemCount++; });
+    items.forEach(i => {
+      if (i.campaignId && campaignStats[i.campaignId]) campaignStats[i.campaignId].itemCount++;
+    });
 
-    let inWarehouseCount = 0; let totalInventoryValueILS = 0; let totalProfit = 0; let soldCount = 0;
-    const last30Days = new Date(); last30Days.setDate(last30Days.getDate() - 30);
-    const stockInWarehouse = {}; const stockOnTheWay = {}; const salesInLast30 = {};
+    let inWarehouseCount = 0;
+    let totalInventoryValueILS = 0;
+    let totalProfit = 0;
+    let soldCount = 0;
+    
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    const stockInWarehouse: any = {};
+    const stockOnTheWay: any = {};
+    const salesInLast30: any = {};
+    
     modelsList.forEach(m => { stockInWarehouse[m] = 0; stockOnTheWay[m] = 0; salesInLast30[m] = 0; });
 
     const enrichedItems = items.map(item => {
       const sStat = shipmentStats[item.shipmentId];
       const cbm = settings[item.model]?.cbm || 0;
+      
       const factoryCostILS = sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0;
       const importCostILS = sStat ? (sStat.costPerCbmILS * cbm) : 0;
       const repairCostILS = Number(item.repairCost) || 0;
       const addOnCostILS = Number(item.addOnCost) || 0;
-      const marketingCostILS = (item.campaignId && campaignStats[item.campaignId]?.itemCount > 0) ? (campaignStats[item.campaignId].cost / campaignStats[item.campaignId].itemCount) : 0;
+      
+      const marketingCostILS = (item.campaignId && campaignStats[item.campaignId]?.itemCount > 0)
+        ? (campaignStats[item.campaignId].cost / campaignStats[item.campaignId].itemCount) : 0;
+
       const totalLandedCost = factoryCostILS + importCostILS + repairCostILS + addOnCostILS + marketingCostILS;
       const totalRevenue = (Number(item.salePrice) || 0) + (Number(item.addOnPrice) || 0);
       const profit = item.status === 'sold' ? totalRevenue - totalLandedCost : 0;
 
-      if (stockInWarehouse[item.model] === undefined) { stockInWarehouse[item.model] = 0; stockOnTheWay[item.model] = 0; salesInLast30[item.model] = 0; }
-      if (item.status === 'in_warehouse') { inWarehouseCount++; totalInventoryValueILS += totalLandedCost; stockInWarehouse[item.model]++; } 
-      else if (item.status === 'ordered' || item.status === 'in_transit') { stockOnTheWay[item.model]++; }
-      if (item.status === 'sold') { soldCount++; totalProfit += profit; if (item.saleDate && new Date(item.saleDate) >= last30Days) salesInLast30[item.model]++; }
+      if (stockInWarehouse[item.model] === undefined) {
+        stockInWarehouse[item.model] = 0; stockOnTheWay[item.model] = 0; salesInLast30[item.model] = 0;
+      }
 
-      return { ...item, factoryCostILS, importCostILS, marketingCostILS, totalLandedCost, totalRevenue, profit, shipmentName: sStat?.name || 'לא ידוע', shipmentStatus: sStat?.status || 'ordered', campaignName: campaignStats[item.campaignId]?.name || 'ללא' };
+      if (item.status === 'in_warehouse') {
+        inWarehouseCount++; totalInventoryValueILS += totalLandedCost; stockInWarehouse[item.model]++;
+      } else if (item.status === 'ordered' || item.status === 'in_transit') {
+        stockOnTheWay[item.model]++;
+      }
+      
+      if (item.status === 'sold') {
+        soldCount++; totalProfit += profit;
+        if (item.saleDate && new Date(item.saleDate) >= last30Days) salesInLast30[item.model]++;
+      }
+
+      return {
+        ...item, factoryCostILS, importCostILS, marketingCostILS, totalLandedCost, totalRevenue, profit,
+        shipmentName: sStat?.name || 'לא ידוע', shipmentStatus: sStat?.status || 'ordered', campaignName: campaignStats[item.campaignId]?.name || 'ללא'
+      };
     });
 
     const allModelsForForecast = Array.from(new Set([...modelsList, ...items.map(i => i.model)]));
-    const forecasts = allModelsForForecast.map(model => {
-      const stock = stockInWarehouse[model] || 0; const onTheWay = stockOnTheWay[model] || 0; const sold30 = salesInLast30[model] || 0; const dailyRate = sold30 / 30;
+    const forecasts = allModelsForForecast.map((model: any) => {
+      const stock = stockInWarehouse[model] || 0;
+      const onTheWay = stockOnTheWay[model] || 0;
+      const sold30 = salesInLast30[model] || 0;
+      const dailyRate = sold30 / 30;
       const daysLeft = dailyRate > 0 ? Math.round(stock / dailyRate) : (stock > 0 ? 'מעל חצי שנה' : 0);
       return { model, stock, onTheWay, sold30, dailyRate, daysLeft };
     });
 
-    const groupedInventoryMap = {};
+    const groupedInventoryMap: any = {};
     enrichedItems.forEach(item => {
       const key = `${item.model}_${item.shipmentId}_${item.status}`;
-      if (!groupedInventoryMap[key]) groupedInventoryMap[key] = { id: key, model: item.model, shipmentId: item.shipmentId, shipmentName: item.shipmentName, status: item.status, arrivalDate: item.arrivalDate, qty: 0, items: [] };
-      groupedInventoryMap[key].qty++; groupedInventoryMap[key].items.push(item);
+      if (!groupedInventoryMap[key]) {
+        groupedInventoryMap[key] = { id: key, model: item.model, shipmentId: item.shipmentId, shipmentName: item.shipmentName, status: item.status, arrivalDate: item.arrivalDate, qty: 0, items: [] };
+      }
+      groupedInventoryMap[key].qty++;
+      groupedInventoryMap[key].items.push(item);
     });
 
-    const groupedArray = Object.values(groupedInventoryMap).sort((a, b) => {
-      const w = { 'in_warehouse': 1, 'in_transit': 2, 'ordered': 3, 'sold': 4 };
-      if (w[a.status] !== w[b.status]) return w[a.status] - w[b.status]; return a.model.localeCompare(b.model);
+    const groupedArray = Object.values(groupedInventoryMap).sort((a: any, b: any) => {
+      const statusWeight: any = { 'in_warehouse': 1, 'in_transit': 2, 'ordered': 3, 'sold': 4 };
+      if (statusWeight[a.status] !== statusWeight[b.status]) return statusWeight[a.status] - statusWeight[b.status];
+      return a.model.localeCompare(b.model);
     });
 
+    // Generate a list of models currently in the warehouse
+    const modelsInStock = Array.from(new Set(
+      enrichedItems
+        .filter(item => item.status === 'in_warehouse')
+        .map(item => item.model)
+    ));
+    
     // רשימת דגמים שיש מהם כרגע מלאי פנוי למכירה (עבור כפתור מכירה חדשה)
     const availableModelsInStock = Object.keys(stockInWarehouse).filter(m => stockInWarehouse[m] > 0);
 
-    return { enrichedItems, groupedInventory: groupedArray, shipmentStats, campaignStats, inWarehouseCount, totalInventoryValueILS, avgProfit: soldCount > 0 ? Math.round(totalProfit / soldCount) : 0, forecasts, stockInWarehouse, availableModelsInStock };
+    return { enrichedItems, groupedInventory: groupedArray, shipmentStats, campaignStats, inWarehouseCount, totalInventoryValueILS, avgProfit: soldCount > 0 ? Math.round(totalProfit / soldCount) : 0, forecasts, modelsInStock, availableModelsInStock, stockInWarehouse };
   }, [items, shipments, campaigns, settings, modelsList]);
 
   // --- Handlers ---
+  const generateWithGemini = async (prompt: string) => {
+    if (!geminiApiKey || geminiApiKey === "YOUR_GEMINI_API_KEY") return "שים לב: לא הגדרת מפתח API של Gemini בקוד המערכת.";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${geminiApiKey}`;
+    const payload = { contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: "You are an expert business consultant for D.S Logistics." }] } };
+    try {
+      const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "לא נוצר טקסט.";
+    } catch (err) { return "שגיאה בתקשורת מול שרת ה-AI."; }
+  };
+
   const handleGetInsights = async () => {
-    alert("תכונת ה-AI דורשת הגדרת מפתח API.");
+    setIsGeneratingAI(true); setShowAiModal(true); setAiInsight("");
+    const dataSummary = JSON.stringify(calculatedData.forecasts);
+    const prompt = `אני יבואן של ברים מנירוסטה מסין לארץ. הנה נתוני המלאי שלי: ${dataSummary}. הרווח הממוצע הוא ${calculatedData.avgProfit} ₪ לבר. אנא תן תמונת מצב בעברית, המלצה מה להזמין, וטיוטת מייל באנגלית למפעל.`;
+    const result = await generateWithGemini(prompt);
+    setAiInsight(result); setIsGeneratingAI(false);
   };
 
-  const handleGenerateAd = async (campaignName) => {
-     alert("תכונת ה-AI דורשת הגדרת מפתח API.");
+  const handleGenerateAd = async (campaignName: string) => {
+    setIsGeneratingAI(true); setShowAiModal(true); setAiInsight("");
+    const prompt = `אני יבואן של ברים מנירוסטה. יש לי קמפיין שיווקי בשם "${campaignName}". כתוב פוסט שיווקי בעברית לאינסטגרם ופייסבוק שמוכר ברים.`;
+    const result = await generateWithGemini(prompt);
+    setAiInsight(result); setIsGeneratingAI(false);
   };
 
-  const handleAddModel = async (e) => {
+  const handleAddModel = async (e: any) => {
     e.preventDefault();
-    if (!newModelData.name.trim()) return;
-    setIsSaving(true);
+    if (!newModelName.trim()) return;
     try {
-      const newSettings = { ...settings, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0 } };
+      const newSettings = { ...settings, [newModelName.trim()]: { cbm: 0 } };
       await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: newSettings });
-      setNewModelData({ name: '', cbm: 0 });
-      setIsModelModalOpen(false);
-    } catch(err) { alert("שגיאה בהוספת דגם"); }
-    setIsSaving(false);
+      setNewModelName('');
+    } catch(err) { console.error(err); }
   };
+  
+  const handleAddNewModelWithData = async (e: any) => {
+      e.preventDefault();
+      if (!newModelData.name.trim()) return;
+      setIsSaving(true);
+      try {
+        const newSettings = { ...settings, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0 } };
+        await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: newSettings });
+        setNewModelData({ name: '', cbm: 0 });
+        setIsModelModalOpen(false);
+      } catch(err) { alert("שגיאה בהוספת דגם"); }
+      setIsSaving(false);
+    };
 
-  const saveCampaign = async (e) => {
-    e.preventDefault();
-    setIsSaving(true);
-    try {
-      const data = { ...editingData, updatedAt: new Date().toISOString() };
-      if (data.id) await updateDoc(doc(db, 'crm_campaigns', data.id), data);
-      else { data.createdAt = new Date().toISOString(); await addDoc(collection(db, 'crm_campaigns'), data); }
-      setIsCampaignModalOpen(false);
-    } catch (err) { alert("שגיאה בשמירת קמפיין"); }
-    setIsSaving(false);
-  };
 
-  const confirmArrivalDatePrompt = () => {
-    const dateToSave = arrivalPrompt.date || new Date().toISOString().split('T')[0];
-    confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', dateToSave);
-    setArrivalPrompt({ isOpen: false, shipment: null, date: '' });
-  };
-
-  const confirmShipmentStatusUpdate = async (shipment, newStatus, arrivalDate) => {
+  const confirmShipmentStatusUpdate = async (shipment: any, newStatus: string, arrivalDate: string | null) => {
     setIsSaving(true);
     try {
       const sRef = doc(db, 'crm_shipments', shipment.id);
-      const sUpdate = { status: newStatus, updatedAt: new Date().toISOString() };
+      const sUpdate: any = { status: newStatus, updatedAt: new Date().toISOString() };
       if (newStatus === 'in_warehouse' && arrivalDate) sUpdate.arrivalDate = arrivalDate;
       else if (newStatus !== 'in_warehouse') sUpdate.arrivalDate = null;
       await updateDoc(sRef, sUpdate);
@@ -222,7 +297,7 @@ export default function App() {
       const itemsToUpdate = items.filter(i => i.shipmentId === shipment.id && i.status !== 'sold');
       await Promise.all(itemsToUpdate.map(i => {
         const iRef = doc(db, 'crm_items', i.id);
-        const iUpdate = { status: newStatus, updatedAt: new Date().toISOString() };
+        const iUpdate: any = { status: newStatus, updatedAt: new Date().toISOString() };
         if (newStatus === 'in_warehouse' && arrivalDate) iUpdate.arrivalDate = arrivalDate;
         else if (newStatus !== 'in_warehouse') iUpdate.arrivalDate = null;
         return updateDoc(iRef, iUpdate);
@@ -231,7 +306,7 @@ export default function App() {
     setIsSaving(false);
   };
 
-  const handleShipmentStatusSelect = (shipment, newStatus) => {
+  const handleShipmentStatusSelect = (shipment: any, newStatus: string) => {
     if (newStatus === 'in_warehouse') {
       setArrivalPrompt({ isOpen: true, shipment, date: shipment.arrivalDate || new Date().toISOString().split('T')[0] });
     } else {
@@ -239,41 +314,91 @@ export default function App() {
     }
   };
 
-  const saveShipment = async (e) => {
+  const saveShipment = async (e: any) => {
     e.preventDefault();
     setIsSaving(true);
     try {
-      const sRef = collection(db, 'crm_shipments'); const itemsRef = collection(db, 'crm_items');
+      const sRef = collection(db, 'crm_shipments');
+      const itemsRef = collection(db, 'crm_items');
       const data = { ...editingData, updatedAt: new Date().toISOString() };
+      
       if (data.id) {
+        // --- עדכון משלוח קיים - סנכרון פריטים חכם ---
         await updateDoc(doc(sRef, data.id), data);
+        
         const currentShipmentItems = items.filter(i => i.shipmentId === data.id);
-        const currentItemsByModel = {};
-        currentShipmentItems.forEach(item => { if (!currentItemsByModel[item.model]) currentItemsByModel[item.model] = []; currentItemsByModel[item.model].push(item); });
+        const currentItemsByModel: any = {};
+        currentShipmentItems.forEach(item => {
+          if (!currentItemsByModel[item.model]) currentItemsByModel[item.model] = [];
+          currentItemsByModel[item.model].push(item);
+        });
+
         const modelsInUpdatedLines = new Set();
 
         for (const line of data.lines) {
-          modelsInUpdatedLines.add(line.model);
-          const diff = (Number(line.qty) || 0) - (currentItemsByModel[line.model] ? currentItemsByModel[line.model].length : 0);
+          const model = line.model;
+          modelsInUpdatedLines.add(model);
+          const desiredQty = Number(line.qty) || 0;
+          const currentModelItems = currentItemsByModel[model] || [];
+          const currentQty = currentModelItems.length;
+          const diff = desiredQty - currentQty;
+
+          // 1. הוספת פריטים חסרים (אם הכמות גדלה)
           if (diff > 0) {
-            for (let i = 0; i < diff; i++) await addDoc(itemsRef, { shipmentId: data.id, model: line.model, status: data.status || 'ordered', arrivalDate: data.arrivalDate || null, factoryUnitCostUSD: Number(line.unitCostUSD) || 0, serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: new Date().toISOString() });
-          } else if (diff < 0) {
-            const sortedToRemove = [...(currentItemsByModel[line.model]||[])].sort((a, b) => (a.status === 'sold' ? 1 : b.status === 'sold' ? -1 : 0));
-            for (let i = 0; i < Math.abs(diff); i++) { if (sortedToRemove[i]) { await deleteDoc(doc(db, 'crm_items', sortedToRemove[i].id)); sortedToRemove[i]._deleted = true; } }
+            for (let i = 0; i < diff; i++) {
+              await addDoc(itemsRef, { 
+                shipmentId: data.id, model: model, status: data.status || 'ordered', 
+                arrivalDate: data.arrivalDate || null, factoryUnitCostUSD: Number(line.unitCostUSD) || 0, 
+                serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, 
+                campaignId: '', createdAt: new Date().toISOString() 
+              });
+            }
+          } 
+          // 2. מחיקת פריטים עודפים (אם הכמות קטנה)
+          else if (diff < 0) {
+            const itemsToRemoveCount = Math.abs(diff);
+            // מיון כך שקודם ימחקו פריטים שטרם נמכרו
+            const sortedToRemove = [...currentModelItems].sort((a: any, b: any) => {
+              if (a.status === 'sold' && b.status !== 'sold') return 1;
+              if (a.status !== 'sold' && b.status === 'sold') return -1;
+              return 0;
+            });
+
+            for (let i = 0; i < itemsToRemoveCount; i++) {
+              if (sortedToRemove[i]) {
+                await deleteDoc(doc(db, 'crm_items', sortedToRemove[i].id));
+                sortedToRemove[i]._deleted = true; // סימון מקומי למניעת עדכונים בהמשך הלולאה
+              }
+            }
           }
-          const itemsToUpdateCost = (currentItemsByModel[line.model]||[]).filter(i => !i._deleted && Number(i.factoryUnitCostUSD) !== Number(line.unitCostUSD));
-          for (const item of itemsToUpdateCost) await updateDoc(doc(itemsRef, item.id), { factoryUnitCostUSD: Number(line.unitCostUSD), updatedAt: new Date().toISOString() });
+
+          // 3. עדכון עלות יחידה לפריטים שנותרו
+          const itemsToUpdateCost = currentModelItems.filter((i: any) => !i._deleted && Number(i.factoryUnitCostUSD) !== Number(line.unitCostUSD));
+          for (const item of itemsToUpdateCost) {
+            await updateDoc(doc(itemsRef, item.id), { factoryUnitCostUSD: Number(line.unitCostUSD), updatedAt: new Date().toISOString() });
+          }
         }
+
+        // 4. ניקוי דגמים שהוסרו לחלוטין (נמחקה שורה שלמה מהטופס)
         for (const model in currentItemsByModel) {
           if (!modelsInUpdatedLines.has(model)) {
-            for (const item of currentItemsByModel[model]) { if (!item._deleted) await deleteDoc(doc(db, 'crm_items', item.id)); }
+            for (const item of currentItemsByModel[model]) {
+              if (!item._deleted) {
+                await deleteDoc(doc(db, 'crm_items', item.id));
+              }
+            }
           }
         }
+
       } else {
-        data.status = 'ordered'; data.createdAt = new Date().toISOString();
+        // --- יצירת משלוח חדש ---
+        data.status = 'ordered';
+        data.createdAt = new Date().toISOString();
         const docRef = await addDoc(sRef, data);
         for (const line of data.lines) {
-          for (let i=0; i<(Number(line.qty)||0); i++) await addDoc(itemsRef, { shipmentId: docRef.id, model: line.model, status: 'ordered', factoryUnitCostUSD: Number(line.unitCostUSD) || 0, serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: new Date().toISOString() });
+          for (let i=0; i<(Number(line.qty)||0); i++) {
+            await addDoc(itemsRef, { shipmentId: docRef.id, model: line.model, status: 'ordered', factoryUnitCostUSD: Number(line.unitCostUSD) || 0, serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: new Date().toISOString() });
+          }
         }
       }
       setIsShipmentModalOpen(false);
@@ -281,7 +406,7 @@ export default function App() {
     setIsSaving(false);
   };
 
-  const saveItem = async (e) => {
+  const saveItem = async (e: any) => {
     e.preventDefault();
     setIsSaving(true);
     try {
@@ -312,27 +437,71 @@ export default function App() {
         await updateDoc(doc(db, 'crm_items', data.id), data);
       }
       setIsItemModalOpen(false);
-    } catch (err) { alert(err.message || "שגיאה בשמירה"); }
+    } catch (err: any) { alert(err.message || "שגיאה בשמירה"); }
     setIsSaving(false);
   };
 
-  const deleteDocHandler = async (collectionName, id) => {
+  const saveCampaign = async (e: any) => {
+    e.preventDefault();
+    setIsSaving(true);
+    try {
+      const data = { ...editingData, updatedAt: new Date().toISOString() };
+      if (data.id) await updateDoc(doc(db, 'crm_campaigns', data.id), data);
+      else { data.createdAt = new Date().toISOString(); await addDoc(collection(db, 'crm_campaigns'), data); }
+      setIsCampaignModalOpen(false);
+    } catch (err) { alert("שגיאה בשמירה"); }
+    setIsSaving(false);
+  };
+
+  const saveSettings = async () => {
+    try {
+      await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: settings });
+      alert("הגדרות נשמרו בהצלחה!");
+    } catch (err) { alert("שגיאה בשמירה"); }
+  };
+
+  // מחיקה חכמה גם למשלוח שלם (מוחק את כל הפריטים שתחתיו כדי לא להשאיר זבל במסד הנתונים)
+  const deleteDocHandler = async (collectionName: string, id: string) => {
     if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול ותמחק גם את הפריטים המשויכים.")) return;
     try { 
       await deleteDoc(doc(db, collectionName, id)); 
+      
       if (collectionName === 'crm_shipments') {
         const itemsToDelete = items.filter(i => i.shipmentId === id);
-        for (const item of itemsToDelete) await deleteDoc(doc(db, 'crm_items', item.id));
+        for (const item of itemsToDelete) {
+          await deleteDoc(doc(db, 'crm_items', item.id));
+        }
       }
     } catch (err) { console.error(err); }
   };
 
-  const toggleGroup = (groupId) => {
-    setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  // פונקציית איפוס מערכת מלא (מחיקת כל הנתונים)
+  const handleResetSystem = async () => {
+    const userConfirm = window.prompt("אזהרה קריטית! 🛑\nפעולה זו תמחק את *כל* המשלוחים, הפריטים והקמפיינים במערכת ולא ניתן לבטל אותה.\nלהמשך, הקלד את המילה 'מחק':");
+    if (userConfirm !== 'מחק') return;
+    
+    setIsSaving(true);
+    try {
+      const collectionsToDelete = ['crm_shipments', 'crm_items', 'crm_campaigns'];
+      
+      for (const colName of collectionsToDelete) {
+        const snapshot = await getDocs(collection(db, colName));
+        const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, colName, d.id)));
+        await Promise.all(deletePromises);
+      }
+      
+      alert("כל הנתונים נמחקו בהצלחה! המערכת כעת נקייה ומוכנה לעבודה מחדש.");
+      setActiveTab('dashboard'); // חזרה לדשבורד
+    } catch (err) {
+      console.error(err);
+      alert("אירעה שגיאה במחיקת הנתונים. ודא שהרשאות הפיירבייס תקינות.");
+    }
+    setIsSaving(false);
   };
 
-  // --- Render Login Screen ---
+  // --- Render Login Screen if not authenticated ---
   if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>;
+  
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50" dir="rtl">
@@ -340,12 +509,19 @@ export default function App() {
           <div className="flex flex-col items-center mb-6">
             <div className="bg-indigo-100 p-3 rounded-full mb-3"><Lock className="w-8 h-8 text-indigo-600"/></div>
             <h1 className="text-2xl font-bold text-slate-800">התחברות למערכת</h1>
+            <p className="text-slate-500 text-sm mt-1">D.S Logistics CRM</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label><input type="email" required value={email} onChange={e=>setEmail(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5" dir="ltr"/></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label><input type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5" dir="ltr"/></div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label>
+              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-indigo-500" dir="ltr"/>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label>
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-indigo-500" dir="ltr"/>
+            </div>
             {authError && <p className="text-red-500 text-sm text-center">{authError}</p>}
-            <button type="submit" className="w-full bg-indigo-600 text-white font-medium py-2.5 rounded-md hover:bg-indigo-700">כניסה מאובטחת</button>
+            <button type="submit" className="w-full bg-indigo-600 text-white font-medium py-2.5 rounded-md hover:bg-indigo-700 transition-colors">כניסה מאובטחת</button>
           </form>
         </div>
       </div>
@@ -361,7 +537,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-6 w-6 text-indigo-700" /></div>
-            <h1 className="text-xl font-bold text-slate-800 hidden sm:block">D.S Logistics - ניהול יבוא ומלאי</h1>
+            <h1 className="text-xl font-bold text-slate-800 hidden sm:block">D.S Logistics CRM</h1>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-slate-500 hidden md:inline">{user.email}</span>
@@ -387,12 +563,13 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
+        
         {/* --- TAB: DASHBOARD --- */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-2xl font-bold text-slate-800">תמונת מצב בזמן אמת</h2>
-              <button onClick={handleGetInsights} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium shadow-sm transition-colors flex items-center gap-2">
+              <button onClick={handleGetInsights} className="bg-gradient-to-l from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-yellow-300" />
                 <span className="hidden sm:inline">יועץ עסקי AI ✨</span>
               </button>
@@ -415,7 +592,7 @@ export default function App() {
 
             <h3 className="text-xl font-bold text-slate-800 mt-8 mb-4 border-b pb-2 flex items-center gap-2"><Activity className="w-5 h-5 text-indigo-600"/> תחזית מלאי וצפי הזמנות</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {calculatedData.forecasts.map(f => (
+              {calculatedData.forecasts.map((f: any) => (
                 <div key={f.model} className={`bg-white p-5 rounded-lg shadow-sm border ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}>
                   <h4 className="font-bold text-lg text-slate-800">{f.model}</h4>
                   <div className="mt-3 space-y-2 text-sm">
@@ -423,11 +600,11 @@ export default function App() {
                     <p className="flex justify-between items-center"><span className="text-slate-500">מלאי בדרך:</span> <span className="font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">{f.onTheWay} יח'</span></p>
                     <p className="flex justify-between items-center"><span className="text-slate-500">קצב מכירה (30 יום):</span> <span className="font-semibold">{f.sold30} יח'</span></p>
                     <div className="pt-3 mt-3 border-t border-slate-100">
-                      <p className="text-slate-600 font-medium">המלאי יספיק ל-</p>
+                      <p className="text-slate-600 font-medium">המלאי (במחסן) יספיק ל-</p>
                       <p className={`text-xl font-bold ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>
                         {f.daysLeft === 'מעל חצי שנה' ? f.daysLeft : f.daysLeft > 0 ? `~${f.daysLeft} ימים` : 'נגמר/אין נתונים'}
                       </p>
-                      {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> שים לב! מומלץ להזמין</p>}
+                      {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> מומלץ להזמין</p>}
                     </div>
                   </div>
                 </div>
@@ -439,17 +616,19 @@ export default function App() {
         {/* --- TAB: MODELS --- */}
         {activeTab === 'models' && (
           <div className="max-w-3xl mx-auto space-y-6">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-slate-800">ניהול דגמי מוצרים</h2>
-              <button onClick={() => { setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><Plus className="w-4 h-4"/> הוסף דגם חדש</button>
-            </div>
+            <h2 className="text-2xl font-bold text-slate-800 mb-6">ניהול דגמי מוצרים</h2>
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              <form onSubmit={handleAddModel} className="flex gap-4 items-end mb-6">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שם הדגם החדש</label>
+                  <input type="text" required value={newModelName} onChange={e => setNewModelName(e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm p-2 border" placeholder="לדוגמה: Premium Bar" />
+                </div>
+                <button type="submit" className="bg-indigo-600 text-white px-6 py-2 rounded-md font-medium hover:bg-indigo-700">הוסף דגם</button>
+              </form>
+              <h3 className="font-bold text-slate-700 mb-3 border-b pb-2">דגמים קיימים במערכת</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {modelsList.map(model => (
-                  <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg text-center flex flex-col justify-center">
-                    <span className="font-bold text-slate-800">{model}</span>
-                    <span className="text-xs text-slate-500 mt-1">נפח: {settings[model]?.cbm || 0} CBM</span>
-                  </div>
+                  <div key={model} className="bg-slate-50 border border-slate-200 p-3 rounded text-center font-medium text-slate-800">{model}</div>
                 ))}
               </div>
             </div>
@@ -467,8 +646,10 @@ export default function App() {
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50">
                   <tr>
-                    <th className="px-4 py-3 text-right font-medium text-slate-500">שם ותאריך</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">שם משלוח ותאריך</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-500">סטטוס משלוח</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">תאריך הגעה</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">תשלום למפעל</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-500">עלות שילוח כוללת</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-500">פעולות</th>
                   </tr>
@@ -476,17 +657,17 @@ export default function App() {
                 <tbody className="divide-y divide-slate-200">
                   {shipments.map(s => {
                     const shippingTotalILS = (Number(s.shippingCostUSD) * Number(s.exchangeRate)) + Number(s.shippingCostILS);
+                    const factoryTotalUSD = s.lines ? s.lines.reduce((acc: number, l: any) => acc + (Number(l.qty)*Number(l.unitCostUSD)), 0) : 0;
                     return (
                       <tr key={s.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3"><div className="font-bold text-slate-800">{s.name}</div><div className="text-xs text-slate-500">{new Date(s.date).toLocaleDateString('he-IL')}</div></td>
                         <td className="px-4 py-3">
-                          <select className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${s.status === 'in_warehouse' ? 'bg-green-50 text-green-700' : 'bg-white'}`} value={s.status || 'ordered'} onChange={(e) => {
-                            if (e.target.value === 'in_warehouse') setArrivalPrompt({ isOpen: true, shipment: s, date: s.arrivalDate || new Date().toISOString().split('T')[0] });
-                            else if (window.confirm(`לעבור לסטטוס "${SHIPMENT_STATUS_MAP[e.target.value]}"?`)) confirmShipmentStatusUpdate(s, e.target.value, null);
-                          }}>
+                          <select className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${s.status === 'in_warehouse' ? 'bg-green-50 text-green-700' : 'bg-white'}`} value={s.status || 'ordered'} onChange={(e) => handleShipmentStatusSelect(s, e.target.value)}>
                             {Object.entries(SHIPMENT_STATUS_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                           </select>
                         </td>
+                        <td className="px-4 py-3 text-slate-600">{s.arrivalDate ? new Date(s.arrivalDate).toLocaleDateString('he-IL') : '---'}</td>
+                        <td className="px-4 py-3 text-slate-600"><div className="font-medium">${factoryTotalUSD.toLocaleString()}</div><div className="text-xs">(₪{(factoryTotalUSD * Number(s.exchangeRate)).toLocaleString()})</div></td>
                         <td className="px-4 py-3 text-slate-600"><div className="font-medium text-indigo-700">₪{shippingTotalILS.toLocaleString()}</div></td>
                         <td className="px-4 py-3 text-left"><button onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-indigo-600 bg-indigo-50 p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button><button onClick={() => deleteDocHandler('crm_shipments', s.id)} className="text-red-500 bg-red-50 p-1.5 rounded"><Trash2 className="w-4 h-4"/></button></td>
                       </tr>
@@ -503,7 +684,6 @@ export default function App() {
           <div>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-slate-800">ניהול מלאי (תצוגה מקובצת)</h2>
-              <button onClick={() => { setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '' }); setIsItemModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><ShoppingCart className="w-4 h-4"/> מכירה חדשה</button>
             </div>
             <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -511,29 +691,29 @@ export default function App() {
                   <tr>
                     <th className="px-4 py-3 text-right font-medium text-slate-500">דגם</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-500">משלוח (מקור)</th>
-                    <th className="px-4 py-3 text-right font-medium text-slate-500">סטטוס</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">סטטוס וזמן מדף</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-500">סה"כ כמות</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-500">פירוט פריטים</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {calculatedData.groupedInventory.map(group => (
+                  {calculatedData.groupedInventory.map((group: any) => (
                     <React.Fragment key={group.id}>
-                      <tr className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-indigo-50/30' : ''}`} onClick={() => toggleGroup(group.id)}>
+                      <tr className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-indigo-50/30' : ''}`} onClick={() => setExpandedGroups(p => ({ ...p, [group.id]: !p[group.id] }))}>
                         <td className="px-4 py-4 font-bold text-slate-800 text-base">{group.model}</td>
-                        <td className="px-4 py-4 text-slate-600"><div>{group.shipmentName}</div></td>
+                        <td className="px-4 py-4 text-slate-600"><div>{group.shipmentName}</div>{group.arrivalDate && <div className="text-xs text-slate-400">הגיע: {new Date(group.arrivalDate).toLocaleDateString('he-IL')}</div>}</td>
                         <td className="px-4 py-4"><span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[group.status]}`}>{STATUS_MAP[group.status]}</span></td>
                         <td className="px-4 py-4 font-bold text-indigo-700 text-lg">{group.qty} יח'</td>
                         <td className="px-4 py-4 text-left"><button className="text-indigo-600 p-1.5 rounded-full">{expandedGroups[group.id] ? <ChevronUp className="w-5 h-5"/> : <ChevronDown className="w-5 h-5"/>}</button></td>
                       </tr>
                       {expandedGroups[group.id] && (
                         <tr className="bg-slate-50">
-                          <td colSpan="5" className="px-4 py-4 border-b border-slate-200">
+                          <td colSpan={5} className="px-4 py-4 border-b border-slate-200">
                             <div className="bg-white border border-slate-200 rounded-md shadow-sm">
                               <table className="min-w-full divide-y divide-slate-100 text-xs">
                                 <thead className="bg-slate-100 text-slate-500">
                                   <tr>
-                                    <th className="px-3 py-2 text-right">מזהה פנימי/סריאל</th>
+                                    <th className="px-3 py-2 text-right">סריאל/הערה</th>
                                     <th className="px-3 py-2 text-right">עלות (Landed)</th>
                                     <th className="px-3 py-2 text-right">התאמות</th>
                                     <th className="px-3 py-2 text-right">מכירה ורווח</th>
@@ -541,13 +721,13 @@ export default function App() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {group.items.map(item => (
+                                  {group.items.map((item: any) => (
                                     <tr key={item.id} className="hover:bg-slate-50 border-t border-slate-100">
-                                      <td className="px-3 py-2 font-medium text-slate-700">{item.serialNumber || <span className="text-slate-400 font-mono text-[10px]">{item.id.substring(0,6)}...</span>}</td>
+                                      <td className="px-3 py-2 font-medium text-slate-700">{item.serialNumber || '-'}</td>
                                       <td className="px-3 py-2">₪{Math.round(item.totalLandedCost).toLocaleString()}</td>
                                       <td className="px-3 py-2 text-orange-600">{(item.repairCost > 0 || item.addOnCost > 0) ? `₪${(Number(item.repairCost)+Number(item.addOnCost)).toLocaleString()}` : '-'}</td>
                                       <td className="px-3 py-2">{item.status === 'sold' ? (<div className="font-bold text-slate-800">₪{Math.round(item.totalRevenue).toLocaleString()}<span className={`block text-[10px] ${item.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>רווח: ₪{Math.round(item.profit).toLocaleString()}</span></div>) : '-'}</td>
-                                      <td className="px-3 py-2 text-left"><button onClick={(e) => { e.stopPropagation(); setEditingData({ ...item, isGlobalSale: false }); setIsItemModalOpen(true); }} className="text-indigo-600 bg-indigo-50 p-1 rounded"><Edit className="w-3.5 h-3.5"/></button></td>
+                                      <td className="px-3 py-2 text-left"><button onClick={(e) => { e.stopPropagation(); setEditingData({...item, isGlobalSale: false}); setIsItemModalOpen(true); }} className="text-indigo-600 bg-indigo-50 p-1 rounded"><Edit className="w-3.5 h-3.5"/></button></td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -589,6 +769,7 @@ export default function App() {
                       <div className="flex justify-between"><span className="text-slate-500">עלות קמפיין:</span> <span className="font-medium">₪{Number(c.totalCost).toLocaleString()}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">ברים שנמכרו:</span> <span className="font-medium">{stat?.itemCount || 0} יח'</span></div>
                       <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center"><span className="text-slate-500 font-medium">עלות לבר:</span> <span className="font-bold text-indigo-700 text-lg">₪{Math.round(costPerItem).toLocaleString()}</span></div>
+                      <button onClick={() => handleGenerateAd(c.name)} className="mt-4 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> צור מודעת שיווק AI ✨</button>
                     </div>
                   </div>
                 )
@@ -610,7 +791,16 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <button onClick={async () => { try { await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: settings }); alert("נשמר בהצלחה!"); } catch (e) { alert("שגיאה"); } }} className="mt-6 w-full bg-indigo-600 text-white py-2.5 rounded-md font-medium hover:bg-indigo-700">שמור הגדרות מערכת</button>
+              <button onClick={saveSettings} className="mt-6 w-full bg-indigo-600 text-white py-2.5 rounded-md font-medium hover:bg-indigo-700">שמור הגדרות מערכת</button>
+            </div>
+
+            {/* DANGER ZONE FOR RESET */}
+            <div className="bg-red-50 p-6 border border-red-200 rounded-lg shadow-sm">
+              <h2 className="text-xl font-bold text-red-800 mb-2 flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-red-600"/> אזור סכנה: ניקוי שולחן (איפוס נתונים)</h2>
+              <p className="text-sm text-red-600 mb-4 font-medium">כפתור זה ימחק את <strong>כל</strong> המשלוחים, הפריטים במלאי, והקמפיינים שקיימים במערכת בלחיצה אחת. (רשימת הדגמים שלך לא תימחק).</p>
+              <button onClick={handleResetSystem} disabled={isSaving} className="w-full bg-red-600 text-white py-2.5 rounded-md font-medium hover:bg-red-700 transition-colors">
+                {isSaving ? 'מוחק נתונים, אנא המתן...' : 'מחק את כל הנתונים (איפוס מערכת)'}
+              </button>
             </div>
           </div>
         )}
@@ -645,7 +835,7 @@ export default function App() {
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white">
               <h3 className="text-lg font-bold text-slate-800">
-                {editingData.isGlobalSale ? '🛒 מכירה חדשה (משיכת פריט מהמלאי הפנוי)' : `עריכת פריט ספציפי (דגם: ${editingData.model})`}
+                {editingData.isGlobalSale ? '🛒 מכירה חדשה (משיכת פריט מהמלאי הפנוי)' : `עריכת פריט ספציפי`}
               </h3>
               <button onClick={() => setIsItemModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
@@ -659,7 +849,7 @@ export default function App() {
                     {calculatedData.availableModelsInStock.length > 0 ? (
                       <select required className="w-full border-slate-300 rounded-md p-3 text-base bg-white shadow-sm font-bold text-slate-800" value={editingData.model} onChange={e => setEditingData({...editingData, model: e.target.value})}>
                         <option value="" disabled>-- בחר דגם --</option>
-                        {calculatedData.availableModelsInStock.map(m => <option key={m} value={m}>{m} ({calculatedData.stockInWarehouse[m]} פנויים)</option>)}
+                        {calculatedData.availableModelsInStock.map((m: any) => <option key={m} value={m}>{m} ({calculatedData.stockInWarehouse[m]} פנויים)</option>)}
                       </select>
                     ) : (
                       <div className="text-red-600 font-bold p-2 bg-red-100 rounded">אין פריטים פנויים במחסן לאף דגם!</div>
@@ -758,9 +948,9 @@ export default function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
             <h3 className="text-lg font-bold mb-4 border-b pb-2 flex items-center gap-2"><Layers className="w-5 h-5 text-indigo-600"/> הוספת דגם חדש למערכת</h3>
-             <form onSubmit={handleAddModel} className="space-y-4">
+             <form onSubmit={handleAddNewModelWithData} className="space-y-4">
                 <div><label className="block text-sm font-medium mb-1">שם הדגם</label><input required type="text" className="border border-slate-300 p-2 rounded w-full" value={newModelData.name} onChange={e => setNewModelData({...newModelData, name: e.target.value})} placeholder="לדוגמה: Premium Bar" /></div>
-                <div><label className="block text-sm font-medium mb-1">נפח (CBM)</label><input required type="number" step="0.01" min="0" className="border border-slate-300 p-2 rounded w-full font-bold" value={newModelData.cbm} onChange={e => setNewModelData({...newModelData, cbm: e.target.value})} placeholder="0.00" /></div>
+                <div><label className="block text-sm font-medium mb-1">נפח (CBM)</label><input required type="number" step="0.01" min="0" className="border border-slate-300 p-2 rounded w-full font-bold" value={newModelData.cbm} onChange={e => setNewModelData({...newModelData, cbm: e.target.value as unknown as number})} placeholder="0.00" /></div>
                 <div className="flex gap-2 mt-6 pt-4 border-t"><button type="submit" className="bg-indigo-600 text-white p-2 rounded flex-1 font-bold">הוסף דגם ושמור</button><button type="button" onClick={()=>setIsModelModalOpen(false)} className="bg-slate-200 text-slate-700 p-2 rounded px-4 font-medium">ביטול</button></div>
              </form>
           </div>
@@ -779,12 +969,12 @@ export default function App() {
               </div>
               <div className="bg-indigo-50 p-4 rounded">
                 <button type="button" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines||[]), {model: modelsList[0]||'', qty:1, unitCostUSD:0}]})} className="mb-2 text-indigo-600 text-sm font-bold">+ הוסף דגם למשלוח</button>
-                {(editingData.lines || []).map((line, idx) => (
+                {(editingData.lines || []).map((line: any, idx: number) => (
                   <div key={idx} className="flex gap-2 mb-2">
                     <select className="border p-1 rounded flex-1" value={line.model} onChange={e => { const nl=[...editingData.lines]; nl[idx].model=e.target.value; setEditingData({...editingData, lines:nl}); }}>{modelsList.map(m=><option key={m} value={m}>{m}</option>)}</select>
                     <input type="number" min="1" className="border p-1 rounded w-20" value={line.qty} onChange={e => { const nl=[...editingData.lines]; nl[idx].qty=Number(e.target.value); setEditingData({...editingData, lines:nl}); }} placeholder="כמות"/>
                     <input type="number" step="0.01" className="border p-1 rounded w-24" value={line.unitCostUSD} onChange={e => { const nl=[...editingData.lines]; nl[idx].unitCostUSD=Number(e.target.value); setEditingData({...editingData, lines:nl}); }} placeholder="מחיר $"/>
-                    <button type="button" onClick={() => { const newLines = editingData.lines.filter((_, i) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="text-red-500"><Trash2 className="w-4 h-4"/></button>
+                    <button type="button" onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="text-red-500"><Trash2 className="w-4 h-4"/></button>
                   </div>
                 ))}
               </div>
@@ -803,17 +993,35 @@ export default function App() {
       {/* Arrival Prompt */}
       {arrivalPrompt.isOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm">
-            <div className="flex items-center gap-2 mb-4 border-b pb-2">
-               <Clock className="w-5 h-5 text-indigo-600" />
-               <h3 className="font-bold text-lg text-slate-800">קליטת משלוח למחסן</h3>
+          <div className="bg-white p-6 rounded-xl w-full max-w-sm">
+            <h3 className="font-bold text-lg mb-2">קליטת משלוח למחסן</h3>
+            <label className="block text-sm mb-1">תאריך הגעה בפועל</label>
+            <input type="date" className="w-full border p-2 rounded mb-4" value={arrivalPrompt.date} onChange={e => setArrivalPrompt({...arrivalPrompt, date: e.target.value})} />
+            <div className="flex gap-2"><button onClick={() => { confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || new Date().toISOString().split('T')[0]); setArrivalPrompt({ isOpen: false, shipment: null, date: '' }); }} className="bg-indigo-600 text-white p-2 rounded flex-1">אישור</button><button onClick={()=>setArrivalPrompt({ isOpen: false, shipment: null, date: '' })} className="bg-slate-200 p-2 rounded">ביטול</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Modal */}
+      {showAiModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-indigo-100 bg-indigo-50/50 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-indigo-900 flex items-center gap-2"><Sparkles className="w-5 h-5 text-indigo-600"/> העוזר האישי שלך מבית Gemini</h3>
+              <button onClick={() => setShowAiModal(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
-            <p className="text-sm text-slate-600 mb-3">אנא הזן את תאריך ההגעה בפועל. תאריך זה יתעדכן אוטומטית בכל הפריטים של משלוח זה, וישמש לחישוב "זמן מדף".</p>
-            <label className="block text-sm font-medium text-slate-700 mb-1">תאריך הגעה</label>
-            <input type="date" className="w-full border-slate-300 rounded-md shadow-sm p-2 mb-6 font-medium" value={arrivalPrompt.date} onChange={e => setArrivalPrompt({...arrivalPrompt, date: e.target.value})} />
-            <div className="flex gap-3">
-               <button onClick={confirmArrivalDatePrompt} className="bg-indigo-600 text-white py-2 rounded-md flex-1 font-bold hover:bg-indigo-700">אישור ועדכון מלאי</button>
-               <button onClick={() => setArrivalPrompt({ isOpen: false, shipment: null, date: '' })} className="bg-white border border-slate-300 text-slate-700 py-2 px-4 rounded-md font-medium hover:bg-slate-50">ביטול</button>
+            <div className="p-6 overflow-y-auto whitespace-pre-wrap text-slate-700 leading-relaxed font-medium">
+              {isGeneratingAI ? (
+                <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
+                  <p className="text-indigo-600 font-medium animate-pulse">מנתח נתונים ומפיק תובנות...</p>
+                </div>
+              ) : (
+                <div className="prose prose-sm md:prose-base prose-indigo rtl">{aiInsight || "לא התקבל מידע."}</div>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button onClick={() => { if(!isGeneratingAI) { navigator.clipboard.writeText(aiInsight); alert('הטקסט הועתק בהצלחה!'); } }} disabled={isGeneratingAI} className="px-4 py-2 border border-slate-300 text-slate-700 bg-white rounded-md font-medium hover:bg-slate-50 text-sm disabled:opacity-50">העתק טקסט</button>
             </div>
           </div>
         </div>
