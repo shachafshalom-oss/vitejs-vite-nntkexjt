@@ -69,6 +69,12 @@ export default function App() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
 
+  // --- Date Calculations for Campaigns ---
+  const todayStr = new Date().toISOString().split('T')[0];
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+
   // --- Auth & Data Fetching ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
@@ -889,7 +895,19 @@ export default function App() {
                 <label className="block text-sm font-bold text-slate-700 mb-2">שיוך לקמפיין שיווקי (אופציונלי)</label>
                 <select className="w-full border-slate-300 rounded-md p-2 text-sm bg-white" value={editingData.campaignId || ''} onChange={e => setEditingData({...editingData, campaignId: e.target.value})}>
                   <option value="">ללא שיוך קמפיין</option>
-                  {campaigns.filter(c => ((!c.startDate || c.startDate <= new Date().toISOString().split('T')[0]) && (!c.endDate || c.endDate >= new Date().toISOString().split('T')[0])) || c.id === editingData.campaignId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {campaigns.filter(c => {
+                    const isStarted = !c.startDate || c.startDate <= todayStr;
+                    const isNotTooOld = !c.endDate || c.endDate >= thirtyDaysAgoStr;
+                    // הצג קמפיין אם הוא התחיל ולא עברו 30 יום מסיומו, *או* אם הוא כבר משויך לפריט הזה מקודם (כדי למנוע איבוד מידע בעריכה)
+                    return (isStarted && isNotTooOld) || c.id === editingData.campaignId;
+                  }).map(c => {
+                    const isCurrentlyActive = (!c.startDate || c.startDate <= todayStr) && (!c.endDate || c.endDate >= todayStr);
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {!isCurrentlyActive ? ' (הסתיים לאחרונה)' : ''}
+                      </option>
+                    )
+                  })}
                 </select>
               </div>
               
