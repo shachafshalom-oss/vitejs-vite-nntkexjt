@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 // ==========================================
 // 1. הגדרות FIREBASE פרטיות (הדבק כאן את שלך)
@@ -40,6 +40,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
 
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers'); // <--- Sub-tab state for customers/leads
   const [loading, setLoading] = useState(true);
 
   // Data States
@@ -47,7 +48,7 @@ export default function App() {
   const [shipments, setShipments] = useState<any[]>([]);
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [customers, setCustomers] = useState<any[]>([]); // <--- New state for customers
+  const [customers, setCustomers] = useState<any[]>([]);
 
   const modelsList = useMemo(() => Object.keys(settings), [settings]);
 
@@ -56,10 +57,10 @@ export default function App() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
-  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false); // <--- New state for customer modal
-  const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false); // <--- New State for Stock Breakdown
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false);
   const [editingData, setEditingData] = useState<any>(null);
-  const [customerEditingData, setCustomerEditingData] = useState<any>(null); // <--- Separate state for customer editing
+  const [customerEditingData, setCustomerEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isFabOpen, setIsFabOpen] = useState(false);
   
@@ -74,7 +75,8 @@ export default function App() {
   const [showAiModal, setShowAiModal] = useState(false);
 
   // --- Date Calculations for Campaigns ---
-  const todayStr = new Date().toISOString().split('T')[0];
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
@@ -161,7 +163,7 @@ export default function App() {
     });
 
     const customerStats: any = {};
-    customers.forEach(c => { customerStats[c.id] = { itemCount: 0, totalRevenue: 0, name: c.name, phone: c.phone }; });
+    customers.forEach(c => { customerStats[c.id] = { itemCount: 0, totalRevenue: 0, name: c.name, phone: c.phone, activeWarranties: 0 }; });
 
     let inWarehouseCount = 0;
     let totalInventoryValueILS = 0;
@@ -193,9 +195,27 @@ export default function App() {
       const totalRevenue = (Number(item.salePrice) || 0) + (Number(item.addOnPrice) || 0);
       const profit = item.status === 'sold' ? totalRevenue - totalLandedCost : 0;
 
+      // Warranty calculation
+      let isWarrantyActive = false;
+      let warrantyDaysLeft = 0;
+      if (item.status === 'sold' && item.saleDate && item.warrantyMonths) {
+          const saleDate = new Date(item.saleDate);
+          const expiryDate = new Date(saleDate);
+          expiryDate.setMonth(expiryDate.getMonth() + Number(item.warrantyMonths));
+          
+          if (expiryDate > today) {
+              isWarrantyActive = true;
+              const diffTime = Math.abs(expiryDate.getTime() - today.getTime());
+              warrantyDaysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          }
+      }
+
       if (item.status === 'sold' && item.customerId && customerStats[item.customerId]) {
         customerStats[item.customerId].itemCount++;
         customerStats[item.customerId].totalRevenue += totalRevenue;
+        if (isWarrantyActive) {
+            customerStats[item.customerId].activeWarranties++;
+        }
       }
 
       if (stockInWarehouse[item.model] === undefined) {
@@ -216,7 +236,7 @@ export default function App() {
       return {
         ...item, factoryCostILS, importCostILS, marketingCostILS, totalLandedCost, totalRevenue, profit,
         shipmentName: sStat?.name || 'לא ידוע', shipmentStatus: sStat?.status || 'ordered', campaignName: campaignStats[item.campaignId]?.name || 'ללא',
-        customerName: customerStats[item.customerId]?.name || 'לקוח כללי'
+        customerName: customerStats[item.customerId]?.name || 'לקוח כללי', isWarrantyActive, warrantyDaysLeft
       };
     });
 
@@ -447,6 +467,7 @@ export default function App() {
         const updatePayload = {
           status: 'sold',
           saleDate: data.saleDate || new Date().toISOString().split('T')[0],
+          warrantyMonths: Number(data.warrantyMonths) || 0,
           salePrice: Number(data.salePrice) || 0,
           addOnPrice: Number(data.addOnPrice) || 0,
           repairCost: Number(data.repairCost) || 0,
@@ -460,7 +481,7 @@ export default function App() {
       // עריכה של פריט ספציפי (דרך טבלת מלאי)
       else {
         if (data.status === 'sold' && !data.saleDate) data.saleDate = new Date().toISOString().split('T')[0];
-        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; }
+        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; }
         await updateDoc(doc(db, 'crm_items', data.id), data);
       }
       setIsItemModalOpen(false);
@@ -768,15 +789,15 @@ export default function App() {
                       {expandedGroups[group.id] && (
                         <tr className="bg-slate-50">
                           <td colSpan={5} className="px-4 py-4 border-b border-slate-200">
-                            <div className="bg-white border border-slate-200 rounded-md shadow-sm">
-                              <table className="min-w-full divide-y divide-slate-100 text-xs">
+                            <div className="bg-white border border-slate-200 rounded-md shadow-sm overflow-x-auto">
+                              <table className="min-w-full divide-y divide-slate-100 text-xs whitespace-nowrap">
                                 <thead className="bg-slate-100 text-slate-500">
                                   <tr>
                                     <th className="px-3 py-2 text-right">סריאל/הערה</th>
                                     <th className="px-3 py-2 text-right">עלות (Landed)</th>
                                     <th className="px-3 py-2 text-right">התאמות</th>
                                     <th className="px-3 py-2 text-right">מכירה ורווח</th>
-                                    <th className="px-3 py-2 text-right">לקוח</th>
+                                    <th className="px-3 py-2 text-right">לקוח ואחריות</th>
                                     <th className="px-3 py-2 text-left">ערוך</th>
                                   </tr>
                                 </thead>
@@ -787,7 +808,22 @@ export default function App() {
                                       <td className="px-3 py-2">₪{Math.round(item.totalLandedCost).toLocaleString()}</td>
                                       <td className="px-3 py-2 text-orange-600">{(item.repairCost > 0 || item.addOnCost > 0) ? `₪${(Number(item.repairCost)+Number(item.addOnCost)).toLocaleString()}` : '-'}</td>
                                       <td className="px-3 py-2">{item.status === 'sold' ? (<div className="font-bold text-slate-800">₪{Math.round(item.totalRevenue).toLocaleString()}<span className={`block text-[10px] ${item.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>רווח: ₪{Math.round(item.profit).toLocaleString()}</span></div>) : '-'}</td>
-                                      <td className="px-3 py-2 text-xs font-medium text-indigo-700">{item.status === 'sold' ? item.customerName : '-'}</td>
+                                      <td className="px-3 py-2">
+                                        {item.status === 'sold' ? (
+                                          <div>
+                                            <span className="font-medium text-indigo-700">{item.customerName}</span>
+                                            {item.warrantyMonths > 0 ? (
+                                              item.isWarrantyActive ? (
+                                                <div className="flex items-center gap-1 text-[10px] text-green-600 mt-0.5"><ShieldCheck className="w-3 h-3"/> באחריות (עוד {item.warrantyDaysLeft} ימים)</div>
+                                              ) : (
+                                                <div className="flex items-center gap-1 text-[10px] text-red-500 mt-0.5"><ShieldAlert className="w-3 h-3"/> אחריות פגה</div>
+                                              )
+                                            ) : (
+                                              <div className="text-[10px] text-slate-400 mt-0.5">ללא אחריות</div>
+                                            )}
+                                          </div>
+                                        ) : '-'}
+                                      </td>
                                       <td className="px-3 py-2 text-left"><button onClick={(e) => { e.stopPropagation(); setEditingData({...item, isGlobalSale: false}); setIsItemModalOpen(true); }} className="text-indigo-600 bg-indigo-50 p-1 rounded"><Edit className="w-3.5 h-3.5"/></button></td>
                                     </tr>
                                   ))}
@@ -810,26 +846,50 @@ export default function App() {
           <div>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-slate-800">ניהול לקוחות ולידים</h2>
-              <button onClick={() => { setCustomerEditingData({ name: '', phone: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><UserPlus className="w-4 h-4"/> הוסף לקוח / ליד חדש</button>
+              <button onClick={() => { setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><UserPlus className="w-4 h-4"/> הוסף לקוח / ליד חדש</button>
+            </div>
+
+            {/* Sub-navigation for Customers / Leads */}
+            <div className="flex gap-4 mb-6 border-b border-slate-200">
+              <button 
+                onClick={() => setActiveCustomerTab('customers')} 
+                className={`pb-2 font-medium text-sm transition-colors ${activeCustomerTab === 'customers' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                לקוחות פעילים ועבר
+              </button>
+              <button 
+                onClick={() => setActiveCustomerTab('leads')} 
+                className={`pb-2 font-medium text-sm transition-colors ${activeCustomerTab === 'leads' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                לידים מתעניינים
+              </button>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {customers.map(c => {
+              {customers
+                .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
+                .map(c => {
                 const stat = calculatedData.customerStats[c.id];
-                const isCustomer = c.status === 'active';
+                // A customer is considered active if they have at least one active warranty, or if their status is manually set to active (fallback)
+                const isActiveCustomer = stat?.activeWarranties > 0 || (c.status === 'active' && stat?.itemCount > 0);
+                
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full">
                     <div className="p-5 flex-1">
                       <div className="flex justify-between items-start mb-3">
                         <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-full ${isCustomer ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                          <div className={`p-2 rounded-full ${isActiveCustomer ? 'bg-green-100 text-green-700' : c.status === 'lead' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
                             <User className="w-5 h-5"/>
                           </div>
                           <div>
-                            <h3 className="font-bold text-lg text-slate-800">{c.name}</h3>
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${c.status === 'lead' ? 'bg-blue-100 text-blue-700' : c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {c.status === 'lead' ? 'ליד מתעניין' : c.status === 'active' ? 'לקוח פעיל' : 'לקוח עבר'}
+                            <h3 className="font-bold text-lg text-slate-800">{c.businessName || c.contactName}</h3>
+                            {c.businessName && c.contactName && <p className="text-xs text-slate-500 mb-1">{c.contactName}</p>}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${c.status === 'lead' ? 'bg-blue-100 text-blue-700' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                              {c.status === 'lead' ? 'ליד מתעניין' : isActiveCustomer ? 'לקוח פעיל (באחריות)' : 'לקוח עבר'}
                             </span>
+                            {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
+                              {c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}
+                            </span>}
                           </div>
                         </div>
                         <div className="flex gap-1">
@@ -845,24 +905,31 @@ export default function App() {
                       </div>
                     </div>
                     
-                    <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto">
-                      <div>
-                        <p className="text-xs text-slate-500 mb-1">רכישות</p>
-                        <p className="font-bold text-slate-800">{stat?.itemCount || 0} ברים</p>
+                    {activeCustomerTab === 'customers' && (
+                      <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
+                        <div>
+                          <p className="text-xs text-slate-500 mb-1">רכישות</p>
+                          <p className="font-bold text-slate-800">{stat?.itemCount || 0} ברים</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p>
+                          <p className="font-bold text-indigo-700">₪{(stat?.totalRevenue || 0).toLocaleString()}</p>
+                        </div>
+                        {stat?.activeWarranties > 0 && (
+                            <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
+                                <ShieldCheck className="w-3 h-3" /> {stat.activeWarranties} באחריות
+                            </div>
+                        )}
                       </div>
-                      <div>
-                        <p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p>
-                        <p className="font-bold text-indigo-700">₪{(stat?.totalRevenue || 0).toLocaleString()}</p>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 )
               })}
-              {customers.length === 0 && (
+              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').length === 0 && (
                 <div className="col-span-full bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
                   <Users className="w-12 h-12 mx-auto text-slate-300 mb-3" />
-                  <p className="font-medium text-lg">אין לקוחות במערכת עדיין</p>
-                  <p className="text-sm">הוסף לקוח חדש כדי להתחיל לנהל את המכירות.</p>
+                  <p className="font-medium text-lg">אין נתונים להצגה ברשימה זו.</p>
+                  <p className="text-sm">הוסף איש קשר חדש כדי להתחיל.</p>
                 </div>
               )}
             </div>
@@ -939,10 +1006,10 @@ export default function App() {
         
         {isFabOpen && (
           <div className="flex flex-col gap-3 items-end absolute bottom-16 left-0 animate-in slide-in-from-bottom-5">
-            <button onClick={() => { setIsFabOpen(false); setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); setIsItemModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+            <button onClick={() => { setIsFabOpen(false); setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 12, model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); setIsItemModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <ShoppingCart className="w-4 h-4 text-green-600"/> מכירה חדשה (עדכון מלאי)
             </button>
-            <button onClick={() => { setIsFabOpen(false); setCustomerEditingData({ name: '', phone: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+            <button onClick={() => { setIsFabOpen(false); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <UserPlus className="w-4 h-4 text-purple-600"/> הוספת לקוח / ליד
             </button>
             <button onClick={() => { setIsFabOpen(false); setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
@@ -961,7 +1028,7 @@ export default function App() {
       {isItemModalOpen && editingData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
               <h3 className="text-lg font-bold text-slate-800">
                 {editingData.isGlobalSale ? '🛒 מכירה חדשה (משיכת פריט מהמלאי הפנוי)' : `עריכת פריט ספציפי`}
               </h3>
@@ -975,12 +1042,12 @@ export default function App() {
                   <div>
                     <label className="block text-sm font-bold text-blue-900 mb-2">בחר דגם למכירה מתוך המלאי הזמין כרגע במחסן:</label>
                     {calculatedData.availableModelsInStock.length > 0 ? (
-                      <select required className="w-full border-slate-300 rounded-md p-3 text-base bg-white shadow-sm font-bold text-slate-800" value={editingData.model} onChange={e => setEditingData({...editingData, model: e.target.value})}>
+                      <select required className="w-full border-slate-300 rounded-md p-3 text-base bg-white shadow-sm font-bold text-slate-800 focus:border-blue-500 focus:ring-blue-500" value={editingData.model} onChange={e => setEditingData({...editingData, model: e.target.value})}>
                         <option value="" disabled>-- בחר דגם --</option>
                         {calculatedData.availableModelsInStock.map((m: any) => <option key={m} value={m}>{m} ({calculatedData.stockInWarehouse[m]} פנויים)</option>)}
                       </select>
                     ) : (
-                      <div className="text-red-600 font-bold p-2 bg-red-100 rounded">אין פריטים פנויים במחסן לאף דגם!</div>
+                      <div className="text-red-600 font-bold p-2 bg-red-100 rounded border border-red-200">אין פריטים פנויים במחסן לאף דגם!</div>
                     )}
                   </div>
                 ) : (
@@ -995,16 +1062,16 @@ export default function App() {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס פריט</label>
                   {editingData.isGlobalSale ? (
-                    <select className="w-full border-slate-300 rounded-md p-2 border bg-slate-100 font-medium text-slate-500 cursor-not-allowed" value="sold" disabled><option value="sold">נמכר ללקוח</option></select>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-100 font-medium text-slate-500 cursor-not-allowed" value="sold" disabled><option value="sold">נמכר ללקוח</option></select>
                   ) : (
-                    <select className="w-full border-slate-300 rounded-md p-2 border bg-slate-50 font-medium" value={editingData.status} onChange={e => setEditingData({...editingData, status: e.target.value})} disabled={editingData.shipmentStatus !== 'in_warehouse'}>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 font-medium" value={editingData.status} onChange={e => setEditingData({...editingData, status: e.target.value})} disabled={editingData.shipmentStatus !== 'in_warehouse'}>
                       {editingData.shipmentStatus !== 'in_warehouse' && editingData.status !== 'sold' ? <option value={editingData.status}>{STATUS_MAP[editingData.status]} (נעול עד הגעה)</option> : <><option value="in_warehouse">במחסן (זמין למכירה)</option><option value="sold">נמכר ללקוח</option></>}
                     </select>
                   )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">תאריך מכירה {editingData.status === 'sold' && <span className="text-red-500">*</span>}</label>
-                  <input type="date" required={editingData.status === 'sold'} className="w-full border-slate-300 rounded-md p-2 text-sm" disabled={editingData.status !== 'sold'} value={editingData.saleDate || ''} onChange={e => setEditingData({...editingData, saleDate: e.target.value})} />
+                  <input type="date" required={editingData.status === 'sold'} className="w-full border-slate-300 rounded-md p-2.5 text-sm" disabled={editingData.status !== 'sold'} value={editingData.saleDate || ''} onChange={e => setEditingData({...editingData, saleDate: e.target.value})} />
                 </div>
               </div>
 
@@ -1013,23 +1080,32 @@ export default function App() {
                 <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-bold text-purple-900">שיוך ללקוח רוכש</label>
-                    <button type="button" onClick={() => { setCustomerEditingData({ name: '', phone: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח חדש</button>
+                    <button type="button" onClick={() => { setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח חדש</button>
                   </div>
                   <select className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500" value={editingData.customerId || ''} onChange={e => setEditingData({...editingData, customerId: e.target.value})}>
                     <option value="">-- ללא שיוך לקוח -- (לא מומלץ)</option>
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.name} {c.phone ? `- ${c.phone}` : ''}</option>)}
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}</option>)}
                   </select>
+                  
+                  {/* Warranty Selection */}
+                  <div className="mt-4 pt-4 border-t border-purple-200">
+                    <label className="block text-sm font-bold text-purple-900 mb-2 flex items-center gap-2"><ShieldCheck className="w-4 h-4"/> תקופת אחריות ללקוח (בחודשים)</label>
+                    <div className="flex items-center gap-3">
+                        <input type="range" min="0" max="12" className="w-full h-2 bg-purple-200 rounded-lg appearance-none cursor-pointer accent-purple-600" value={editingData.warrantyMonths || 0} onChange={e => setEditingData({...editingData, warrantyMonths: Number(e.target.value)})} />
+                        <span className="font-bold text-lg text-purple-800 w-16 text-center bg-white border border-purple-300 rounded-md py-1">{editingData.warrantyMonths || 0} <span className="text-xs font-normal">חוד'</span></span>
+                    </div>
+                  </div>
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4 bg-orange-50/50 p-4 rounded border border-orange-100">
-                  <div><label className="block text-xs font-medium text-slate-700 mb-1">עלות תיקונים בארץ (לעסק)</label><input type="number" step="0.01" className="w-full border-slate-300 rounded-md p-2 text-sm" value={editingData.repairCost || 0} onChange={e => setEditingData({...editingData, repairCost: Number(e.target.value)})} /></div>
-                  <div><label className="block text-xs font-medium text-slate-700 mb-1">עלות תוספות (חומרים/עבודה לעסק)</label><input type="number" step="0.01" className="w-full border-slate-300 rounded-md p-2 text-sm" value={editingData.addOnCost || 0} onChange={e => setEditingData({...editingData, addOnCost: Number(e.target.value)})} /></div>
+              <div className="grid grid-cols-2 gap-4 bg-orange-50/50 p-4 rounded-lg border border-orange-100">
+                  <div><label className="block text-xs font-medium text-slate-700 mb-1">עלות תיקונים בארץ (לעסק)</label><input type="number" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 text-sm" value={editingData.repairCost || 0} onChange={e => setEditingData({...editingData, repairCost: Number(e.target.value)})} /></div>
+                  <div><label className="block text-xs font-medium text-slate-700 mb-1">עלות תוספות (חומרים/עבודה לעסק)</label><input type="number" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 text-sm" value={editingData.addOnCost || 0} onChange={e => setEditingData({...editingData, addOnCost: Number(e.target.value)})} /></div>
               </div>
 
-              <div className="bg-slate-50 p-4 rounded border border-slate-200">
+              <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
                 <label className="block text-sm font-bold text-slate-700 mb-2">שיוך לקמפיין שיווקי (אופציונלי)</label>
-                <select className="w-full border-slate-300 rounded-md p-2 text-sm bg-white" value={editingData.campaignId || ''} onChange={e => setEditingData({...editingData, campaignId: e.target.value})}>
+                <select className="w-full border-slate-300 rounded-md p-2.5 text-sm bg-white" value={editingData.campaignId || ''} onChange={e => setEditingData({...editingData, campaignId: e.target.value})}>
                   <option value="">ללא שיוך קמפיין</option>
                   {campaigns.filter(c => {
                     const isStarted = !c.startDate || c.startDate <= todayStr;
@@ -1047,10 +1123,10 @@ export default function App() {
                 </select>
               </div>
               
-              <div className="bg-green-50 p-4 rounded border border-green-200">
+              <div className="bg-green-50 p-4 rounded-lg border border-green-200">
                 <div className="grid grid-cols-2 gap-4">
-                  <div><label className="block text-xs font-medium text-green-800 mb-1">מחיר מכירה בסיס (לבר)</label><input type="number" step="0.01" className="w-full border-green-300 rounded-md p-2 font-bold text-green-700" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} /></div>
-                  <div><label className="block text-xs font-medium text-green-800 mb-1">תמחור תוספות (הכנסה מתוספת)</label><input type="number" step="0.01" className="w-full border-green-300 rounded-md p-2 font-bold text-green-700" value={editingData.addOnPrice || 0} onChange={e => setEditingData({...editingData, addOnPrice: Number(e.target.value)})} /></div>
+                  <div><label className="block text-xs font-medium text-green-800 mb-1">מחיר מכירה בסיס (לבר)</label><input type="number" step="0.01" className="w-full border-green-300 rounded-md p-2.5 font-bold text-green-700" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} /></div>
+                  <div><label className="block text-xs font-medium text-green-800 mb-1">תמחור תוספות (הכנסה מתוספת)</label><input type="number" step="0.01" className="w-full border-green-300 rounded-md p-2.5 font-bold text-green-700" value={editingData.addOnPrice || 0} onChange={e => setEditingData({...editingData, addOnPrice: Number(e.target.value)})} /></div>
                 </div>
               </div>
 
@@ -1100,34 +1176,92 @@ export default function App() {
       {/* Customer Modal */}
       {isCustomerModalOpen && customerEditingData && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><UserPlus className="w-5 h-5 text-indigo-600"/> {customerEditingData.id ? 'עריכת פרטי לקוח' : 'הוספת לקוח/ליד חדש'}</h3>
               <button onClick={() => setIsCustomerModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
-             <form onSubmit={saveCustomer} className="p-5 space-y-4">
-                <div><label className="block text-sm font-medium mb-1">שם מלא / שם עסק <span className="text-red-500">*</span></label><input required type="text" className="border border-slate-300 p-2 rounded-md w-full" value={customerEditingData.name} onChange={e => setCustomerEditingData({...customerEditingData, name: e.target.value})} placeholder="לדוגמה: אולמי הברון" /></div>
+             <form onSubmit={saveCustomer} className="p-6 space-y-6">
                 
-                <div className="grid grid-cols-2 gap-4">
-                  <div><label className="block text-sm font-medium mb-1">טלפון נייד</label><input type="tel" className="border border-slate-300 p-2 rounded-md w-full" value={customerEditingData.phone} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000" dir="ltr" /></div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">סטטוס</label>
-                    <select className="border border-slate-300 p-2 rounded-md w-full bg-slate-50" value={customerEditingData.status} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
-                      <option value="lead">ליד (מתעניין)</option>
-                      <option value="active">לקוח פעיל (קנה)</option>
-                      <option value="past">לקוח עבר</option>
-                    </select>
+                {/* Contact Info Section */}
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                  <h4 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2"><User className="w-4 h-4"/> פרטי איש קשר</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">שם איש הקשר <span className="text-red-500">*</span></label>
+                      <input required type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.contactName} onChange={e => setCustomerEditingData({...customerEditingData, contactName: e.target.value})} placeholder="שם מלא" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">מספר טלפון של איש הקשר</label>
+                      <input type="tel" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.phone} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000" dir="ltr" />
+                    </div>
                   </div>
                 </div>
-                
-                <div><label className="block text-sm font-medium mb-1">אימייל</label><input type="email" className="border border-slate-300 p-2 rounded-md w-full" value={customerEditingData.email} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} dir="ltr" /></div>
-                <div><label className="block text-sm font-medium mb-1">כתובת (למשלוחים/אחריות)</label><input type="text" className="border border-slate-300 p-2 rounded-md w-full" value={customerEditingData.address} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} /></div>
-                
-                <div><label className="block text-sm font-medium mb-1">הערות נוספות</label><textarea className="border border-slate-300 p-2 rounded-md w-full min-h-[80px]" value={customerEditingData.notes} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="דרישות מיוחדות, סיכומים..."></textarea></div>
 
-                <div className="flex gap-2 mt-6 pt-4 border-t">
-                  <button type="submit" disabled={isSaving} className="bg-indigo-600 text-white p-2.5 rounded-md flex-1 font-bold shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">{isSaving ? 'שומר...' : 'שמור לקוח'}</button>
-                  <button type="button" onClick={()=>setIsCustomerModalOpen(false)} className="bg-slate-200 text-slate-700 p-2.5 rounded-md px-6 font-medium hover:bg-slate-300">ביטול</button>
+                {/* Business Info Section */}
+                <div className="bg-blue-50/50 p-4 rounded-lg border border-blue-100">
+                  <h4 className="text-sm font-bold text-blue-800 mb-4 flex items-center gap-2"><Settings className="w-4 h-4"/> פרטי העסק</h4>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">שם העסק</label>
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.businessName} onChange={e => setCustomerEditingData({...customerEditingData, businessName: e.target.value})} placeholder="שם המותג/העסק" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">שם החברה</label>
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.companyName} onChange={e => setCustomerEditingData({...customerEditingData, companyName: e.target.value})} placeholder="שם חברה משפטי" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">סוג העסק</label>
+                      <select className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.businessType || 'bar'} onChange={e => setCustomerEditingData({...customerEditingData, businessType: e.target.value})}>
+                        <option value="bar">בר</option>
+                        <option value="restaurant">מסעדה</option>
+                        <option value="event_hall">אולם אירועים</option>
+                        <option value="other">אחר</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">ח.פ / עוסק מורשה</label>
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.hp} onChange={e => setCustomerEditingData({...customerEditingData, hp: e.target.value})} placeholder="מספר ח.פ" dir="ltr" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Additional Info Section */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס (ידני)</label>
+                    <select className="border border-slate-300 p-2.5 rounded-md w-full bg-slate-50 font-medium" value={customerEditingData.status} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
+                      <option value="lead">ליד (מתעניין)</option>
+                      <option value="active">לקוח (רוכש)</option>
+                      <option value="past">לקוח עבר</option>
+                    </select>
+                    <p className="text-[10px] text-slate-500 mt-1">הערה: לקוח עם אחריות בתוקף יוצג אוטומטית כ"לקוח פעיל".</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">אימייל לקבלת מסמכים</label>
+                    <input type="email" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.email} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} placeholder="email@example.com" dir="ltr" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">כתובת העסק</label>
+                  <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.address} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, עיר (למשלוח והתקנה)" />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">הערות נוספות</label>
+                  <textarea className="border border-slate-300 p-2.5 rounded-md w-full min-h-[80px] bg-white" value={customerEditingData.notes} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="דרישות מיוחדות, סיכומים..."></textarea>
+                </div>
+
+                <div className="flex gap-3 mt-6 pt-6 border-t border-slate-200">
+                  <button type="submit" disabled={isSaving} className="bg-indigo-600 text-white p-3 rounded-md flex-1 font-bold shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-lg">
+                    {isSaving ? 'שומר...' : 'שמור פרטי לקוח'}
+                  </button>
+                  <button type="button" onClick={()=>setIsCustomerModalOpen(false)} className="bg-slate-200 text-slate-700 p-3 rounded-md px-8 font-medium hover:bg-slate-300 transition-colors">ביטול</button>
                 </div>
              </form>
           </div>
