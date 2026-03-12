@@ -55,6 +55,7 @@ export default function App() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
+  const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false); // <--- New State for Stock Breakdown
   const [editingData, setEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isFabOpen, setIsFabOpen] = useState(false);
@@ -582,9 +583,18 @@ export default function App() {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="bg-indigo-100 p-3 rounded-full"><Package className="text-indigo-600 w-6 h-6"/></div>
-                <div><p className="text-sm text-slate-500 font-medium">פריטים במלאי (זמינים)</p><p className="text-2xl font-bold text-slate-800">{calculatedData.inWarehouseCount}</p></div>
+              <div 
+                onClick={() => setIsStockBreakdownModalOpen(true)}
+                className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4 cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all group"
+              >
+                <div className="bg-indigo-100 p-3 rounded-full group-hover:bg-indigo-200 transition-colors"><Package className="text-indigo-600 w-6 h-6"/></div>
+                <div>
+                  <p className="text-sm text-slate-500 font-medium flex items-center gap-1.5">
+                    פריטים במלאי
+                    <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-colors">לחץ לפירוט</span>
+                  </p>
+                  <p className="text-2xl font-bold text-slate-800">{calculatedData.inWarehouseCount}</p>
+                </div>
               </div>
               <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4">
                 <div className="bg-green-100 p-3 rounded-full"><DollarSign className="text-green-600 w-6 h-6"/></div>
@@ -1016,6 +1026,38 @@ export default function App() {
             <label className="block text-sm mb-1">תאריך הגעה בפועל</label>
             <input type="date" className="w-full border p-2 rounded mb-4" value={arrivalPrompt.date} onChange={e => setArrivalPrompt({...arrivalPrompt, date: e.target.value})} />
             <div className="flex gap-2"><button onClick={() => { confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || new Date().toISOString().split('T')[0]); setArrivalPrompt({ isOpen: false, shipment: null, date: '' }); }} className="bg-indigo-600 text-white p-2 rounded flex-1">אישור</button><button onClick={()=>setArrivalPrompt({ isOpen: false, shipment: null, date: '' })} className="bg-slate-200 p-2 rounded">ביטול</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Breakdown Modal */}
+      {isStockBreakdownModalOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package className="w-5 h-5 text-indigo-600"/> פירוט מלאי זמין</h3>
+              <button onClick={() => setIsStockBreakdownModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-6 overflow-y-auto">
+              {Object.entries(calculatedData.stockInWarehouse).filter(([_, qty]) => (qty as number) > 0).length > 0 ? (
+                <div className="space-y-3">
+                  {Object.entries(calculatedData.stockInWarehouse)
+                    .filter(([_, qty]) => (qty as number) > 0)
+                    .sort((a, b) => (b[1] as number) - (a[1] as number)) // Sort by highest quantity first
+                    .map(([model, qty]) => (
+                    <div key={model} className="flex justify-between items-center p-3 bg-white border border-slate-200 shadow-sm rounded-lg">
+                      <span className="font-bold text-slate-700">{model}</span>
+                      <span className="bg-indigo-100 text-indigo-800 py-1 px-3 rounded-full font-bold text-sm">{String(qty)} יח'</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center text-slate-500 py-8 font-medium">אין כרגע פריטים זמינים במלאי.</div>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button onClick={() => setIsStockBreakdownModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-md font-medium hover:bg-slate-300 transition-colors w-full">סגור</button>
+            </div>
           </div>
         </div>
       )}
