@@ -1669,9 +1669,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Customer Modal */}
+      {/* Customer Modal (z-index increased to 100 so it overlays Quote Modal) */}
       {isCustomerModalOpen && customerEditingData && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><UserPlus className="w-5 h-5 text-indigo-600"/> {customerEditingData.id ? 'עריכת פרטי לקוח' : 'הוספת לקוח/ליד חדש'}</h3>
