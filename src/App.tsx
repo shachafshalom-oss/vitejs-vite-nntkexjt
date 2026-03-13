@@ -671,6 +671,9 @@ export default function App() {
       if (isItemModalOpen) {
         setEditingData((prev: any) => ({...prev, customerId: newCustomerId}));
       }
+      if (isQuoteModalOpen) {
+        setQuoteData((prev: any) => ({...prev, customerId: newCustomerId}));
+      }
     } catch (err) { alert("שגיאה בשמירת לקוח"); }
     setIsSaving(false);
   };
@@ -721,7 +724,12 @@ export default function App() {
 
   // --- Quote Generation Handler ---
   const handleGenerateQuotePDF = async () => {
-    if (!quoteRef.current) return;
+    if (!quoteRef.current || !quoteData?.customerId) {
+      if (!quoteData?.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
+      return;
+    }
+    
+    const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
     setIsGeneratingPDF(true);
     try {
       const canvas = await html2canvas(quoteRef.current, {
@@ -736,7 +744,7 @@ export default function App() {
       const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
       
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`הצעת_מחיר_${quoteData.customer.businessName || quoteData.customer.contactName}.pdf`);
+      pdf.save(`הצעת_מחיר_${currentCustomer.businessName || currentCustomer.contactName || 'לקוח'}.pdf`);
     } catch (error) {
       console.error("שגיאה ביצירת PDF:", error);
       alert("שגיאה ביצירת הצעת המחיר.");
@@ -1121,7 +1129,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <button onClick={() => { setQuoteData({ customer: c, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הפק הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הפק הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -1249,6 +1257,9 @@ export default function App() {
             <button onClick={() => { setIsFabOpen(false); setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <UserPlus className="w-4 h-4 text-purple-600"/> הוספת לקוח / ליד
             </button>
+            <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+              <FileText className="w-4 h-4 text-blue-500"/> הצעת מחיר חדשה
+            </button>
             <button onClick={() => { setIsFabOpen(false); setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <PlusCircle className="w-4 h-4 text-blue-600"/> הוספת דגם חדש (CBM)
             </button>
@@ -1262,7 +1273,9 @@ export default function App() {
       {/* --- MODALS --- */}
 
       {/* QUOTE GENERATOR MODAL */}
-      {isQuoteModalOpen && quoteData && (
+      {isQuoteModalOpen && quoteData && (() => {
+        const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
+        return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-[1100px] h-[95vh] flex flex-col">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
@@ -1275,9 +1288,16 @@ export default function App() {
               {/* Sidebar Controls */}
               <div className="w-full lg:w-80 border-l border-slate-200 p-6 space-y-5 overflow-y-auto bg-white shrink-0">
                 
-                <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100">
-                  <p className="text-sm font-bold text-indigo-900 mb-1">לקוח:</p>
-                  <p className="text-lg font-black text-indigo-700">{quoteData.customer.businessName || quoteData.customer.contactName}</p>
+                {/* CUSTOMER SELECTION */}
+                <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-sm font-bold text-purple-900">בחר לקוח / ליד</label>
+                    <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח</button>
+                  </div>
+                  <select className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500" value={quoteData.customerId || ''} onChange={e => setQuoteData({...quoteData, customerId: e.target.value})}>
+                    <option value="">-- בחר לקוח מהרשימה --</option>
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}</option>)}
+                  </select>
                 </div>
 
                 <div className="space-y-4 border-b border-slate-200 pb-4">
@@ -1320,8 +1340,8 @@ export default function App() {
                   <input type="number" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.shippingCost || 0} onChange={e => setQuoteData({...quoteData, shippingCost: Number(e.target.value)})} />
                 </div>
 
-                <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
-                  {isGeneratingPDF ? 'מייצר מסמך...' : <><Download className="w-6 h-6"/> הפק ו-הורד PDF</>}
+                <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF || !quoteData.customerId} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
+                  {isGeneratingPDF ? 'מייצר מסמך...' : !quoteData.customerId ? 'אנא בחר לקוח תחילה' : <><Download className="w-6 h-6"/> הפק ו-הורד PDF</>}
                 </button>
               </div>
 
@@ -1359,9 +1379,9 @@ export default function App() {
 
                   {/* Customer Info */}
                   <div style={{ marginBottom: '20px', fontSize: '15px', lineHeight: '1.5' }}>
-                    <p style={{ margin: '3px 0' }}><strong>לכבוד:</strong> {quoteData.customer.contactName} | {quoteData.customer.companyName || quoteData.customer.businessName}</p>
-                    <p style={{ margin: '3px 0' }}><strong>כתובת:</strong> {quoteData.customer.address || '---'}</p>
-                    <p style={{ margin: '3px 0' }}><strong>ח.פ / ע.מ:</strong> {quoteData.customer.hp || '---'}</p>
+                    <p style={{ margin: '3px 0' }}><strong>לכבוד:</strong> {currentCustomer.contactName || '---'} | {currentCustomer.companyName || currentCustomer.businessName || '---'}</p>
+                    <p style={{ margin: '3px 0' }}><strong>כתובת:</strong> {currentCustomer.address || '---'}</p>
+                    <p style={{ margin: '3px 0' }}><strong>ח.פ / ע.מ:</strong> {currentCustomer.hp || '---'}</p>
                     <p style={{ margin: '3px 0' }}><strong>תאריך:</strong> {new Date(quoteData.date).toLocaleDateString('he-IL')}</p>
                   </div>
 
@@ -1485,7 +1505,7 @@ export default function App() {
                   {/* Signatures */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '50px', pageBreakInside: 'avoid' }}>
                       <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
-                          <strong>שם וחתימת הלקוח ({quoteData.customer.contactName})</strong>
+                          <strong>שם וחתימת הלקוח ({currentCustomer.contactName || '---'})</strong>
                       </div>
                       <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
                           <strong>שם וחתימת נציג ד.ש. לוגיסטיקה<br/>(שחף שלום / דניאל יוסף)</strong>
@@ -1498,7 +1518,8 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
       
       {/* 1. Item Edit / New Sale Modal */}
       {isItemModalOpen && editingData && (
