@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, Upload } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, Upload, CheckCircle } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -59,6 +59,7 @@ export default function App() {
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
+  const [quotes, setQuotes] = useState<any[]>([]); // New state for quotes
 
   const modelsList = useMemo(() => Object.keys(settings.models || {}), [settings]);
 
@@ -79,6 +80,8 @@ export default function App() {
   const [quoteData, setQuoteData] = useState<any>(null);
   const quoteRef = useRef<HTMLDivElement>(null);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  const [isQuoteApprovalModalOpen, setIsQuoteApprovalModalOpen] = useState(false);
+  const [quoteApprovalData, setQuoteApprovalData] = useState<any>(null);
 
   // Quick Import States
   const [showQuickImport, setShowQuickImport] = useState(false);
@@ -146,7 +149,6 @@ export default function App() {
 
     const unsubCampaigns = onSnapshot(collection(db, 'crm_campaigns'), (snap) => {
       setCampaigns(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
     });
 
     const unsubCustomers = onSnapshot(collection(db, 'crm_customers'), (snap) => {
@@ -155,7 +157,15 @@ export default function App() {
       setCustomers(data);
     });
 
-    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); };
+    const unsubQuotes = onSnapshot(collection(db, 'crm_quotes'), (snap) => {
+      let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setQuotes(data);
+      setLoading(false);
+    });
+
+
+    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); };
   }, [user]);
 
   // --- Login Handler ---
@@ -677,7 +687,7 @@ export default function App() {
   };
 
   const deleteDocHandler = async (collectionName: string, id: string) => {
-    if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול ותמחק גם את הפריטים המשויכים.")) return;
+    if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול.")) return;
     try { 
       await deleteDoc(doc(db, collectionName, id)); 
       
@@ -696,7 +706,7 @@ export default function App() {
     
     setIsSaving(true);
     try {
-      const collectionsToDelete = ['crm_shipments', 'crm_items', 'crm_campaigns', 'crm_customers'];
+      const collectionsToDelete = ['crm_shipments', 'crm_items', 'crm_campaigns', 'crm_customers', 'crm_quotes'];
       
       for (const colName of collectionsToDelete) {
         const snapshot = await getDocs(collection(db, colName));
@@ -713,7 +723,7 @@ export default function App() {
     setIsSaving(false);
   };
 
-  // --- Quote Generation Handler (Continuous Single Page PDF) ---
+  // --- Quote Generation & Management ---
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
       if (!quoteData?.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
@@ -723,6 +733,22 @@ export default function App() {
     const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
     setIsGeneratingPDF(true);
     try {
+      // 1. שמירת הצעת המחיר במסד הנתונים
+      const quotePayload = {
+        customerId: quoteData.customerId,
+        date: quoteData.date,
+        items: quoteData.items,
+        shippingCost: quoteData.shippingCost,
+        status: 'issued', // סטטוס התחלתי
+        createdAt: new Date().toISOString()
+      };
+      
+      if (!quoteData.id) {
+          // אם זו הצעה חדשה
+          await addDoc(collection(db, 'crm_quotes'), quotePayload);
+      }
+
+      // 2. הפקת ה-PDF
       const canvas = await html2canvas(quoteRef.current, {
         scale: 2, 
         useCORS: true,
@@ -742,6 +768,8 @@ export default function App() {
       
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`הצעת_מחיר_${currentCustomer.businessName || currentCustomer.contactName || 'לקוח'}.pdf`);
+      
+      setIsQuoteModalOpen(false); // סגירת החלון לאחר הפקה
     } catch (error) {
       console.error("שגיאה ביצירת PDF:", error);
       alert("שגיאה ביצירת הצעת המחיר.");
@@ -768,6 +796,76 @@ export default function App() {
       const newItems = quoteData.items.filter((_:any, i:number) => i !== index);
       setQuoteData({ ...quoteData, items: newItems });
   };
+
+  // פונקציה לפתיחת מודל אישור הצעה
+  const handleApproveQuoteInitiate = (quote: any) => {
+    // מכין את המידע עבור חלון האישור (אילו ברים צריך לגרוע מהמלאי ועם איזה פרטים)
+    const itemsToProcess = quote.items.map((item: any) => ({
+      model: item.model,
+      qty: item.qty,
+      salePrice: item.price,
+      saleDate: todayStr,
+      warrantyMonths: 12,
+      campaignId: '',
+      processed: 0 // מעקב כמה כבר נגרעו מתוך הכמות
+    }));
+
+    setQuoteApprovalData({
+        quoteId: quote.id,
+        customerId: quote.customerId,
+        itemsToProcess: itemsToProcess
+    });
+    setIsQuoteApprovalModalOpen(true);
+  };
+
+  // פונקציה שמבצעת בפועל את אישור ההצעה וגריעת המלאי
+  const executeQuoteApproval = async (e: any) => {
+      e.preventDefault();
+      setIsSaving(true);
+      try {
+        // 1. מעבר על כל שורת פריט ובדיקה אם יש מספיק מלאי פנוי
+        const updatesToMake = [];
+
+        for (const line of quoteApprovalData.itemsToProcess) {
+            const availableItems = items.filter(i => i.model === line.model && i.status === 'in_warehouse');
+            if (availableItems.length < line.qty) {
+                throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${line.qty}, פנוי: ${availableItems.length})`);
+            }
+            
+            // מכין את עדכוני הפריטים (גריעה מהמלאי והפיכה ל'נמכר')
+            for(let i=0; i < line.qty; i++) {
+                updatesToMake.push({
+                    id: availableItems[i].id,
+                    data: {
+                        status: 'sold',
+                        saleDate: line.saleDate,
+                        warrantyMonths: Number(line.warrantyMonths) || 0,
+                        salePrice: Number(line.salePrice) || 0,
+                        campaignId: line.campaignId || '',
+                        customerId: quoteApprovalData.customerId,
+                        updatedAt: new Date().toISOString()
+                    }
+                });
+            }
+        }
+
+        // 2. ביצוע עדכוני המלאי
+        await Promise.all(updatesToMake.map(update => updateDoc(doc(db, 'crm_items', update.id), update.data)));
+
+        // 3. עדכון סטטוס ההצעה ל"אושרה"
+        await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { status: 'approved', approvedAt: new Date().toISOString() });
+
+        // 4. עדכון סטטוס הלקוח ל"פעיל" (רוכש)
+        await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), { status: 'active', updatedAt: new Date().toISOString() });
+
+        setIsQuoteApprovalModalOpen(false);
+        alert("הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.");
+      } catch (err: any) {
+        alert(err.message || "שגיאה בתהליך אישור ההצעה.");
+      }
+      setIsSaving(false);
+  };
+
 
   // --- Render Login Screen if not authenticated ---
   if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>;
@@ -818,6 +916,7 @@ export default function App() {
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
             {[
               { id: 'dashboard', icon: Activity, label: 'דשבורד' },
+              { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
               { id: 'shipments', icon: Ship, label: 'משלוחים' },
               { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
               { id: 'models', icon: Layers, label: 'דגמים' },
@@ -889,6 +988,67 @@ export default function App() {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* --- TAB: QUOTES (הצעות מחיר) --- */}
+        {activeTab === 'quotes' && (
+          <div>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-slate-800">מאגר הצעות מחיר</h2>
+              <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><Plus className="w-4 h-4"/> הצעת מחיר חדשה</button>
+            </div>
+            
+            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">תאריך הפקה</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">לקוח</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">פירוט פריטים</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">סה"כ לתשלום</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">סטטוס</th>
+                    <th className="px-4 py-3 text-left font-medium text-slate-500">פעולות</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {quotes.map(q => {
+                    const customer = customers.find(c => c.id === q.customerId) || { name: 'לקוח נמחק' };
+                    const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0);
+                    const grandTotal = itemsTotal + Number(q.shippingCost || 0);
+                    
+                    return (
+                      <tr key={q.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-4 text-slate-600">{new Date(q.date).toLocaleDateString('he-IL')}</td>
+                        <td className="px-4 py-4 font-bold text-slate-800">{customer.businessName || customer.contactName || customer.name}</td>
+                        <td className="px-4 py-4 text-slate-600">
+                          {q.items.map((i:any, idx:number) => <div key={idx}>{i.qty} x {i.model}</div>)}
+                        </td>
+                        <td className="px-4 py-4 font-bold text-indigo-700">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
+                        <td className="px-4 py-4">
+                          {q.status === 'issued' ? (
+                              <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-800">הונפק (ממתין לאישור)</span>
+                          ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800"><CheckCircle className="w-3 h-3"/> אושרה ומלאי נגרע</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-4 text-left flex items-center justify-end gap-2">
+                          {q.status === 'issued' && (
+                              <button onClick={() => handleApproveQuoteInitiate(q)} className="bg-green-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-green-600 transition-colors shadow-sm">
+                                אשר וגרא מלאי
+                              </button>
+                          )}
+                          <button onClick={() => deleteDocHandler('crm_quotes', q.id)} className="text-slate-400 hover:text-red-500 p-1.5"><Trash2 className="w-4 h-4"/></button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {quotes.length === 0 && (
+                      <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">לא נמצאו הצעות מחיר במערכת.</td></tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
@@ -1269,6 +1429,85 @@ export default function App() {
 
       {/* --- MODALS --- */}
 
+      {/* QUOTE APPROVAL MODAL */}
+      {isQuoteApprovalModalOpen && quoteApprovalData && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-green-600"/> אישור הצעת מחיר וגריעת מלאי</h3>
+                <button onClick={() => setIsQuoteApprovalModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+              </div>
+              <form onSubmit={executeQuoteApproval} className="p-6 space-y-6">
+                  
+                  <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm font-medium border border-blue-100">
+                      אישור פעולה זו ישנה את הסטטוס של הצעת המחיר ל"אושרה", ויגרום לגריעה אוטומטית של הפריטים הבאים מהמלאי הפנוי ("במחסן") לסטטוס "נמכר ללקוח".
+                      אנא ודא שהפרטים מטה נכונים לפני האישור (כמו שיוך לקמפיין ותקופת אחריות).
+                  </div>
+
+                  {quoteApprovalData.itemsToProcess.map((item: any, idx: number) => (
+                      <div key={idx} className="bg-slate-50 p-4 rounded-lg border border-slate-200 space-y-4">
+                          <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                              <h4 className="font-bold text-slate-800">דגם: {item.model}</h4>
+                              <span className="bg-indigo-100 text-indigo-800 text-xs font-bold px-2 py-1 rounded">כמות לגריעה: {item.qty} יח'</span>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-700 mb-1">מחיר מכירה יחידה (₪)</label>
+                                  <input type="number" className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={item.salePrice} onChange={(e) => {
+                                      const newItems = [...quoteApprovalData.itemsToProcess];
+                                      newItems[idx].salePrice = Number(e.target.value);
+                                      setQuoteApprovalData({...quoteApprovalData, itemsToProcess: newItems});
+                                  }} />
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-700 mb-1">תאריך מכירה / אישור</label>
+                                  <input type="date" required className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={item.saleDate} onChange={(e) => {
+                                      const newItems = [...quoteApprovalData.itemsToProcess];
+                                      newItems[idx].saleDate = e.target.value;
+                                      setQuoteApprovalData({...quoteApprovalData, itemsToProcess: newItems});
+                                  }} />
+                              </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-700 mb-1">חודשי אחריות</label>
+                                  <input type="number" min="0" max="60" className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={item.warrantyMonths} onChange={(e) => {
+                                      const newItems = [...quoteApprovalData.itemsToProcess];
+                                      newItems[idx].warrantyMonths = Number(e.target.value);
+                                      setQuoteApprovalData({...quoteApprovalData, itemsToProcess: newItems});
+                                  }} />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-bold text-slate-700 mb-1">שיוך לקמפיין שיווקי</label>
+                                <select className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={item.campaignId} onChange={(e) => {
+                                      const newItems = [...quoteApprovalData.itemsToProcess];
+                                      newItems[idx].campaignId = e.target.value;
+                                      setQuoteApprovalData({...quoteApprovalData, itemsToProcess: newItems});
+                                  }}>
+                                  <option value="">ללא שיוך</option>
+                                  {campaigns.filter(c => {
+                                      const isStarted = !c.startDate || c.startDate <= todayStr;
+                                      const isNotTooOld = !c.endDate || c.endDate >= thirtyDaysAgoStr;
+                                      return isStarted && isNotTooOld;
+                                  }).map(c => (
+                                      <option key={c.id} value={c.id}>{c.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                          </div>
+                      </div>
+                  ))}
+
+                  <button type="submit" disabled={isSaving} className="w-full bg-green-600 text-white py-3 rounded-md font-bold hover:bg-green-700 mt-4 disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-lg">
+                      {isSaving ? 'מעדכן מלאי ומאשר...' : 'אשר הצעת מחיר וגרא פריטים מהמלאי'}
+                  </button>
+              </form>
+            </div>
+          </div>
+      )}
+
       {/* QUOTE GENERATOR MODAL */}
       {isQuoteModalOpen && quoteData && (() => {
         const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
@@ -1338,7 +1577,7 @@ export default function App() {
                 </div>
 
                 <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF || !quoteData.customerId} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
-                  {isGeneratingPDF ? 'מייצר מסמך...' : !quoteData.customerId ? 'אנא בחר לקוח תחילה' : <><Download className="w-6 h-6"/> הפק ו-הורד PDF</>}
+                  {isGeneratingPDF ? 'מייצר מסמך ושומר...' : !quoteData.customerId ? 'אנא בחר לקוח תחילה' : <><Download className="w-6 h-6"/> שמור, והורד PDF</>}
                 </button>
               </div>
 
