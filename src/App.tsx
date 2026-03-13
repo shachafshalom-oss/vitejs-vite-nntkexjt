@@ -902,15 +902,27 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
+          
+          {/* Logo / Title (Right) */}
           <div className="flex items-center gap-3">
             <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-6 w-6 text-indigo-700" /></div>
             <h1 className="text-xl font-bold text-slate-800 hidden sm:block">D.S Logistics CRM</h1>
           </div>
+
+          {/* Centered Company Logo */}
+          {settings.companyLogoUrl && (
+            <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 h-10 w-auto">
+              <img src={settings.companyLogoUrl} alt="Company Logo" className="h-full w-full object-contain" crossOrigin="anonymous" />
+            </div>
+          )}
+
+          {/* User / Logout (Left) */}
           <div className="flex items-center gap-4">
             <span className="text-sm text-slate-500 hidden md:inline">{user.email}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
+
         </div>
         <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50">
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
@@ -1519,10 +1531,10 @@ export default function App() {
               <button onClick={() => setIsQuoteModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             
-            <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+            <div className="flex-1 overflow-y-auto lg:overflow-hidden flex flex-col lg:flex-row">
               
               {/* Sidebar Controls */}
-              <div className="w-full lg:w-80 border-l border-slate-200 p-6 space-y-5 overflow-y-auto bg-white shrink-0">
+              <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-l border-slate-200 p-4 sm:p-6 space-y-5 lg:overflow-y-auto bg-white shrink-0">
                 
                 {/* CUSTOMER SELECTION */}
                 <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
@@ -1582,7 +1594,7 @@ export default function App() {
               </div>
 
               {/* PDF Preview Area */}
-              <div className="flex-1 bg-slate-800 p-8 overflow-y-auto flex justify-center items-start">
+              <div className="w-full lg:flex-1 bg-slate-800 p-4 sm:p-8 lg:overflow-y-auto flex justify-center items-start">
                 <div 
                   ref={quoteRef} 
                   className="bg-[#eae5dd] shadow-2xl relative" 
@@ -1650,7 +1662,7 @@ export default function App() {
                       <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>8. ביטול והחזרה</strong><br/>הלקוח יהיה רשאי, בהתאם להוראות הדין, לבטל את ההזמנה או להחזיר מוצר מדף שלא נעשה בו שימוש ושנשמר באריזתו המקורית, בתוך 14 ימים ממועד קבלתו. במקרה של ביטול או החזרה, החברה תהיה רשאית לגבות דמי ביטול בשיעור של 10% ממחיר ההזמנה. עלויות הובלה ושינוע יחולו על הלקוח בלבד.
                     </div>
                     <div style={{ marginBottom: '12px' }}>
-                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>9. אחריות למוצרי מדף</strong><br/>מוצרי מדף יימסרו כשהם חדשים, באריזתם המקורית, וללא פגמים נראים לעין. האחריות על מוצרי המדף תחול בהתאם לאמור בסעיף 2 לעיל.
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>9. אחריות למוצרי מדף</strong><br/>מוצרי מדף יימסרו כשהם חדשים, באריזתם במקורית, וללא פגמים נראים לעין. האחריות על מוצרי המדף תחול בהתאם לאמור בסעיף 2 לעיל.
                     </div>
                     <div style={{ marginBottom: '12px' }}>
                       <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>10. אחריות מוגבלת</strong><br/>האחריות למוצר בהזמנה אישית תחול בהתאם לסעיף 2 לעיל, אולם לא תחול על פגמים, נזקים או סטיות הנובעים מהמפרט שנמסר על ידי הלקוח, מההדמיה שאושרה על ידו, או מהתאמות שבוצעו על פי בקשתו.
