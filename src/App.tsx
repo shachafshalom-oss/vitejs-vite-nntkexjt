@@ -410,39 +410,54 @@ export default function App() {
     const lines = quickImportText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
     const cleanLine = (line: string) => {
-      // 1. ניקוי מספור בהתחלה (1. , 1- , 1) וכו')
-      let cleaned = line.replace(/^\d+[\.\-\)]?\s*/, '');
+      // 1. הסרת מספור ורווחים מיותרים בתחילת שורה (כמו "1." או "1-")
+      let cleaned = line.replace(/^\s*\d+[\.\-\)]?\s*/, '');
       
-      // רשימת מילות מפתח אפשריות לכותרות
+      // רשימת כל הכותרות האפשריות (מסודרות מהארוך לקצר כדי למנוע חיתוך חלקי)
       const labelKeywords = [
-        'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'איש קשר', 'שם',
-        'שם עסק', 'שם העסק', 'שם הבר', 'שם המסעדה', 'שם חברה', 'חברה',
-        'סוג העסק', 'סוג עסק', 'סוג',
-        'ח.פ', 'חפ', 'עוסק מורשה', 'עוסק פטור',
-        'אימייל', 'מייל', 'דוא"ל', 'דואל', 'כתובת מייל',
-        'טלפון', 'מספר טלפון', 'נייד', 'סלולרי',
-        'כתובת', 'כתובת העסק', 'מיקום', 'עיר'
+        'שם איש הקשר', 'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'שם הבר/מסעדה', 'שם הבר\\מסעדה', 
+        'שם הבר / מסעדה', 'שם הבר \\ מסעדה', 'שם הבר', 'שם המסעדה', 'שם העסק', 'שם עסק',
+        'שם החברה', 'שם חברה', 'אימייל לקבלת מסמכים', 'אימייל לקבלת חשבונית', 'כתובת העסק',
+        'כתובת מייל', 'איש קשר', 'חברה', 'סוג העסק', 'סוג עסק', 'עוסק מורשה', 'עוסק פטור',
+        'טלפון נייד', 'מספר טלפון', 'סלולרי', 'אימייל', 'מייל', 'דוא"ל', 'דואל', 'טלפון',
+        'נייד', 'ח.פ', 'חפ', 'כתובת', 'מיקום', 'עיר', 'סוג', 'שם'
       ];
 
-      // 2. חיפוש כותרות גם בלי נקודתיים או מקף
+      // מיון חכם כדי למצוא קודם את הביטויים הארוכים
+      labelKeywords.sort((a, b) => b.length - a.length);
+
       let matchedKeyword = '';
       for (const kw of labelKeywords) {
-        if (cleaned.startsWith(kw)) {
+        // בודקים אם השורה מתחילה באחת ממילות המפתח
+        if (cleaned.toLowerCase().startsWith(kw.toLowerCase())) {
           matchedKeyword = kw;
-          break; // מצאנו את הכותרת הכי ארוכה/מתאימה בהתחלה
+          break;
         }
       }
 
       if (matchedKeyword) {
-        // מוריד את מילת המפתח מההתחלה
+        // מורידים את מילת המפתח שמצאנו מההתחלה
         cleaned = cleaned.substring(matchedKeyword.length).trim();
-        // מוריד סימני פיסוק שאולי נשארו (נקודתיים או מקף אחרי המילה)
-        cleaned = cleaned.replace(/^[\:\-]\s*/, '');
+        // מורידים סימני פיסוק שנשארו מיד אחרי המילה (כמו :, -, או פסיק)
+        cleaned = cleaned.replace(/^[\:\-\,]\s*/, '');
+      } else {
+        // מנגנון גיבוי למקרה שהלקוח השתמש בנקודתיים או מקף עם מילה שלא זיהינו
+        if (cleaned.includes(':')) {
+          const parts = cleaned.split(':');
+          if (parts[0].length < 30) cleaned = parts.slice(1).join(':').trim();
+        } else if (cleaned.includes('-')) {
+          const parts = cleaned.split('-');
+          const firstPart = parts[0].trim();
+          if (firstPart.length < 35 && (firstPart.includes('שם') || firstPart.includes('טלפון') || firstPart.includes('ח.פ'))) {
+             cleaned = parts.slice(1).join('-').trim();
+          }
+        }
       }
 
       return cleaned.trim();
     };
 
+    // מריצים את הניקוי על כל השורות
     const fields = lines.map(cleanLine);
 
     const contactName = fields[0] || '';
@@ -1330,7 +1345,7 @@ export default function App() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #c91028', paddingBottom: '15px' }}>
                     <div style={{ width: '200px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
                       {settings.companyLogoUrl ? (
-                        <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
+                        <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', mixBlendMode: 'multiply' }} crossOrigin="anonymous" />
                       ) : (
                         <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>D.S Logistics</div>
                       )}
@@ -1427,7 +1442,7 @@ export default function App() {
                            return (
                                <>
                                 סה"כ לתשלום לפני מע"מ: {grandTotal.toLocaleString()} ש"ח<br/>
-                                סה"כ לתשלום כולל מע"מ (17%): {(grandTotal * 1.17).toLocaleString()} ש"ח
+                                סה"כ לתשלום כולל מע"מ (18%): {(grandTotal * 1.18).toLocaleString()} ש"ח
                                </>
                            );
                         })()}
