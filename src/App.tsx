@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, Upload } from 'lucide-react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 // ==========================================
 // 1. הגדרות FIREBASE פרטיות (הדבק כאן את שלך)
@@ -30,7 +32,15 @@ const db = getFirestore(app);
 const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
 const SHIPMENT_STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'הגיע למחסן' };
 const STATUS_COLORS: Record<string, string> = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800' };
-const defaultSettings: any = { 'Prime': { cbm: 1.2 }, 'Night': { cbm: 1.0 }, 'Urban': { cbm: 1.5 }, 'Events': { cbm: 2.0 } };
+const defaultSettings: any = { 
+  models: { 
+    'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '' }, 
+    'Night': { cbm: 1.0, blueprintUrl: '', itemImgUrl: '' }, 
+    'Urban': { cbm: 1.5, blueprintUrl: '', itemImgUrl: '' }, 
+    'Events': { cbm: 2.0, blueprintUrl: '', itemImgUrl: '' } 
+  },
+  companyLogoUrl: ''
+};
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -40,7 +50,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
 
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers'); // <--- Sub-tab state for customers/leads
+  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers');
   const [loading, setLoading] = useState(true);
 
   // Data States
@@ -50,7 +60,7 @@ export default function App() {
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
 
-  const modelsList = useMemo(() => Object.keys(settings), [settings]);
+  const modelsList = useMemo(() => Object.keys(settings.models || {}), [settings]);
 
   // Modal & UI States
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
@@ -64,6 +74,12 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isFabOpen, setIsFabOpen] = useState(false);
   
+  // Quote States
+  const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
+  const [quoteData, setQuoteData] = useState<any>(null);
+  const quoteRef = useRef<HTMLDivElement>(null);
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+
   // Quick Import States
   const [showQuickImport, setShowQuickImport] = useState(false);
   const [quickImportText, setQuickImportText] = useState('');
@@ -78,7 +94,7 @@ export default function App() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
 
-  // --- Date Calculations for Campaigns ---
+  // --- Date Calculations ---
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
   const thirtyDaysAgo = new Date();
@@ -100,8 +116,20 @@ export default function App() {
 
     const unsubSettings = onSnapshot(collection(db, 'crm_settings'), (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      const settingsDoc = docs.find((d: any) => d.id === 'general_cbm');
-      if (settingsDoc && settingsDoc.models) setSettings(settingsDoc.models);
+      const settingsDoc = docs.find((d: any) => d.id === 'general_settings');
+      if (settingsDoc) {
+        setSettings(settingsDoc);
+      } else {
+         const oldSettingsDoc = docs.find((d: any) => d.id === 'general_cbm');
+         if(oldSettingsDoc && oldSettingsDoc.models) {
+             const updatedModels = { ...oldSettingsDoc.models };
+             Object.keys(updatedModels).forEach(key => {
+                 if (!updatedModels[key].blueprintUrl) updatedModels[key].blueprintUrl = '';
+                 if (!updatedModels[key].itemImgUrl) updatedModels[key].itemImgUrl = '';
+             });
+             setSettings({ models: updatedModels, companyLogoUrl: '' });
+         }
+      }
     });
 
     const unsubShipments = onSnapshot(collection(db, 'crm_shipments'), (snap) => {
@@ -145,6 +173,52 @@ export default function App() {
     signOut(auth);
   };
 
+  // --- Image Upload Handler (Compression to Base64) ---
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, callback: (base64: string) => void) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        // כיווץ התמונה כדי שלא תתפוס הרבה מקום במסד הנתונים
+        const maxDim = 600; 
+
+        if (width > height) {
+          if (width > maxDim) {
+            height *= maxDim / width;
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width *= maxDim / height;
+            height = maxDim;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // רקע לבן לתמונות עם שקיפות
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, width, height);
+        }
+        
+        // המרה ל-JPEG באיכות 70%
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
+        callback(dataUrl);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
   // --- Core Calculations ---
   const calculatedData = useMemo(() => {
     const shipmentStats: any = {};
@@ -168,7 +242,6 @@ export default function App() {
 
     const customerStats: any = {};
     customers.forEach(c => { 
-      // שולף את שם העסק, ואם אין אז את שם איש הקשר, ואם מדובר בלקוח ישן אז את השם הכללי
       const displayName = c.businessName || c.contactName || c.name || 'לקוח ללא שם';
       customerStats[c.id] = { itemCount: 0, totalRevenue: 0, name: displayName, phone: c.phone, activeWarranties: 0 }; 
     });
@@ -178,9 +251,6 @@ export default function App() {
     let totalProfit = 0;
     let soldCount = 0;
     
-    const last30Days = new Date();
-    last30Days.setDate(last30Days.getDate() - 30);
-    
     const stockInWarehouse: any = {};
     const stockOnTheWay: any = {};
     const salesInLast30: any = {};
@@ -189,7 +259,7 @@ export default function App() {
 
     const enrichedItems = items.map(item => {
       const sStat = shipmentStats[item.shipmentId];
-      const cbm = settings[item.model]?.cbm || 0;
+      const cbm = (settings.models && settings.models[item.model]?.cbm) || 0;
       
       const factoryCostILS = sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0;
       const importCostILS = sStat ? (sStat.costPerCbmILS * cbm) : 0;
@@ -203,7 +273,6 @@ export default function App() {
       const totalRevenue = (Number(item.salePrice) || 0) + (Number(item.addOnPrice) || 0);
       const profit = item.status === 'sold' ? totalRevenue - totalLandedCost : 0;
 
-      // Warranty calculation
       let isWarrantyActive = false;
       let warrantyDaysLeft = 0;
       if (item.status === 'sold' && item.saleDate && item.warrantyMonths) {
@@ -238,7 +307,7 @@ export default function App() {
       
       if (item.status === 'sold') {
         soldCount++; totalProfit += profit;
-        if (item.saleDate && new Date(item.saleDate) >= last30Days) salesInLast30[item.model]++;
+        if (item.saleDate && new Date(item.saleDate) >= thirtyDaysAgo) salesInLast30[item.model]++;
       }
 
       return {
@@ -274,14 +343,12 @@ export default function App() {
       return a.model.localeCompare(b.model);
     });
 
-    // Generate a list of models currently in the warehouse
     const modelsInStock = Array.from(new Set(
       enrichedItems
         .filter(item => item.status === 'in_warehouse')
         .map(item => item.model)
     ));
     
-    // רשימת דגמים שיש מהם כרגע מלאי פנוי למכירה (עבור כפתור מכירה חדשה)
     const availableModelsInStock = Object.keys(stockInWarehouse).filter(m => stockInWarehouse[m] > 0);
 
     return { enrichedItems, groupedInventory: groupedArray, shipmentStats, campaignStats, customerStats, inWarehouseCount, totalInventoryValueILS, avgProfit: soldCount > 0 ? Math.round(totalProfit / soldCount) : 0, forecasts, modelsInStock, availableModelsInStock, stockInWarehouse };
@@ -318,8 +385,8 @@ export default function App() {
     e.preventDefault();
     if (!newModelName.trim()) return;
     try {
-      const newSettings = { ...settings, [newModelName.trim()]: { cbm: 0 } };
-      await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: newSettings });
+      const newSettings = { ...settings, models: { ...settings.models, [newModelName.trim()]: { cbm: 0, blueprintUrl: '', itemImgUrl: '' } } };
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setNewModelName('');
     } catch(err) { console.error(err); }
   };
@@ -329,8 +396,8 @@ export default function App() {
       if (!newModelData.name.trim()) return;
       setIsSaving(true);
       try {
-        const newSettings = { ...settings, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0 } };
-        await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: newSettings });
+        const newSettings = { ...settings, models: { ...settings.models, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0, blueprintUrl: '', itemImgUrl: '' } } };
+        await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
         setNewModelData({ name: '', cbm: 0 });
         setIsModelModalOpen(false);
       } catch(err) { alert("שגיאה בהוספת דגם"); }
@@ -340,28 +407,44 @@ export default function App() {
   const processQuickImport = () => {
     if (!quickImportText.trim()) return;
 
-    // הפונקציה תחלץ טקסט שנמצא אחרי מספר, נקודה, ואופציונלית טקסט עם נקודתיים
-    const extractField = (num: number) => {
-      const regex = new RegExp(`^\\s*${num}[.\\-)]?(?:[^:\\n]*:)?\\s*(.*)`, 'im');
-      const match = quickImportText.match(regex);
-      return match ? match[1].trim() : '';
+    const lines = quickImportText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    const cleanLine = (line: string) => {
+      let cleaned = line.replace(/^\d+[\.\-\)]?\s*/, '');
+      if (cleaned.includes(':')) {
+        const parts = cleaned.split(':');
+        if (parts[0].length < 30) {
+          cleaned = parts.slice(1).join(':').trim();
+        }
+      } else if (cleaned.includes('-')) {
+        const labelKeywords = ['שם', 'קשר', 'עסק', 'בר', 'מסעדה', 'חברה', 'סוג', 'ח.פ', 'חפ', 'עוסק', 'אימייל', 'מייל', 'דוא"ל', 'דואל', 'טלפון', 'נייד', 'כתובת', 'מיקום'];
+        const parts = cleaned.split('-');
+        const firstPart = parts[0].trim();
+        const hasKeyword = labelKeywords.some(kw => firstPart.includes(kw));
+        
+        if (hasKeyword && firstPart.length < 35) {
+          cleaned = parts.slice(1).join('-').trim();
+        }
+      }
+      return cleaned.trim();
     };
 
-    const contactName = extractField(1);
-    const businessName = extractField(2);
-    const companyName = extractField(3);
-    const businessTypeStr = extractField(4);
-    const hp = extractField(5);
-    const email = extractField(6);
-    const phone = extractField(7);
-    const address = extractField(8);
+    const fields = lines.map(cleanLine);
 
-    // זיהוי חכם של סוג העסק מתוך הטקסט
+    const contactName = fields[0] || '';
+    const businessName = fields[1] || '';
+    const companyName = fields[2] || '';
+    const businessTypeStr = fields[3] || '';
+    const hp = fields[4] || '';
+    const email = fields[5] || '';
+    const phone = fields[6] || '';
+    const address = fields[7] || '';
+
     let businessType = customerEditingData?.businessType || 'bar';
     if (businessTypeStr) {
       if (businessTypeStr.includes('בר')) businessType = 'bar';
-      else if (businessTypeStr.includes('מסעדה')) businessType = 'restaurant';
-      else if (businessTypeStr.includes('אולם')) businessType = 'event_hall';
+      else if (businessTypeStr.includes('מסעד')) businessType = 'restaurant';
+      else if (businessTypeStr.includes('אולם') || businessTypeStr.includes('אירוע')) businessType = 'event_hall';
       else businessType = 'other';
     }
 
@@ -419,7 +502,6 @@ export default function App() {
       const data = { ...editingData, updatedAt: new Date().toISOString() };
       
       if (data.id) {
-        // --- עדכון משלוח קיים - סנכרון פריטים חכם ---
         await updateDoc(doc(sRef, data.id), data);
         
         const currentShipmentItems = items.filter(i => i.shipmentId === data.id);
@@ -439,7 +521,6 @@ export default function App() {
           const currentQty = currentModelItems.length;
           const diff = desiredQty - currentQty;
 
-          // 1. הוספת פריטים חסרים (אם הכמות גדלה)
           if (diff > 0) {
             for (let i = 0; i < diff; i++) {
               await addDoc(itemsRef, { 
@@ -450,10 +531,8 @@ export default function App() {
               });
             }
           } 
-          // 2. מחיקת פריטים עודפים (אם הכמות קטנה)
           else if (diff < 0) {
             const itemsToRemoveCount = Math.abs(diff);
-            // מיון כך שקודם ימחקו פריטים שטרם נמכרו
             const sortedToRemove = [...currentModelItems].sort((a: any, b: any) => {
               if (a.status === 'sold' && b.status !== 'sold') return 1;
               if (a.status !== 'sold' && b.status === 'sold') return -1;
@@ -463,19 +542,17 @@ export default function App() {
             for (let i = 0; i < itemsToRemoveCount; i++) {
               if (sortedToRemove[i]) {
                 await deleteDoc(doc(db, 'crm_items', sortedToRemove[i].id));
-                sortedToRemove[i]._deleted = true; // סימון מקומי למניעת עדכונים בהמשך הלולאה
+                sortedToRemove[i]._deleted = true; 
               }
             }
           }
 
-          // 3. עדכון עלות יחידה לפריטים שנותרו
           const itemsToUpdateCost = currentModelItems.filter((i: any) => !i._deleted && Number(i.factoryUnitCostUSD) !== Number(line.unitCostUSD));
           for (const item of itemsToUpdateCost) {
             await updateDoc(doc(itemsRef, item.id), { factoryUnitCostUSD: Number(line.unitCostUSD), updatedAt: new Date().toISOString() });
           }
         }
 
-        // 4. ניקוי דגמים שהוסרו לחלוטין (נמחקה שורה שלמה מהטופס)
         for (const model in currentItemsByModel) {
           if (!modelsInUpdatedLines.has(model)) {
             for (const item of currentItemsByModel[model]) {
@@ -487,7 +564,6 @@ export default function App() {
         }
 
       } else {
-        // --- יצירת משלוח חדש ---
         data.status = 'ordered';
         data.createdAt = new Date().toISOString();
         const docRef = await addDoc(sRef, data);
@@ -508,10 +584,8 @@ export default function App() {
     try {
       const data = { ...editingData, updatedAt: new Date().toISOString() };
       
-      // אם זו מכירה גלובלית (דרך כפתור הפלוס) ולא פריט ספציפי
       if (data.isGlobalSale) {
         if (!data.model) throw new Error("חובה לבחור דגם");
-        // חיפוש הפריט הראשון שפנוי במלאי מאותו דגם
         const availableItem = items.find(i => i.model === data.model && i.status === 'in_warehouse');
         if (!availableItem) throw new Error("אין פריטים פנויים מדגם זה במלאי ברגע זה.");
         
@@ -529,7 +603,6 @@ export default function App() {
         };
         await updateDoc(doc(db, 'crm_items', availableItem.id), updatePayload);
       } 
-      // עריכה של פריט ספציפי (דרך טבלת מלאי)
       else {
         if (data.status === 'sold' && !data.saleDate) data.saleDate = new Date().toISOString().split('T')[0];
         if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; }
@@ -566,7 +639,6 @@ export default function App() {
         newCustomerId = docRef.id;
       }
       setIsCustomerModalOpen(false);
-      // Auto-select if we are inside a sale modal
       if (isItemModalOpen) {
         setEditingData((prev: any) => ({...prev, customerId: newCustomerId}));
       }
@@ -576,12 +648,11 @@ export default function App() {
 
   const saveSettings = async () => {
     try {
-      await setDoc(doc(db, 'crm_settings', 'general_cbm'), { models: settings });
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), settings);
       alert("הגדרות נשמרו בהצלחה!");
     } catch (err) { alert("שגיאה בשמירה"); }
   };
 
-  // מחיקה חכמה גם למשלוח שלם (מוחק את כל הפריטים שתחתיו כדי לא להשאיר זבל במסד הנתונים)
   const deleteDocHandler = async (collectionName: string, id: string) => {
     if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול ותמחק גם את הפריטים המשויכים.")) return;
     try { 
@@ -596,7 +667,6 @@ export default function App() {
     } catch (err) { console.error(err); }
   };
 
-  // פונקציית איפוס מערכת מלא (מחיקת כל הנתונים)
   const handleResetSystem = async () => {
     const userConfirm = window.prompt("אזהרה קריטית! 🛑\nפעולה זו תמחק את *כל* המשלוחים, הפריטים והקמפיינים במערכת ולא ניתן לבטל אותה.\nלהמשך, הקלד את המילה 'מחק':");
     if (userConfirm !== 'מחק') return;
@@ -612,12 +682,57 @@ export default function App() {
       }
       
       alert("כל הנתונים נמחקו בהצלחה! המערכת כעת נקייה ומוכנה לעבודה מחדש.");
-      setActiveTab('dashboard'); // חזרה לדשבורד
+      setActiveTab('dashboard'); 
     } catch (err) {
       console.error(err);
       alert("אירעה שגיאה במחיקת הנתונים. ודא שהרשאות הפיירבייס תקינות.");
     }
     setIsSaving(false);
+  };
+
+  // --- Quote Generation Handler ---
+  const handleGenerateQuotePDF = async () => {
+    if (!quoteRef.current) return;
+    setIsGeneratingPDF(true);
+    try {
+      const canvas = await html2canvas(quoteRef.current, {
+        scale: 2, 
+        useCORS: true,
+        backgroundColor: '#eae5dd' // שמירה על צבע הרקע של ה-PDF
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`הצעת_מחיר_${quoteData.customer.businessName || quoteData.customer.contactName}.pdf`);
+    } catch (error) {
+      console.error("שגיאה ביצירת PDF:", error);
+      alert("שגיאה ביצירת הצעת המחיר.");
+    }
+    setIsGeneratingPDF(false);
+  };
+
+  const addQuoteItem = () => {
+      if(modelsList.length > 0) {
+        setQuoteData({
+            ...quoteData,
+            items: [...quoteData.items, { model: modelsList[0], qty: 1, price: 0, customNotes: '' }]
+        });
+      }
+  };
+
+  const updateQuoteItem = (index: number, field: string, value: any) => {
+      const newItems = [...quoteData.items];
+      newItems[index] = { ...newItems[index], [field]: value };
+      setQuoteData({ ...quoteData, items: newItems });
+  };
+
+  const removeQuoteItem = (index: number) => {
+      const newItems = quoteData.items.filter((_:any, i:number) => i !== index);
+      setQuoteData({ ...quoteData, items: newItems });
   };
 
   // --- Render Login Screen if not authenticated ---
@@ -746,21 +861,55 @@ export default function App() {
 
         {/* --- TAB: MODELS --- */}
         {activeTab === 'models' && (
-          <div className="max-w-3xl mx-auto space-y-6">
-            <h2 className="text-2xl font-bold text-slate-800 mb-6">ניהול דגמי מוצרים</h2>
+          <div className="max-w-4xl mx-auto space-y-6">
+            <h2 className="text-2xl font-bold text-slate-800 mb-6">ניהול דגמי מוצרים ותמונות</h2>
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
-              <form onSubmit={handleAddModel} className="flex gap-4 items-end mb-6">
+              <form onSubmit={handleAddModel} className="flex gap-4 items-end mb-8 border-b pb-8">
                 <div className="flex-1">
                   <label className="block text-sm font-medium text-slate-700 mb-1">שם הדגם החדש</label>
                   <input type="text" required value={newModelName} onChange={e => setNewModelName(e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm p-2 border" placeholder="לדוגמה: Premium Bar" />
                 </div>
                 <button type="submit" className="bg-indigo-600 text-white px-6 py-2 rounded-md font-medium hover:bg-indigo-700">הוסף דגם</button>
               </form>
-              <h3 className="font-bold text-slate-700 mb-3 border-b pb-2">דגמים קיימים במערכת</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              
+              <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת</h3>
+              <div className="space-y-6">
                 {modelsList.map(model => (
-                  <div key={model} className="bg-slate-50 border border-slate-200 p-3 rounded text-center font-medium text-slate-800">{model}</div>
+                  <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
+                    <div className="flex justify-between items-center mb-4">
+                        <h4 className="font-bold text-lg text-slate-800">{model}</h4>
+                        <div className="flex items-center gap-2">
+                            <label className="text-sm font-medium text-slate-600">CBM:</label>
+                            <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white" value={settings.models[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-white p-3 rounded border border-slate-200">
+                            <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1"><ImageIcon className="w-4 h-4"/> העלה תמונת הדמיה</label>
+                            <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, (base64) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], itemImgUrl: base64 } } }))} className="block w-full text-xs text-slate-500 file:ml-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded p-1" />
+                            {settings.models[model]?.itemImgUrl && (
+                              <div className="mt-3 relative inline-block">
+                                <img src={settings.models[model].itemImgUrl} alt="" className="h-20 object-contain rounded border border-slate-200 p-1" />
+                                <button onClick={() => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], itemImgUrl: '' } } })} className="absolute -top-2 -right-2 bg-red-100 text-red-600 rounded-full p-1 hover:bg-red-200"><X className="w-3 h-3"/></button>
+                              </div>
+                            )}
+                        </div>
+                        <div className="bg-white p-3 rounded border border-slate-200">
+                            <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1"><FileText className="w-4 h-4"/> העלה סרטוט טכני</label>
+                            <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, (base64) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], blueprintUrl: base64 } } }))} className="block w-full text-xs text-slate-500 file:ml-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded p-1" />
+                            {settings.models[model]?.blueprintUrl && (
+                              <div className="mt-3 relative inline-block">
+                                <img src={settings.models[model].blueprintUrl} alt="" className="h-20 object-contain rounded border border-slate-200 p-1" />
+                                <button onClick={() => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], blueprintUrl: '' } } })} className="absolute -top-2 -right-2 bg-red-100 text-red-600 rounded-full p-1 hover:bg-red-200"><X className="w-3 h-3"/></button>
+                              </div>
+                            )}
+                        </div>
+                    </div>
+                  </div>
                 ))}
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור שינויים בדגמים</button>
               </div>
             </div>
           </div>
@@ -921,7 +1070,6 @@ export default function App() {
                 .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
                 .map(c => {
                 const stat = calculatedData.customerStats[c.id];
-                // A customer is considered active if they have at least one active warranty, or if their status is manually set to active (fallback)
                 const isActiveCustomer = stat?.activeWarranties > 0 || (c.status === 'active' && stat?.itemCount > 0);
                 
                 return (
@@ -944,6 +1092,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1">
+                          <button onClick={() => { setQuoteData({ customer: c, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הפק הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -1024,21 +1173,29 @@ export default function App() {
         {/* --- TAB: SETTINGS --- */}
         {activeTab === 'settings' && (
           <div className="max-w-2xl mx-auto space-y-6">
+            
+            {/* Logo Settings */}
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
-              <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><Settings className="w-5 h-5 text-indigo-600"/> הגדרות נפח (CBM) לפי דגם</h2>
-              <div className="space-y-4">
-                {modelsList.map(model => (
-                  <div key={model} className="flex items-center justify-between p-3 bg-slate-50 rounded border border-slate-100">
-                    <span className="font-medium text-slate-700 w-32">{model}</span>
-                    <div className="flex items-center gap-2"><input type="number" step="0.01" min="0" className="w-24 p-2 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value={settings[model]?.cbm || ''} onChange={(e) => setSettings({...settings, [model]: {cbm: Number(e.target.value)}})}/><span className="text-slate-500 text-sm">CBM</span></div>
-                  </div>
-                ))}
+              <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2"><ImageIcon className="w-5 h-5 text-indigo-600"/> לוגו החברה למסמכים (PDF)</h2>
+              <div className="mb-4">
+                <label className="block text-sm font-bold text-slate-700 mb-2">העלה לוגו מהמחשב או הטלפון</label>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  onChange={(e) => handleImageUpload(e, (base64) => setSettings({...settings, companyLogoUrl: base64}))} 
+                  className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded-md p-1" 
+                />
               </div>
-              <button onClick={saveSettings} className="mt-6 w-full bg-indigo-600 text-white py-2.5 rounded-md font-medium hover:bg-indigo-700">שמור הגדרות מערכת</button>
+              {settings.companyLogoUrl && (
+                <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
+                  <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain mix-blend-multiply"/>
+                  <button onClick={() => setSettings({...settings, companyLogoUrl: ''})} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
+                </div>
+              )}
             </div>
 
             {/* DANGER ZONE FOR RESET */}
-            <div className="bg-red-50 p-6 border border-red-200 rounded-lg shadow-sm">
+            <div className="bg-red-50 p-6 border border-red-200 rounded-lg shadow-sm mt-8">
               <h2 className="text-xl font-bold text-red-800 mb-2 flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-red-600"/> אזור סכנה: ניקוי שולחן (איפוס נתונים)</h2>
               <p className="text-sm text-red-600 mb-4 font-medium">כפתור זה ימחק את <strong>כל</strong> המשלוחים, הפריטים במלאי, והקמפיינים שקיימים במערכת בלחיצה אחת. (רשימת הדגמים שלך לא תימחק).</p>
               <button onClick={handleResetSystem} disabled={isSaving} className="w-full bg-red-600 text-white py-2.5 rounded-md font-medium hover:bg-red-700 transition-colors">
@@ -1074,6 +1231,245 @@ export default function App() {
       </div>
 
       {/* --- MODALS --- */}
+
+      {/* QUOTE GENERATOR MODAL */}
+      {isQuoteModalOpen && quoteData && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-[1100px] h-[95vh] flex flex-col">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> מחולל הצעת מחיר / הסכם הזמנה</h3>
+              <button onClick={() => setIsQuoteModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            
+            <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+              
+              {/* Sidebar Controls */}
+              <div className="w-full lg:w-80 border-l border-slate-200 p-6 space-y-5 overflow-y-auto bg-white shrink-0">
+                
+                <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100">
+                  <p className="text-sm font-bold text-indigo-900 mb-1">לקוח:</p>
+                  <p className="text-lg font-black text-indigo-700">{quoteData.customer.businessName || quoteData.customer.contactName}</p>
+                </div>
+
+                <div className="space-y-4 border-b border-slate-200 pb-4">
+                  <div className="flex justify-between items-center">
+                    <h4 className="font-bold text-slate-800">פריטים בהצעה</h4>
+                    <button onClick={addQuoteItem} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף פריט</button>
+                  </div>
+                  
+                  {quoteData.items.map((item: any, index: number) => (
+                    <div key={index} className="bg-slate-50 p-3 rounded-lg border border-slate-200 relative">
+                      {quoteData.items.length > 1 && (
+                         <button onClick={() => removeQuoteItem(index)} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>
+                      )}
+                      <div className="mb-2 pr-6">
+                        <label className="block text-xs font-bold text-slate-700 mb-1">דגם</label>
+                        <select className="w-full border-slate-300 rounded p-1.5 text-sm bg-white font-medium" value={item.model} onChange={e => updateQuoteItem(index, 'model', e.target.value)}>
+                          {modelsList.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">כמות</label>
+                          <input type="number" min="1" className="w-full border-slate-300 rounded p-1.5 font-bold text-sm" value={item.qty} onChange={e => updateQuoteItem(index, 'qty', Number(e.target.value))} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-700 mb-1">מחיר יחידה (₪)</label>
+                          <input type="number" className="w-full border-slate-300 rounded p-1.5 font-bold text-sm text-indigo-700" value={item.price} onChange={e => updateQuoteItem(index, 'price', Number(e.target.value))} />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">הערות/תוספות לדגם</label>
+                        <textarea className="w-full border-slate-300 rounded p-1.5 text-xs min-h-[50px]" value={item.customNotes || ''} onChange={e => updateQuoteItem(index, 'customNotes', e.target.value)} placeholder="לדוגמה: תוספת מדף..."></textarea>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">עלות משלוח כוללת (₪ לפני מע"מ)</label>
+                  <input type="number" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.shippingCost || 0} onChange={e => setQuoteData({...quoteData, shippingCost: Number(e.target.value)})} />
+                </div>
+
+                <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
+                  {isGeneratingPDF ? 'מייצר מסמך...' : <><Download className="w-6 h-6"/> הפק ו-הורד PDF</>}
+                </button>
+              </div>
+
+              {/* PDF Preview Area */}
+              <div className="flex-1 bg-slate-800 p-8 overflow-y-auto flex justify-center items-start">
+                <div 
+                  ref={quoteRef} 
+                  className="bg-[#eae5dd] shadow-2xl relative" 
+                  style={{ 
+                    width: '210mm', 
+                    minHeight: '297mm', 
+                    padding: '20mm', 
+                    boxSizing: 'border-box',
+                    direction: 'rtl',
+                    fontFamily: 'Arial, Helvetica, sans-serif',
+                    color: '#000'
+                  }}
+                >
+                  
+                  {/* Header / Logo */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #c91028', paddingBottom: '15px' }}>
+                    <div style={{ width: '200px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+                      {settings.companyLogoUrl ? (
+                        <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
+                      ) : (
+                        <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>D.S Logistics</div>
+                      )}
+                    </div>
+                    <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#c91028', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
+                      <p style={{ margin: '3px 0' }}>050-2212880 | 054-8050870</p>
+                      <p style={{ margin: '3px 0' }}>Dslogistics69@gmail.com</p>
+                      <p style={{ margin: '3px 0', color: '#000' }}>ds-logistics.interaa.ai</p>
+                    </div>
+                  </div>
+
+                  {/* Customer Info */}
+                  <div style={{ marginBottom: '20px', fontSize: '15px', lineHeight: '1.5' }}>
+                    <p style={{ margin: '3px 0' }}><strong>לכבוד:</strong> {quoteData.customer.contactName} | {quoteData.customer.companyName || quoteData.customer.businessName}</p>
+                    <p style={{ margin: '3px 0' }}><strong>כתובת:</strong> {quoteData.customer.address || '---'}</p>
+                    <p style={{ margin: '3px 0' }}><strong>ח.פ / ע.מ:</strong> {quoteData.customer.hp || '---'}</p>
+                    <p style={{ margin: '3px 0' }}><strong>תאריך:</strong> {new Date(quoteData.date).toLocaleDateString('he-IL')}</p>
+                  </div>
+
+                  <div style={{ textAlign: 'center', fontSize: '22px', fontWeight: 'bold', textDecoration: 'underline', margin: '30px 0' }}>הסכם הזמנה – ד.ש. לוגיסטיקה</div>
+
+                  {/* Sections */}
+                  <div style={{ fontSize: '13.5px', lineHeight: '1.4', textAlign: 'justify' }}>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>1. מחיר ותנאי תשלום</strong><br/>מחיר ההזמנה הינו קבוע וסופי, ולא יחולו בו שינויים מכל סיבה שהיא, למעט עדכונים הנובעים משינויי מיסים החלים על פי דין. יש להסדיר את התשלום במלואו לפני מועד ההספקה.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>2. אחריות</strong><br/>המוצר יימסר עם אחריות למשך 6 חודשים ממועד אספקתו ללקוח, וזאת בכפוף ובכפוף מלא לתנאי האחריות כפי שנקבעו על ידי החברה. החברה לא תישא בכל אחריות לנזק, שבר, תקלה, פגם או אובדן שנגרמו למוצר, לציוד או לכל רכיב ממנו, במישרין או בעקיפין, עקב שימוש לא סביר, רשלנות, פעולה או מחדל של הלקוח ו/או מי מטעמו, לרבות שבר במוצר. במקרים כאמור, הלקוח יישא במלוא האחריות והעלויות הכרוכות בתיקון, החלפה או השבת המוצר לקדמותו, והחברה תהיה פטורה מכל טענה, דרישה או תביעה בקשר לכך.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>3. שירותי תיקונים לאחר תקופת האחריות</strong><br/>עם תום תקופת האחריות, החברה תעמיד לרשות הלקוח שירותי תיקונים ותחזוקה בתשלום, בהתאם למחירים ותנאים שייקבעו על ידה מעת לעת.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>4. מועדי אספקה</strong><br/>מועדי האספקה הנמסרים ללקוח ניתנים לצורכי הערכה בלבד, והם עשויים להשתנות בהתאם לנסיבות שונות. החברה לא תישא באחריות לכל דחייה או שינוי במועדי האספקה.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>5. הפרת התחייבויות הלקוח</strong><br/>במקרה שהלקוח לא יעמוד בהתחייבויותיו על פי הסכם זה, לרבות אי-תשלום במועדים שנקבעו, החברה תהא רשאית לבטל את אספקת הסחורה ו/או לחייב את הלקוח בגין החלק מההזמנה שכבר בוצע, ולמנוע אספקת יתרת ההזמנה.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>6. שמירת בעלות</strong><br/>המוצר יישאר רכושה הבלעדי של חברת ד.ש. לוגיסטיקה עד לפרעון מלא וסופי של כלל התשלומים על ידי הלקוח. במידה והתשלומים לא יפרעו במועדם ועל פי ההזמנה, תהא רשאית ד.ש. לוגיסטיקה, או מי מטעמה, ליטול את המוצר חזרה עד לפרעון סופי של כלל התשלומים.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>7. הזמנה ואספקה</strong><br/>החברה תספק ללקוח את המוצרים הקיימים במלאי, בתוך 10 ימי עסקים ממועד תשלום מלוא התמורה בגין המוצר. מועדי האספקה כפופים לשינויים בהתאם לנסיבות תפעוליות ובלתי צפויות, והחברה לא תישא באחריות לעיכובים כאמור.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>8. ביטול והחזרה</strong><br/>הלקוח יהיה רשאי, בהתאם להוראות הדין, לבטל את ההזמנה או להחזיר מוצר מדף שלא נעשה בו שימוש ושנשמר באריזתו המקורית, בתוך 14 ימים ממועד קבלתו. במקרה של ביטול או החזרה, החברה תהיה רשאית לגבות דמי ביטול בשיעור של 10% ממחיר ההזמנה. עלויות הובלה ושינוע יחולו על הלקוח בלבד.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>9. אחריות למוצרי מדף</strong><br/>מוצרי מדף יימסרו כשהם חדשים, באריזתם המקורית, וללא פגמים נראים לעין. האחריות על מוצרי המדף תחול בהתאם לאמור בסעיף 2 לעיל.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>10. אחריות מוגבלת</strong><br/>האחריות למוצר בהזמנה אישית תחול בהתאם לסעיף 2 לעיל, אולם לא תחול על פגמים, נזקים או סטיות הנובעים מהמפרט שנמסר על ידי הלקוח, מההדמיה שאושרה על ידו, או מהתאמות שבוצעו על פי בקשתו.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>11. הובלה ואיסוף עצמי</strong><br/>החברה מציעה ללקוח שירותי הובלה באמצעות מובילים חיצוניים, כמחווה שירותית בלבד. מובהר כי המוביל אינו עובד של חברת ד.ש. לוגיסטיקה ואינו פועל מטעמה, ועל כן החברה לא תישא בכל אחריות לנזקים או איחורים הנובעים מפעולות המוביל. עלות ההובלה תחול על הלקוח ותיקבע בהתאם למרחק ומיקום ההובלה. הלקוח רשאי לבחור באיסוף עצמי ממחסני החברה.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>12. אספקת בר ביניים (פתרון זמני)</strong><br/>כחלק מהשירות ללקוח, החברה רשאית לספק ללקוח בר ביניים שלם לשימוש זמני, עד לאספקת הבר המוזמן בייצור אישי. השימוש בבר הביניים ניתן ללא עלות נוספת בגין המוצר עצמו, אולם עלויות ההובלה והשינוע של בר זה יחולו על הלקוח בלבד. הלקוח מצהיר ומתחייב כי כל נזק שייגרם לבר הביניים במהלך תקופת השימוש בו יהיה באחריותו הבלעדית. עם הגעת הבר המוזמן, מתחייב הלקוח להשיב לחברה את בר הביניים באופן מיידי כשהוא תקין.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>13. כוח עליון</strong><br/>החברה לא תישא באחריות לאי־קיום או לעיכוב בקיום התחייבויותיה עקב אירועים שאינם בשליטתה.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>14. תחולת דין ושיפוט</strong><br/>הסכם זה וכל הנובע ממנו יפורשו ויפורטו לפי דיני מדינת ישראל בלבד. סמכות השיפוט הבלעדית תהא נתונה לבית המשפט המוסמך במחוז תל אביב-מרכז.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>15. סודיות ואי־גילוי</strong><br/>הצדדים מתחייבים לשמור בסודיות כל מידע עסקי, טכני או מסחרי שיתגלה להם.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>16. תקשורת בין הצדדים</strong><br/>כל הודעה תימסר בכתב, באמצעות דוא"ל, דואר רשום, וואטסאפ או כל אמצעי תקשורת אחר שהוסכם.
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>17. שונות</strong><br/>א. כותרות הסעיפים נועדו לנוחות בלבד.<br/>ב. כל שינוי או תוספת ייעשו באישור שני הצדדים.
+                    </div>
+                  </div>
+
+                  {/* Order Details */}
+                  <div style={{ marginTop: '25px', background: 'rgba(255,255,255,0.6)', padding: '15px', border: '1px solid #ddd', fontSize: '13.5px' }}>
+                    <strong style={{ fontSize: '14px' }}>18. פירוט הזמנה</strong>
+                    <ul style={{ margin: '10px 0', paddingRight: '20px' }}>
+                        {quoteData.items.map((item: any, idx: number) => (
+                           <li key={idx} style={{ marginBottom: '5px' }}>שם דגם: {item.model}, כמות: {item.qty}, מחיר יחידה: {Number(item.price).toLocaleString()} ש"ח + מע"מ
+                             {item.customNotes && <div style={{ fontSize: '12px', color: '#555', marginTop: '2px' }}>הערות לדגם: {item.customNotes}</div>}
+                           </li>
+                        ))}
+                        {(quoteData.shippingCost > 0) && (
+                          <li style={{ marginBottom: '5px', marginTop: '10px', fontWeight: 'bold' }}>עלות משלוח: {Number(quoteData.shippingCost).toLocaleString()} ש"ח + מע"מ</li>
+                        )}
+                    </ul>
+                    <div style={{ marginTop: '15px', fontWeight: 'bold', fontSize: '15px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
+                        {(() => {
+                           const itemsTotal = quoteData.items.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0);
+                           const grandTotal = itemsTotal + Number(quoteData.shippingCost || 0);
+                           return (
+                               <>
+                                סה"כ לתשלום לפני מע"מ: {grandTotal.toLocaleString()} ש"ח<br/>
+                                סה"כ לתשלום כולל מע"מ (17%): {(grandTotal * 1.17).toLocaleString()} ש"ח
+                               </>
+                           );
+                        })()}
+                    </div>
+                  </div>
+
+                  {/* Mockups */}
+                  {quoteData.items.some((item: any) => settings.models[item.model]?.blueprintUrl || settings.models[item.model]?.itemImgUrl) && (
+                    <div style={{ marginTop: '30px', fontSize: '13.5px', pageBreakInside: 'avoid' }}>
+                      <strong style={{ fontSize: '14px' }}>19. הדמיות מאושרות</strong><br/>
+                      להלן סרטוטים ותמונות הדמיה עבור הפריטים שהוזמנו:
+                      
+                      {quoteData.items.map((item: any, idx: number) => {
+                         const modelSettings = settings.models[item.model] || {};
+                         if (!modelSettings.blueprintUrl && !modelSettings.itemImgUrl) return null;
+                         
+                         return (
+                             <div key={idx} style={{ marginTop: '20px', borderTop: idx > 0 ? '1px dashed #ccc' : 'none', paddingTop: idx > 0 ? '20px' : '0' }}>
+                                 <h4 style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '14px', color: '#c91028' }}>דגם {item.model}</h4>
+                                 <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                     {modelSettings.blueprintUrl && (
+                                         <div style={{ textAlign: 'center', flex: '1', minWidth: '200px' }}>
+                                            <p style={{ fontWeight: 'bold', marginBottom: '5px', fontSize: '12px' }}>סרטוט טכני:</p>
+                                            <img src={modelSettings.blueprintUrl} crossOrigin="anonymous" alt={`סרטוט ${item.model}`} style={{ maxWidth: '100%', maxHeight: '200px', border: '1px solid #ccc', boxShadow: '2px 2px 5px rgba(0,0,0,0.1)' }} />
+                                         </div>
+                                     )}
+                                     {modelSettings.itemImgUrl && (
+                                         <div style={{ textAlign: 'center', flex: '1', minWidth: '200px' }}>
+                                            <p style={{ fontWeight: 'bold', marginBottom: '5px', fontSize: '12px' }}>הדמיית העמדה:</p>
+                                            <img src={modelSettings.itemImgUrl} crossOrigin="anonymous" alt={`הדמיה ${item.model}`} style={{ maxWidth: '100%', maxHeight: '200px', border: '1px solid #ccc', boxShadow: '2px 2px 5px rgba(0,0,0,0.1)' }} />
+                                         </div>
+                                     )}
+                                 </div>
+                             </div>
+                         );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Signatures */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '50px', pageBreakInside: 'avoid' }}>
+                      <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
+                          <strong>שם וחתימת הלקוח ({quoteData.customer.contactName})</strong>
+                      </div>
+                      <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
+                          <strong>שם וחתימת נציג ד.ש. לוגיסטיקה<br/>(שחף שלום / דניאל יוסף)</strong>
+                      </div>
+                  </div>
+
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* 1. Item Edit / New Sale Modal */}
       {isItemModalOpen && editingData && (
@@ -1161,7 +1557,6 @@ export default function App() {
                   {campaigns.filter(c => {
                     const isStarted = !c.startDate || c.startDate <= todayStr;
                     const isNotTooOld = !c.endDate || c.endDate >= thirtyDaysAgoStr;
-                    // הצג קמפיין אם הוא התחיל ולא עברו 30 יום מסיומו, *או* אם הוא כבר משויך לפריט הזה מקודם (כדי למנוע איבוד מידע בעריכה)
                     return (isStarted && isNotTooOld) || c.id === editingData.campaignId;
                   }).map(c => {
                     const isCurrentlyActive = (!c.startDate || c.startDate <= todayStr) && (!c.endDate || c.endDate >= todayStr);
