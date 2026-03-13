@@ -185,7 +185,7 @@ export default function App() {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        // כיווץ התמונה כדי שלא תתפוס הרבה מקום במסד הנתונים
+        // כיווץ התמונה
         const maxDim = 600; 
 
         if (width > height) {
@@ -204,14 +204,13 @@ export default function App() {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          // רקע לבן לתמונות עם שקיפות
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          // אנחנו שומרים את התמונה כפי שהיא ללא מילוי רקע לבן,
+          // כך שאם התמונה שקופה (PNG), השקיפות תישמר במלואה.
           ctx.drawImage(img, 0, 0, width, height);
         }
         
-        // המרה ל-JPEG באיכות 70%
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
+        // המרה ל-PNG לשמירה על שקיפות לוגו/תמונות
+        const dataUrl = canvas.toDataURL('image/png'); 
         callback(dataUrl);
       };
       img.src = event.target?.result as string;
@@ -420,7 +419,7 @@ export default function App() {
         'שם החברה', 'שם חברה', 'אימייל לקבלת מסמכים', 'אימייל לקבלת חשבונית', 'כתובת העסק',
         'כתובת מייל', 'איש קשר', 'חברה', 'סוג העסק', 'סוג עסק', 'עוסק מורשה', 'עוסק פטור',
         'טלפון נייד', 'מספר טלפון', 'סלולרי', 'אימייל', 'מייל', 'דוא"ל', 'דואל', 'טלפון',
-        'נייד', 'ח.פ', 'חפ', 'כתובת', 'מיקום', 'עיר', 'סוג', 'שם'
+        'נייד', 'ח.פ.', 'ח.פ', 'חפ', 'כתובת', 'מיקום', 'עיר', 'סוג', 'שם'
       ];
 
       // מיון חכם כדי למצוא קודם את הביטויים הארוכים
@@ -668,6 +667,7 @@ export default function App() {
         newCustomerId = docRef.id;
       }
       setIsCustomerModalOpen(false);
+      // שיוך אוטומטי של הלקוח החדש למודלים שפתוחים ברקע (מכירה או הצעת מחיר)
       if (isItemModalOpen) {
         setEditingData((prev: any) => ({...prev, customerId: newCustomerId}));
       }
@@ -722,7 +722,7 @@ export default function App() {
     setIsSaving(false);
   };
 
-  // --- Quote Generation Handler ---
+  // --- Quote Generation Handler (Multi-page support added) ---
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
       if (!quoteData?.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
@@ -740,10 +740,25 @@ export default function App() {
       
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
       
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      const pdfWidth = 210; // רוחב דף A4 במילימטרים
+      const pageHeight = 297; // גובה דף A4 במילימטרים
+      const imgHeight = (canvas.height * pdfWidth) / canvas.width; // חישוב הגובה המלא של התמונה
+      let heightLeft = imgHeight;
+      let position = 0;
+      
+      // דף ראשון
+      pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
+      heightLeft -= pageHeight;
+      
+      // הוספת דפים נוספים במקרה והתוכן גולש (למשל סעיפים או הרבה תמונות)
+      while (heightLeft > 0) {
+        position -= pageHeight; // מזיזים את תחילת ההדפסה למעלה כדי להדפיס את ההמשך
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
       pdf.save(`הצעת_מחיר_${currentCustomer.businessName || currentCustomer.contactName || 'לקוח'}.pdf`);
     } catch (error) {
       console.error("שגיאה ביצירת PDF:", error);
@@ -1292,7 +1307,7 @@ export default function App() {
                 <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-bold text-purple-900">בחר לקוח / ליד</label>
-                    <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח</button>
+                    <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח</button>
                   </div>
                   <select className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500" value={quoteData.customerId || ''} onChange={e => setQuoteData({...quoteData, customerId: e.target.value})}>
                     <option value="">-- בחר לקוח מהרשימה --</option>
@@ -1365,7 +1380,7 @@ export default function App() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #c91028', paddingBottom: '15px' }}>
                     <div style={{ width: '200px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
                       {settings.companyLogoUrl ? (
-                        <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', mixBlendMode: 'multiply' }} crossOrigin="anonymous" />
+                        <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
                       ) : (
                         <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>D.S Logistics</div>
                       )}
