@@ -64,6 +64,10 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isFabOpen, setIsFabOpen] = useState(false);
   
+  // Quick Import States
+  const [showQuickImport, setShowQuickImport] = useState(false);
+  const [quickImportText, setQuickImportText] = useState('');
+
   const [newModelName, setNewModelName] = useState('');
   const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -163,7 +167,11 @@ export default function App() {
     });
 
     const customerStats: any = {};
-    customers.forEach(c => { customerStats[c.id] = { itemCount: 0, totalRevenue: 0, name: c.name, phone: c.phone, activeWarranties: 0 }; });
+    customers.forEach(c => { 
+      // שולף את שם העסק, ואם אין אז את שם איש הקשר, ואם מדובר בלקוח ישן אז את השם הכללי
+      const displayName = c.businessName || c.contactName || c.name || 'לקוח ללא שם';
+      customerStats[c.id] = { itemCount: 0, totalRevenue: 0, name: displayName, phone: c.phone, activeWarranties: 0 }; 
+    });
 
     let inWarehouseCount = 0;
     let totalInventoryValueILS = 0;
@@ -329,6 +337,49 @@ export default function App() {
       setIsSaving(false);
     };
 
+  const processQuickImport = () => {
+    if (!quickImportText.trim()) return;
+
+    // הפונקציה תחלץ טקסט שנמצא אחרי מספר, נקודה, ואופציונלית טקסט עם נקודתיים
+    const extractField = (num: number) => {
+      const regex = new RegExp(`^\\s*${num}[.\\-)]?(?:[^:\\n]*:)?\\s*(.*)`, 'im');
+      const match = quickImportText.match(regex);
+      return match ? match[1].trim() : '';
+    };
+
+    const contactName = extractField(1);
+    const businessName = extractField(2);
+    const companyName = extractField(3);
+    const businessTypeStr = extractField(4);
+    const hp = extractField(5);
+    const email = extractField(6);
+    const phone = extractField(7);
+    const address = extractField(8);
+
+    // זיהוי חכם של סוג העסק מתוך הטקסט
+    let businessType = customerEditingData?.businessType || 'bar';
+    if (businessTypeStr) {
+      if (businessTypeStr.includes('בר')) businessType = 'bar';
+      else if (businessTypeStr.includes('מסעדה')) businessType = 'restaurant';
+      else if (businessTypeStr.includes('אולם')) businessType = 'event_hall';
+      else businessType = 'other';
+    }
+
+    setCustomerEditingData((prev: any) => ({
+      ...prev,
+      contactName: contactName || prev.contactName,
+      businessName: businessName || prev.businessName,
+      companyName: companyName || prev.companyName,
+      businessType: businessType,
+      hp: hp || prev.hp,
+      email: email || prev.email,
+      phone: phone || prev.phone,
+      address: address || prev.address
+    }));
+
+    setShowQuickImport(false);
+    setQuickImportText('');
+  };
 
   const confirmShipmentStatusUpdate = async (shipment: any, newStatus: string, arrivalDate: string | null) => {
     setIsSaving(true);
@@ -846,7 +897,7 @@ export default function App() {
           <div>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-slate-800">ניהול לקוחות ולידים</h2>
-              <button onClick={() => { setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><UserPlus className="w-4 h-4"/> הוסף לקוח / ליד חדש</button>
+              <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><UserPlus className="w-4 h-4"/> הוסף לקוח / ליד חדש</button>
             </div>
 
             {/* Sub-navigation for Customers / Leads */}
@@ -893,7 +944,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <button onClick={() => { setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
+                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
                       </div>
@@ -1009,7 +1060,7 @@ export default function App() {
             <button onClick={() => { setIsFabOpen(false); setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 12, model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); setIsItemModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <ShoppingCart className="w-4 h-4 text-green-600"/> מכירה חדשה (עדכון מלאי)
             </button>
-            <button onClick={() => { setIsFabOpen(false); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+            <button onClick={() => { setIsFabOpen(false); setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <UserPlus className="w-4 h-4 text-purple-600"/> הוספת לקוח / ליד
             </button>
             <button onClick={() => { setIsFabOpen(false); setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
@@ -1080,7 +1131,7 @@ export default function App() {
                 <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-bold text-purple-900">שיוך ללקוח רוכש</label>
-                    <button type="button" onClick={() => { setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח חדש</button>
+                    <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"><Plus className="w-3 h-3"/> הוסף לקוח חדש</button>
                   </div>
                   <select className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500" value={editingData.customerId || ''} onChange={e => setEditingData({...editingData, customerId: e.target.value})}>
                     <option value="">-- ללא שיוך לקוח -- (לא מומלץ)</option>
@@ -1177,10 +1228,37 @@ export default function App() {
       {isCustomerModalOpen && customerEditingData && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><UserPlus className="w-5 h-5 text-indigo-600"/> {customerEditingData.id ? 'עריכת פרטי לקוח' : 'הוספת לקוח/ליד חדש'}</h3>
               <button onClick={() => setIsCustomerModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
+
+            {/* QUICK IMPORT SECTION */}
+            <div className="px-6 pt-5 pb-0">
+              {!showQuickImport ? (
+                <button type="button" onClick={() => setShowQuickImport(true)} className="w-full bg-green-50 border border-green-200 text-green-700 py-2.5 rounded-md text-sm font-bold flex justify-center items-center gap-2 hover:bg-green-100 transition-colors">
+                  <Sparkles className="w-4 h-4"/> הדבקה חכמה של לקוח מוואטסאפ (ייבוא מהיר)
+                </button>
+              ) : (
+                <div className="bg-green-50 border border-green-200 p-4 rounded-md space-y-3 animate-in fade-in slide-in-from-top-2">
+                  <div className="flex justify-between items-center">
+                     <label className="text-sm font-bold text-green-800">הדבק כאן את הודעת הוואטסאפ (לפי סדר המספרים 1 עד 8):</label>
+                     <button type="button" onClick={() => setShowQuickImport(false)} className="text-green-600 hover:text-green-800 bg-green-100 p-1 rounded-md"><X className="w-4 h-4"/></button>
+                  </div>
+                  <textarea
+                    className="w-full border border-green-300 rounded p-3 text-sm focus:ring-green-500 min-h-[120px] bg-white outline-none"
+                    placeholder={`1. שם איש הקשר\n2. שם הבר / מסעדה\n3. שם החברה\n4. סוג העסק (בר, מסעדה, אולם, אחר)\n5. ח.פ\n6. אימייל\n7. טלפון\n8. כתובת`}
+                    value={quickImportText}
+                    onChange={e => setQuickImportText(e.target.value)}
+                    dir="rtl"
+                  />
+                  <button type="button" onClick={processQuickImport} className="bg-green-600 text-white px-4 py-2.5 rounded-md text-sm font-bold w-full hover:bg-green-700 shadow-sm">
+                    חלץ פרטים ומלא את הטופס
+                  </button>
+                </div>
+              )}
+            </div>
+
              <form onSubmit={saveCustomer} className="p-6 space-y-6">
                 
                 {/* Contact Info Section */}
@@ -1189,11 +1267,11 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium mb-1">שם איש הקשר <span className="text-red-500">*</span></label>
-                      <input required type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.contactName} onChange={e => setCustomerEditingData({...customerEditingData, contactName: e.target.value})} placeholder="שם מלא" />
+                      <input required type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.contactName} onChange={e => setCustomerEditingData({...customerEditingData, contactName: e.target.value})} placeholder="שם מלא" />
                     </div>
                     <div>
                       <label className="block text-sm font-medium mb-1">מספר טלפון של איש הקשר</label>
-                      <input type="tel" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.phone} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000" dir="ltr" />
+                      <input type="tel" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.phone} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000" dir="ltr" />
                     </div>
                   </div>
                 </div>
@@ -1205,18 +1283,18 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">שם העסק</label>
-                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.businessName} onChange={e => setCustomerEditingData({...customerEditingData, businessName: e.target.value})} placeholder="שם המותג/העסק" />
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.businessName} onChange={e => setCustomerEditingData({...customerEditingData, businessName: e.target.value})} placeholder="שם המותג/העסק" />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">שם החברה</label>
-                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.companyName} onChange={e => setCustomerEditingData({...customerEditingData, companyName: e.target.value})} placeholder="שם חברה משפטי" />
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.companyName} onChange={e => setCustomerEditingData({...customerEditingData, companyName: e.target.value})} placeholder="שם חברה משפטי" />
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">סוג העסק</label>
-                      <select className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.businessType || 'bar'} onChange={e => setCustomerEditingData({...customerEditingData, businessType: e.target.value})}>
+                      <select className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.businessType || 'bar'} onChange={e => setCustomerEditingData({...customerEditingData, businessType: e.target.value})}>
                         <option value="bar">בר</option>
                         <option value="restaurant">מסעדה</option>
                         <option value="event_hall">אולם אירועים</option>
@@ -1225,7 +1303,7 @@ export default function App() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">ח.פ / עוסק מורשה</label>
-                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.hp} onChange={e => setCustomerEditingData({...customerEditingData, hp: e.target.value})} placeholder="מספר ח.פ" dir="ltr" />
+                      <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.hp} onChange={e => setCustomerEditingData({...customerEditingData, hp: e.target.value})} placeholder="מספר ח.פ" dir="ltr" />
                     </div>
                   </div>
                 </div>
@@ -1234,7 +1312,7 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס (ידני)</label>
-                    <select className="border border-slate-300 p-2.5 rounded-md w-full bg-slate-50 font-medium" value={customerEditingData.status} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
+                    <select className="border border-slate-300 p-2.5 rounded-md w-full bg-slate-50 font-medium focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.status} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
                       <option value="lead">ליד (מתעניין)</option>
                       <option value="active">לקוח (רוכש)</option>
                       <option value="past">לקוח עבר</option>
@@ -1243,18 +1321,18 @@ export default function App() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">אימייל לקבלת מסמכים</label>
-                    <input type="email" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.email} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} placeholder="email@example.com" dir="ltr" />
+                    <input type="email" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.email} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} placeholder="email@example.com" dir="ltr" />
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">כתובת העסק</label>
-                  <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white" value={customerEditingData.address} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, עיר (למשלוח והתקנה)" />
+                  <input type="text" className="border border-slate-300 p-2.5 rounded-md w-full bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.address} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, עיר (למשלוח והתקנה)" />
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">הערות נוספות</label>
-                  <textarea className="border border-slate-300 p-2.5 rounded-md w-full min-h-[80px] bg-white" value={customerEditingData.notes} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="דרישות מיוחדות, סיכומים..."></textarea>
+                  <textarea className="border border-slate-300 p-2.5 rounded-md w-full min-h-[80px] bg-white focus:ring-indigo-500 focus:border-indigo-500" value={customerEditingData.notes} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="דרישות מיוחדות, סיכומים..."></textarea>
                 </div>
 
                 <div className="flex gap-3 mt-6 pt-6 border-t border-slate-200">
