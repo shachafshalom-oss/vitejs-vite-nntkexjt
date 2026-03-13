@@ -739,6 +739,7 @@ export default function App() {
         date: quoteData.date,
         items: quoteData.items,
         shippingCost: quoteData.shippingCost,
+        campaignId: quoteData.campaignId || '', // נשמר עבור השיוך לקמפיין
         status: 'issued', // סטטוס התחלתי
         createdAt: new Date().toISOString()
       };
@@ -806,7 +807,7 @@ export default function App() {
       salePrice: item.price,
       saleDate: todayStr,
       warrantyMonths: 12,
-      campaignId: '',
+      campaignId: quote.campaignId || '', // מושך אוטומטית את הקמפיין שהוגדר בהצעה
       processed: 0 // מעקב כמה כבר נגרעו מתוך הכמות
     }));
 
@@ -902,27 +903,15 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
-          
-          {/* Logo / Title (Right) */}
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-6 w-6 text-indigo-700" /></div>
             <h1 className="text-xl font-bold text-slate-800 hidden sm:block">D.S Logistics CRM</h1>
           </div>
-
-          {/* Centered Company Logo */}
-          {settings.companyLogoUrl && (
-            <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 h-10 w-auto">
-              <img src={settings.companyLogoUrl} alt="Company Logo" className="h-full w-full object-contain" crossOrigin="anonymous" />
-            </div>
-          )}
-
-          {/* User / Logout (Left) */}
           <div className="flex items-center gap-4">
             <span className="text-sm text-slate-500 hidden md:inline">{user.email}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
-
         </div>
         <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50">
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
@@ -1009,7 +998,7 @@ export default function App() {
           <div>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-slate-800">מאגר הצעות מחיר</h2>
-              <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><Plus className="w-4 h-4"/> הצעת מחיר חדשה</button>
+              <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); setIsQuoteModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"><Plus className="w-4 h-4"/> הצעת מחיר חדשה</button>
             </div>
             
             <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
@@ -1298,7 +1287,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הפק הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הפק הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -1426,7 +1415,7 @@ export default function App() {
             <button onClick={() => { setIsFabOpen(false); setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); setIsCustomerModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <UserPlus className="w-4 h-4 text-purple-600"/> הוספת לקוח / ליד
             </button>
-            <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr }); setIsQuoteModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+            <button onClick={() => { setIsFabOpen(false); setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); setIsQuoteModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
               <FileText className="w-4 h-4 text-blue-500"/> הצעת מחיר חדשה
             </button>
             <button onClick={() => { setIsFabOpen(false); setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); }} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
@@ -1586,6 +1575,20 @@ export default function App() {
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-1">עלות משלוח כוללת (₪ לפני מע"מ)</label>
                   <input type="number" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.shippingCost || 0} onChange={e => setQuoteData({...quoteData, shippingCost: Number(e.target.value)})} />
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mt-4">
+                  <label className="block text-sm font-bold text-slate-700 mb-2">שיוך לקמפיין שיווקי (פנימי, לא יופיע ב-PDF)</label>
+                  <select className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteData.campaignId || ''} onChange={e => setQuoteData({...quoteData, campaignId: e.target.value})}>
+                    <option value="">ללא שיוך קמפיין</option>
+                    {campaigns.filter(c => {
+                      const isStarted = !c.startDate || c.startDate <= todayStr;
+                      const isNotTooOld = !c.endDate || c.endDate >= thirtyDaysAgoStr;
+                      return isStarted && isNotTooOld;
+                    }).map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF || !quoteData.customerId} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
