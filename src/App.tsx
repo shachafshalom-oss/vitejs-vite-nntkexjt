@@ -204,8 +204,7 @@ export default function App() {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          // אנחנו שומרים את התמונה כפי שהיא ללא מילוי רקע לבן,
-          // כך שאם התמונה שקופה (PNG), השקיפות תישמר במלואה.
+          ctx.clearRect(0, 0, width, height); // ניקוי קנבס למניעת רקע
           ctx.drawImage(img, 0, 0, width, height);
         }
         
@@ -409,10 +408,8 @@ export default function App() {
     const lines = quickImportText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
     const cleanLine = (line: string) => {
-      // 1. הסרת מספור ורווחים מיותרים בתחילת שורה (כמו "1." או "1-")
       let cleaned = line.replace(/^\s*\d+[\.\-\)]?\s*/, '');
       
-      // רשימת כל הכותרות האפשריות (מסודרות מהארוך לקצר כדי למנוע חיתוך חלקי)
       const labelKeywords = [
         'שם איש הקשר', 'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'שם הבר/מסעדה', 'שם הבר\\מסעדה', 
         'שם הבר / מסעדה', 'שם הבר \\ מסעדה', 'שם הבר', 'שם המסעדה', 'שם העסק', 'שם עסק',
@@ -422,12 +419,10 @@ export default function App() {
         'נייד', 'ח.פ.', 'ח.פ', 'חפ', 'כתובת', 'מיקום', 'עיר', 'סוג', 'שם'
       ];
 
-      // מיון חכם כדי למצוא קודם את הביטויים הארוכים
       labelKeywords.sort((a, b) => b.length - a.length);
 
       let matchedKeyword = '';
       for (const kw of labelKeywords) {
-        // בודקים אם השורה מתחילה באחת ממילות המפתח
         if (cleaned.toLowerCase().startsWith(kw.toLowerCase())) {
           matchedKeyword = kw;
           break;
@@ -435,12 +430,9 @@ export default function App() {
       }
 
       if (matchedKeyword) {
-        // מורידים את מילת המפתח שמצאנו מההתחלה
         cleaned = cleaned.substring(matchedKeyword.length).trim();
-        // מורידים סימני פיסוק שנשארו מיד אחרי המילה (כמו :, -, או פסיק)
         cleaned = cleaned.replace(/^[\:\-\,]\s*/, '');
       } else {
-        // מנגנון גיבוי למקרה שהלקוח השתמש בנקודתיים או מקף עם מילה שלא זיהינו
         if (cleaned.includes(':')) {
           const parts = cleaned.split(':');
           if (parts[0].length < 30) cleaned = parts.slice(1).join(':').trim();
@@ -456,7 +448,6 @@ export default function App() {
       return cleaned.trim();
     };
 
-    // מריצים את הניקוי על כל השורות
     const fields = lines.map(cleanLine);
 
     const contactName = fields[0] || '';
@@ -722,7 +713,7 @@ export default function App() {
     setIsSaving(false);
   };
 
-  // --- Quote Generation Handler (Multi-page support added) ---
+  // --- Quote Generation Handler (Continuous Single Page PDF) ---
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
       if (!quoteData?.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
@@ -739,26 +730,17 @@ export default function App() {
       });
       
       const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      
       const pdfWidth = 210; // רוחב דף A4 במילימטרים
-      const pageHeight = 297; // גובה דף A4 במילימטרים
-      const imgHeight = (canvas.height * pdfWidth) / canvas.width; // חישוב הגובה המלא של התמונה
-      let heightLeft = imgHeight;
-      let position = 0;
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width; // חישוב גובה מותאם בדיוק לתוכן
       
-      // דף ראשון
-      pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
-      heightLeft -= pageHeight;
+      // יצירת מסמך PDF שמורכב מדף אחד ארוך ורציף בהתאם לתוכן (למניעת קווים בין דפים)
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: [pdfWidth, pdfHeight]
+      });
       
-      // הוספת דפים נוספים במקרה והתוכן גולש (למשל סעיפים או הרבה תמונות)
-      while (heightLeft > 0) {
-        position -= pageHeight; // מזיזים את תחילת ההדפסה למעלה כדי להדפיס את ההמשך
-        pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
-        heightLeft -= pageHeight;
-      }
-      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`הצעת_מחיר_${currentCustomer.businessName || currentCustomer.contactName || 'לקוח'}.pdf`);
     } catch (error) {
       console.error("שגיאה ביצירת PDF:", error);
@@ -1240,7 +1222,7 @@ export default function App() {
               </div>
               {settings.companyLogoUrl && (
                 <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
-                  <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain mix-blend-multiply"/>
+                  <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
                   <button onClick={() => setSettings({...settings, companyLogoUrl: ''})} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
                 </div>
               )}
