@@ -410,22 +410,36 @@ export default function App() {
     const lines = quickImportText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
     const cleanLine = (line: string) => {
+      // 1. ניקוי מספור בהתחלה (1. , 1- , 1) וכו')
       let cleaned = line.replace(/^\d+[\.\-\)]?\s*/, '');
-      if (cleaned.includes(':')) {
-        const parts = cleaned.split(':');
-        if (parts[0].length < 30) {
-          cleaned = parts.slice(1).join(':').trim();
-        }
-      } else if (cleaned.includes('-')) {
-        const labelKeywords = ['שם', 'קשר', 'עסק', 'בר', 'מסעדה', 'חברה', 'סוג', 'ח.פ', 'חפ', 'עוסק', 'אימייל', 'מייל', 'דוא"ל', 'דואל', 'טלפון', 'נייד', 'כתובת', 'מיקום'];
-        const parts = cleaned.split('-');
-        const firstPart = parts[0].trim();
-        const hasKeyword = labelKeywords.some(kw => firstPart.includes(kw));
-        
-        if (hasKeyword && firstPart.length < 35) {
-          cleaned = parts.slice(1).join('-').trim();
+      
+      // רשימת מילות מפתח אפשריות לכותרות
+      const labelKeywords = [
+        'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'איש קשר', 'שם',
+        'שם עסק', 'שם העסק', 'שם הבר', 'שם המסעדה', 'שם חברה', 'חברה',
+        'סוג העסק', 'סוג עסק', 'סוג',
+        'ח.פ', 'חפ', 'עוסק מורשה', 'עוסק פטור',
+        'אימייל', 'מייל', 'דוא"ל', 'דואל', 'כתובת מייל',
+        'טלפון', 'מספר טלפון', 'נייד', 'סלולרי',
+        'כתובת', 'כתובת העסק', 'מיקום', 'עיר'
+      ];
+
+      // 2. חיפוש כותרות גם בלי נקודתיים או מקף
+      let matchedKeyword = '';
+      for (const kw of labelKeywords) {
+        if (cleaned.startsWith(kw)) {
+          matchedKeyword = kw;
+          break; // מצאנו את הכותרת הכי ארוכה/מתאימה בהתחלה
         }
       }
+
+      if (matchedKeyword) {
+        // מוריד את מילת המפתח מההתחלה
+        cleaned = cleaned.substring(matchedKeyword.length).trim();
+        // מוריד סימני פיסוק שאולי נשארו (נקודתיים או מקף אחרי המילה)
+        cleaned = cleaned.replace(/^[\:\-]\s*/, '');
+      }
+
       return cleaned.trim();
     };
 
