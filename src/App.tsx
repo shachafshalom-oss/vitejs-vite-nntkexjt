@@ -164,7 +164,6 @@ export default function App() {
       setLoading(false);
     });
 
-
     return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); };
   }, [user]);
 
@@ -912,20 +911,20 @@ export default function App() {
           </div>
 
           {/* Centered Company Logo */}
-          {settings.companyLogoUrl && (
-            <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 h-10 w-auto">
-              <img src={settings.companyLogoUrl} alt="Company Logo" className="h-full w-full object-contain" crossOrigin="anonymous" />
+          {settings?.companyLogoUrl && (
+            <div className="absolute inset-0 flex justify-center items-center pointer-events-none">
+              <img src={settings.companyLogoUrl} alt="Company Logo" className="max-h-12 w-auto object-contain pointer-events-auto" crossOrigin="anonymous" />
             </div>
           )}
 
           {/* User / Logout (Left) */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 relative z-10">
             <span className="text-sm text-slate-500 hidden md:inline">{user.email}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
 
         </div>
-        <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50">
+        <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50 relative z-10">
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
             {[
               { id: 'dashboard', icon: Activity, label: 'דשבורד' },
@@ -1116,7 +1115,7 @@ export default function App() {
                 ))}
               </div>
               <div className="mt-6 flex justify-end">
-                <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור שינויים בדגמים</button>
+                <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור הגדרות (לוגו ודגמים)</button>
               </div>
             </div>
           </div>
