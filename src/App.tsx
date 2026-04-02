@@ -586,6 +586,9 @@ export default function App() {
       };
     });
 
+    // --- הוספת השורה החסרה שכאן גרמה למסך הלבן ---
+    const allModelsForForecast = Array.from(new Set([...modelsList, ...items.map(i => i.model)]));
+
     const forecasts = allModelsForForecast.map((model: any) => {
       const stock = stockInWarehouse[model] || 0;
       const onTheWay = stockOnTheWay[model] || 0;
