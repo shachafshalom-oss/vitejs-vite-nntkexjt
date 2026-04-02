@@ -584,6 +584,7 @@ export default function App() {
       };
     });
 
+    const allModelsForForecast = Array.from(new Set([...modelsList, ...items.map(i => i.model)]));
     const forecasts = allModelsForForecast.map((model: any) => {
       const stock = stockInWarehouse[model] || 0;
       const onTheWay = stockOnTheWay[model] || 0;
@@ -2244,7 +2245,7 @@ export default function App() {
                       onClick={() => { 
                         setShowQuickImport(false); 
                         setQuickImportText(''); 
-                        setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); 
+                        setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'active', hp: '', email: '', address: '', status: 'active', notes: '' }); 
                         setIsCustomerModalOpen(true); 
                       }} 
                       className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"
