@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 // ==========================================
-// 1. הגדרות FIREBASE פרטיות
+// 1. הגדרות FIREBASE פרטיות (מאובטח דרך משתני סביבה)
 // ==========================================
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -18,6 +18,7 @@ const firebaseConfig = {
   appId: "1:745458915751:web:12dff3d86b6e97479cbe82",
   measurementId: "G-HF46RL74F7"
 };
+
 // ==========================================
 // 2. מפתח GEMINI (אופציונלי)
 // ==========================================
@@ -32,7 +33,13 @@ const db = getFirestore(app);
 const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
 const SHIPMENT_STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'הגיע למחסן' };
 const STATUS_COLORS: Record<string, string> = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800' };
-const QUOTE_STATUS_MAP: Record<string, string> = { 'pending': 'ממתינה לאישור', 'approved': 'מאושרת', 'rejected': 'נדחתה' };
+
+const QUOTE_STATUS_MAP: Record<string, string> = { 
+  'pending': 'ממתינה לאישור', 
+  'approved': 'מאושרת (מלאי נגרע)', 
+  'approved_no_stock': 'מאושרת (ללא גריעת מלאי)',
+  'rejected': 'נדחתה' 
+};
 
 const defaultSettings: any = { 
   models: { 
@@ -83,6 +90,7 @@ export default function App() {
   
   // Finance States
   const [financeYear, setFinanceYear] = useState<number>(new Date().getFullYear());
+  const [financeMonth, setFinanceMonth] = useState<number>(new Date().getMonth() + 1);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseData, setExpenseData] = useState<any>({ title: '', amount: 0, type: 'variable', startDate: new Date().toISOString().split('T')[0], installments: 1 });
 
@@ -120,7 +128,6 @@ export default function App() {
 
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
 
   // --- Auth & Data Fetching ---
   useEffect(() => {
@@ -244,21 +251,24 @@ export default function App() {
         const dataUrl = canvas.toDataURL('image/png'); 
         callback(dataUrl);
       };
-      if (event.target?.result) {
+      if (event.target && event.target.result) {
         img.src = event.target.result as string;
       }
     };
     reader.readAsDataURL(file);
   };
 
-  // --- Core Calculations (Inventory, Customers, Finance) ---
+  // --- Core Calculations (Inventory, Customers, Finance, Dashboard) ---
   const calculatedData = useMemo(() => {
     const shipmentStats: any = {};
     shipments.forEach(s => {
       const shippingTotalILS = (Number(s.shippingCostUSD) * Number(s.exchangeRate)) + Number(s.shippingCostILS);
       const totalCbm = Number(s.totalCbm);
       
-      const linesCostUSD = s.lines?.reduce((acc: number, l: any) => acc + (Number(l.qty) * Number(l.unitCostUSD)), 0) || 0;
+      let linesCostUSD = 0;
+      if (s.lines && Array.isArray(s.lines)) {
+         linesCostUSD = s.lines.reduce((acc: number, l: any) => acc + (Number(l.qty) * Number(l.unitCostUSD)), 0);
+      }
       const factoryTotalILS = linesCostUSD * Number(s.exchangeRate);
 
       shipmentStats[s.id] = {
@@ -286,7 +296,7 @@ export default function App() {
       const interestDate = c.createdAt ? new Date(c.createdAt).toLocaleDateString('he-IL') : '---';
       
       let lastContactDate = interestDate;
-      if (c.interactionLogs?.length > 0) {
+      if (c.interactionLogs && c.interactionLogs.length > 0) {
         lastContactDate = new Date(c.interactionLogs[c.interactionLogs.length - 1].date).toLocaleDateString('he-IL');
       }
 
@@ -316,9 +326,15 @@ export default function App() {
     
     modelsList.forEach(m => { stockInWarehouse[m] = 0; stockOnTheWay[m] = 0; salesInLast30[m] = 0; });
 
+    // --- Finance Year Aggregation Setup ---
+    const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0 }));
+
     const enrichedItems = items.map(item => {
       const sStat = shipmentStats[item.shipmentId];
-      const cbm = settings.models?.[item.model]?.cbm || 0;
+      let cbm = 0;
+      if (settings.models && settings.models[item.model] && settings.models[item.model].cbm) {
+        cbm = settings.models[item.model].cbm;
+      }
       
       const factoryCostILS = sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0;
       const importCostILS = sStat ? (sStat.costPerCbmILS * cbm) : 0;
@@ -326,7 +342,7 @@ export default function App() {
       const addOnCostILS = Number(item.addOnCost) || 0;
       
       let marketingCostILS = 0;
-      if (item.campaignId && campaignStats[item.campaignId]?.itemCount > 0) {
+      if (item.campaignId && campaignStats[item.campaignId] && campaignStats[item.campaignId].itemCount > 0) {
         marketingCostILS = campaignStats[item.campaignId].cost / campaignStats[item.campaignId].itemCount;
       }
 
@@ -339,8 +355,19 @@ export default function App() {
       
       if (item.status === 'sold' && item.saleDate) {
           const saleMonthStr = item.saleDate.substring(0, 7);
+          
+          // Dashboard real-time tracking
           if (saleMonthStr === currentMonthStr) currentMonthIncome += totalRevenue;
           if (saleMonthStr === lastMonthStr) lastMonthIncome += totalRevenue;
+
+          // Add to monthly finance breakdown
+          const d = new Date(item.saleDate);
+          if (d.getFullYear() === financeYear) {
+            monthlyFinance[d.getMonth()].income += totalRevenue;
+            // הוספת עלויות תיקונים ותוספות (הוצאות בזמן מכירה) להוצאות אותו חודש אוטומטית
+            const itemSpecificCosts = (Number(item.repairCost) || 0) + (Number(item.addOnCost) || 0);
+            monthlyFinance[d.getMonth()].expense += itemSpecificCosts;
+          }
 
           if (item.warrantyMonths) {
             const saleDate = new Date(item.saleDate);
@@ -380,10 +407,17 @@ export default function App() {
       if (item.status === 'sold') {
         soldCount++; 
         totalProfit += profit;
-        if (item.saleDate && new Date(item.saleDate) >= thirtyDaysAgo) {
+        const thirtyDaysAgoLocal = new Date();
+        thirtyDaysAgoLocal.setDate(thirtyDaysAgoLocal.getDate() - 30);
+        if (item.saleDate && new Date(item.saleDate) >= thirtyDaysAgoLocal) {
           salesInLast30[item.model]++;
         }
       }
+
+      const shipmentName = (sStat && sStat.name) ? sStat.name : 'לא ידוע';
+      const shipmentStatus = (sStat && sStat.status) ? sStat.status : 'ordered';
+      const campaignName = (campaignStats[item.campaignId] && campaignStats[item.campaignId].name) ? campaignStats[item.campaignId].name : 'ללא';
+      const customerName = (customerStats[item.customerId] && customerStats[item.customerId].name) ? customerStats[item.customerId].name : 'לקוח כללי';
 
       return {
         ...item, 
@@ -393,10 +427,10 @@ export default function App() {
         totalLandedCost, 
         totalRevenue, 
         profit,
-        shipmentName: sStat?.name || 'לא ידוע', 
-        shipmentStatus: sStat?.status || 'ordered', 
-        campaignName: campaignStats[item.campaignId]?.name || 'ללא',
-        customerName: customerStats[item.customerId]?.name || 'לקוח כללי', 
+        shipmentName, 
+        shipmentStatus, 
+        campaignName,
+        customerName, 
         isWarrantyActive, 
         warrantyDaysLeft
       };
@@ -442,15 +476,21 @@ export default function App() {
     ));
     const availableModelsInStock = Object.keys(stockInWarehouse).filter(m => stockInWarehouse[m] > 0);
 
-    // --- Finance Year Aggregation ---
-    const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0 }));
+    // --- Finance Year Aggregation Setup ---
+    const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } }));
+    const currentYear = today.getFullYear();
+    const currentMonthNum = today.getMonth() + 1;
     
-    // 1. Income from Sales
+    // 1. Income from Sales & Costs per item (Repairs, Addons)
     enrichedItems.forEach(item => {
       if (item.status === 'sold' && item.saleDate) {
         const d = new Date(item.saleDate);
         if (d.getFullYear() === financeYear) {
           monthlyFinance[d.getMonth()].income += item.totalRevenue;
+          // הוספת עלויות תיקונים ותוספות (הוצאות בזמן מכירה) להוצאות אותו חודש אוטומטית
+          const itemSpecificCosts = (Number(item.repairCost) || 0) + (Number(item.addOnCost) || 0);
+          monthlyFinance[d.getMonth()].expense += itemSpecificCosts;
+          monthlyFinance[d.getMonth()].breakdowns.itemCosts += itemSpecificCosts;
         }
       }
     });
@@ -460,10 +500,23 @@ export default function App() {
        const d = new Date(s.arrivalDate || s.date);
        if (d.getFullYear() === financeYear) {
            monthlyFinance[d.getMonth()].expense += s.totalCostILS;
+           monthlyFinance[d.getMonth()].breakdowns.shipping += s.totalCostILS;
        }
     });
 
-    // 3. Custom Expenses
+    // 3. Expenses from Marketing Campaigns
+    campaigns.forEach(c => {
+       if (c.startDate) {
+          const cd = new Date(c.startDate);
+          if (cd.getFullYear() === financeYear) {
+             const mCost = (Number(c.totalCost) || 0);
+             monthlyFinance[cd.getMonth()].expense += mCost;
+             monthlyFinance[cd.getMonth()].breakdowns.marketing += mCost;
+          }
+       }
+    });
+
+    // 4. Custom Expenses (ידניות)
     expenses.forEach(exp => {
         const sd = new Date(exp.startDate);
         const amount = Number(exp.amount) || 0;
@@ -471,6 +524,7 @@ export default function App() {
         if (exp.type === 'variable') {
             if (sd.getFullYear() === financeYear) {
                 monthlyFinance[sd.getMonth()].expense += amount;
+                monthlyFinance[sd.getMonth()].breakdowns.manual += amount;
             }
         } else if (exp.type === 'fixed') {
             for (let i = 0; i < 12; i++) {
@@ -478,6 +532,7 @@ export default function App() {
                 const startMonth = new Date(sd.getFullYear(), sd.getMonth(), 1);
                 if (monthDate >= startMonth) {
                     monthlyFinance[i].expense += amount;
+                    monthlyFinance[i].breakdowns.manual += amount;
                 }
             }
         } else if (exp.type === 'installment') {
@@ -487,6 +542,7 @@ export default function App() {
                 const installmentDate = new Date(sd.getFullYear(), sd.getMonth() + i, 1);
                 if (installmentDate.getFullYear() === financeYear) {
                     monthlyFinance[installmentDate.getMonth()].expense += partAmount;
+                    monthlyFinance[installmentDate.getMonth()].breakdowns.manual += partAmount;
                 }
             }
         }
@@ -495,6 +551,15 @@ export default function App() {
     const yearlyIncome = monthlyFinance.reduce((sum, m) => sum + m.income, 0);
     const yearlyExpense = monthlyFinance.reduce((sum, m) => sum + m.expense, 0);
     const calculatedAvgProfit = soldCount > 0 ? Math.round(totalProfit / soldCount) : 0;
+
+    // Filter available months to display (don't show future months for current year)
+    const availableMonths = monthlyFinance.filter(m => {
+      if (financeYear > currentYear) return false;
+      if (financeYear < currentYear) return true;
+      return m.month <= currentMonthNum;
+    });
+
+    const selectedMonthData = monthlyFinance[financeMonth - 1] || { income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } };
 
     return { 
       enrichedItems, 
@@ -510,12 +575,14 @@ export default function App() {
       availableModelsInStock, 
       stockInWarehouse,
       monthlyFinance, 
+      availableMonths,
+      selectedMonthData,
       yearlyIncome, 
       yearlyExpense, 
       currentMonthIncome, 
       lastMonthIncome
     };
-  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, currentMonthStr, lastMonthStr]);
+  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr]);
 
   // --- Handlers ---
   const generateWithGemini = async (prompt: string) => {
@@ -525,7 +592,11 @@ export default function App() {
     try {
       const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
       const data = await res.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "לא נוצר טקסט.";
+      
+      if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
+        return data.candidates[0].content.parts[0].text;
+      }
+      return "לא נוצר טקסט.";
     } catch (err) { return "שגיאה בתקשורת מול שרת ה-AI."; }
   };
 
@@ -610,7 +681,7 @@ export default function App() {
     };
 
     const fields = lines.map(cleanLine);
-    let businessType = customerEditingData?.businessType || 'bar';
+    let businessType = (customerEditingData && customerEditingData.businessType) ? customerEditingData.businessType : 'bar';
     if (fields[3]) {
       if (fields[3].includes('בר')) businessType = 'bar';
       else if (fields[3].includes('מסעד')) businessType = 'restaurant';
@@ -620,14 +691,14 @@ export default function App() {
 
     setCustomerEditingData((prev: any) => ({
       ...prev,
-      contactName: fields[0] || prev?.contactName || '',
-      businessName: fields[1] || prev?.businessName || '',
-      companyName: fields[2] || prev?.companyName || '',
+      contactName: fields[0] || (prev ? prev.contactName : ''),
+      businessName: fields[1] || (prev ? prev.businessName : ''),
+      companyName: fields[2] || (prev ? prev.companyName : ''),
       businessType: businessType,
-      hp: fields[4] || prev?.hp || '',
-      email: fields[5] || prev?.email || '',
-      phone: fields[6] || prev?.phone || '',
-      address: fields[7] || prev?.address || ''
+      hp: fields[4] || (prev ? prev.hp : ''),
+      email: fields[5] || (prev ? prev.email : ''),
+      phone: fields[6] || (prev ? prev.phone : ''),
+      address: fields[7] || (prev ? prev.address : '')
     }));
     setShowQuickImport(false);
     setQuickImportText('');
@@ -808,7 +879,7 @@ export default function App() {
         newCustomerId = docRef.id;
       }
       setIsCustomerModalOpen(false);
-      // שיוך אוטומטי
+      
       if (isItemModalOpen) setEditingData((prev: any) => ({...prev, customerId: newCustomerId}));
       if (isQuoteModalOpen) setQuoteData((prev: any) => ({...prev, customerId: newCustomerId}));
     } catch (err) { alert("שגיאה בשמירת לקוח"); }
@@ -820,8 +891,14 @@ export default function App() {
     setIsSaving(true);
     try {
       const customerRef = doc(db, 'crm_customers', selectedCustomer.id);
-      const newLog = { date: new Date().toISOString(), text: newNoteText, user: user?.email || 'משתמש מערכת' };
-      const updatedLogs = [...(selectedCustomer.interactionLogs || []), newLog];
+      const newLog = { date: new Date().toISOString(), text: newNoteText, user: (user && user.email) ? user.email : 'משתמש מערכת' };
+      
+      let currentLogs = [];
+      if (selectedCustomer.interactionLogs && Array.isArray(selectedCustomer.interactionLogs)) {
+         currentLogs = selectedCustomer.interactionLogs;
+      }
+      const updatedLogs = [...currentLogs, newLog];
+      
       await updateDoc(customerRef, { interactionLogs: updatedLogs, updatedAt: new Date().toISOString() });
       setSelectedCustomer({...selectedCustomer, interactionLogs: updatedLogs});
       setNewNoteText('');
@@ -882,8 +959,8 @@ export default function App() {
 
   // --- Quote Generation & Management ---
   const handleGenerateQuotePDF = async () => {
-    if (!quoteRef.current || !quoteData?.customerId) {
-      if (!quoteData?.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
+    if (!quoteRef.current || !quoteData || !quoteData.customerId) {
+      if (!quoteData || !quoteData.customerId) alert("יש לבחור לקוח לפני הפקת המסמך");
       return;
     }
     
@@ -956,6 +1033,11 @@ export default function App() {
       }));
       setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess: itemsToProcess });
       setIsQuoteApprovalModalOpen(true);
+    } else if (newStatus === 'approved_no_stock') {
+      try { 
+          await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() }); 
+          alert("הצעת המחיר סומנה כמאושרת. שים לב - לא בוצעה גריעת מלאי.");
+      } catch (err) { alert("שגיאה בעדכון סטטוס."); }
     } else {
       try { 
           await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() }); 
@@ -1043,7 +1125,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4 relative z-10">
-            <span className="text-sm text-slate-500 hidden md:inline">{user?.email || ''}</span>
+            <span className="text-sm text-slate-500 hidden md:inline">{user && user.email ? user.email : ''}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
 
@@ -1134,30 +1216,49 @@ export default function App() {
         {/* --- TAB: FINANCE (NEW) --- */}
         {activeTab === 'finance' && (
           <div className="space-y-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Banknote className="w-6 h-6 text-indigo-600"/> דוח רווח והפסד שנתי</h2>
-              <select className="border border-slate-300 rounded-md p-2 text-lg font-bold bg-white" value={financeYear} onChange={e => setFinanceYear(Number(e.target.value))}>
-                {[today.getFullYear()-1, today.getFullYear(), today.getFullYear()+1].map(y => <option key={y} value={y}>שנת {y}</option>)}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
-                <p className="text-sm text-slate-500 font-medium mb-1">סה"כ הכנסות ממכירות</p>
-                <p className="text-2xl font-bold text-green-600">₪{Math.round(calculatedData.yearlyIncome).toLocaleString()}</p>
-              </div>
-              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
-                <p className="text-sm text-slate-500 font-medium mb-1">סה"כ הוצאות שוטפות ורכש</p>
-                <p className="text-2xl font-bold text-red-600">₪{Math.round(calculatedData.yearlyExpense).toLocaleString()}</p>
-              </div>
-              <div className={`bg-white p-5 rounded-lg shadow-sm border ${calculatedData.yearlyIncome - calculatedData.yearlyExpense >= 0 ? 'border-green-200 bg-green-50/30' : 'border-red-200 bg-red-50/30'}`}>
-                <p className="text-sm text-slate-500 font-medium mb-1">תזרים / רווח נקי</p>
-                <p className={`text-2xl font-bold ${calculatedData.yearlyIncome - calculatedData.yearlyExpense >= 0 ? 'text-green-700' : 'text-red-700'}`}>₪{Math.round(calculatedData.yearlyIncome - calculatedData.yearlyExpense).toLocaleString()}</p>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Banknote className="w-6 h-6 text-indigo-600"/> ניהול כספים ותזרים</h2>
+              <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
+                <select className="bg-transparent font-bold text-slate-700 outline-none pr-2 border-l border-slate-200" value={financeMonth} onChange={e => setFinanceMonth(Number(e.target.value))}>
+                  {Array.from({length: 12}, (_, i) => i + 1).map(m => (
+                     <option key={m} value={m}>חודש {m}</option>
+                  ))}
+                </select>
+                <select className="bg-transparent font-bold text-slate-700 outline-none pl-2" value={financeYear} onChange={e => setFinanceYear(Number(e.target.value))}>
+                  {[today.getFullYear()-1, today.getFullYear(), today.getFullYear()+1].map(y => <option key={y} value={y}>שנת {y}</option>)}
+                </select>
               </div>
             </div>
 
-            {/* Monthly Table */}
-            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-x-auto">
+            {/* Selected Month Summary */}
+            <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2 mb-2">סיכום חודש {financeMonth}/{financeYear}</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 border-t-4 border-t-green-500">
+                <p className="text-sm text-slate-500 font-medium mb-1">הכנסות ממכירות</p>
+                <p className="text-3xl font-bold text-green-600">₪{Math.round(calculatedData.selectedMonthData.income).toLocaleString()}</p>
+              </div>
+              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 border-t-4 border-t-red-500">
+                <p className="text-sm text-slate-500 font-medium mb-1 flex justify-between">
+                  <span>הוצאות החודש</span>
+                  <span className="text-[10px] bg-slate-100 px-1.5 rounded-full text-slate-400">כולל הכל</span>
+                </p>
+                <p className="text-3xl font-bold text-red-600">₪{Math.round(calculatedData.selectedMonthData.expense).toLocaleString()}</p>
+                <div className="mt-3 text-xs text-slate-500 grid grid-cols-2 gap-1 pt-2 border-t border-slate-100">
+                  <span>משלוחים: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.shipping).toLocaleString()}</span>
+                  <span>קמפיינים: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.marketing).toLocaleString()}</span>
+                  <span>עלות רכש לבר: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.itemCosts).toLocaleString()}</span>
+                  <span>הוצאות כלליות: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.manual).toLocaleString()}</span>
+                </div>
+              </div>
+              <div className={`bg-white p-5 rounded-lg shadow-sm border border-t-4 ${calculatedData.selectedMonthData.income - calculatedData.selectedMonthData.expense >= 0 ? 'border-green-200 border-t-green-500 bg-green-50/30' : 'border-red-200 border-t-red-500 bg-red-50/30'}`}>
+                <p className="text-sm text-slate-500 font-medium mb-1">רווח נקי חודשי</p>
+                <p className={`text-3xl font-bold ${calculatedData.selectedMonthData.income - calculatedData.selectedMonthData.expense >= 0 ? 'text-green-700' : 'text-red-700'}`}>₪{Math.round(calculatedData.selectedMonthData.income - calculatedData.selectedMonthData.expense).toLocaleString()}</p>
+              </div>
+            </div>
+
+            {/* Yearly Table (Past months only) */}
+            <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2 mb-2">דוח חודשי מצטבר (שנת {financeYear})</h3>
+            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-x-auto mb-8">
               <table className="min-w-full divide-y divide-slate-200 text-sm text-center">
                 <thead className="bg-slate-50">
                   <tr>
@@ -1168,17 +1269,29 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {calculatedData.monthlyFinance.map((m: any) => {
+                  {calculatedData.availableMonths.map((m: any) => {
                     const profit = m.income - m.expense;
+                    const isSelected = m.month === financeMonth;
                     return (
-                      <tr key={m.month} className="hover:bg-slate-50">
-                        <td className="px-4 py-3 font-bold text-slate-700">{m.month < 10 ? `0${m.month}` : m.month}/{financeYear}</td>
+                      <tr key={m.month} className={`hover:bg-slate-50 cursor-pointer ${isSelected ? 'bg-indigo-50/50' : ''}`} onClick={() => setFinanceMonth(m.month)}>
+                        <td className={`px-4 py-3 font-bold ${isSelected ? 'text-indigo-700' : 'text-slate-700'}`}>{m.month < 10 ? `0${m.month}` : m.month}/{financeYear} {isSelected && '👈'}</td>
                         <td className="px-4 py-3 text-green-600 font-medium">₪{Math.round(m.income).toLocaleString()}</td>
                         <td className="px-4 py-3 text-red-600 font-medium">₪{Math.round(m.expense).toLocaleString()}</td>
                         <td className={`px-4 py-3 font-bold ${profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>₪{Math.round(profit).toLocaleString()}</td>
                       </tr>
                     );
                   })}
+                  {calculatedData.availableMonths.length === 0 && (
+                     <tr><td colSpan={4} className="px-4 py-4 text-slate-500">אין נתונים להצגה בשנה זו.</td></tr>
+                  )}
+                  {calculatedData.availableMonths.length > 0 && (
+                    <tr className="bg-slate-100 font-bold border-t-2 border-slate-200">
+                      <td className="px-4 py-3 text-slate-800">סך הכל שנתי עד כה</td>
+                      <td className="px-4 py-3 text-green-700">₪{Math.round(calculatedData.yearlyIncome).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-red-700">₪{Math.round(calculatedData.yearlyExpense).toLocaleString()}</td>
+                      <td className={`px-4 py-3 ${calculatedData.yearlyIncome - calculatedData.yearlyExpense >= 0 ? 'text-green-800' : 'text-red-800'}`}>₪{Math.round(calculatedData.yearlyIncome - calculatedData.yearlyExpense).toLocaleString()}</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1186,8 +1299,8 @@ export default function App() {
             {/* Expenses List */}
             <div className="mt-8">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><TrendingDown className="w-5 h-5 text-red-500"/> פירוט הוצאות קבועות ומשתנות</h3>
-                <button onClick={() => setIsExpenseModalOpen(true)} className="bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 hover:bg-indigo-200"><Plus className="w-4 h-4"/> הוסף הוצאה</button>
+                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><TrendingDown className="w-5 h-5 text-red-500"/> פירוט הוצאות כלליות (ידניות)</h3>
+                <button onClick={() => setIsExpenseModalOpen(true)} className="bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 hover:bg-indigo-200"><Plus className="w-4 h-4"/> הוסף הוצאה חדשה</button>
               </div>
               <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -1214,7 +1327,7 @@ export default function App() {
                         <td className="px-4 py-3 text-left"><button onClick={() => deleteDocHandler('crm_expenses', exp.id)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4"/></button></td>
                       </tr>
                     ))}
-                    {expenses.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">לא הוזנו הוצאות ידניות.</td></tr>}
+                    {expenses.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">לא הוזנו הוצאות ידניות. (עלויות משלוחים, פריטים וקמפיינים מחושבות אוטומטית למעלה)</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -1269,13 +1382,14 @@ export default function App() {
                         <td className="px-4 py-4 font-bold text-indigo-700">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
                           <select 
-                            className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${q.status === 'approved' ? 'bg-green-100 text-green-800' : q.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`} 
+                            className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${q.status === 'approved' || q.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : q.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`} 
                             value={q.status ? q.status : 'pending'} 
                             onChange={(e) => handleQuoteStatusChange(q, e.target.value)}
-                            disabled={q.status === 'approved'}
+                            disabled={q.status === 'approved' || q.status === 'approved_no_stock'}
                           >
                             <option value="pending">ממתינה לאישור</option>
                             <option value="approved">מאושרת (יגרא מלאי)</option>
+                            <option value="approved_no_stock">מאושרת (ללא גריעת מלאי)</option>
                             <option value="rejected">נדחתה</option>
                           </select>
                         </td>
@@ -1311,9 +1425,9 @@ export default function App() {
               <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת</h3>
               <div className="space-y-6">
                 {modelsList.map(model => {
-                  const modelCbm = settings.models?.[model]?.cbm || '';
-                  const itemImgUrl = settings.models?.[model]?.itemImgUrl || '';
-                  const blueprintUrl = settings.models?.[model]?.blueprintUrl || '';
+                  const modelCbm = (settings && settings.models && settings.models[model] && settings.models[model].cbm) ? settings.models[model].cbm : '';
+                  const itemImgUrl = (settings && settings.models && settings.models[model] && settings.models[model].itemImgUrl) ? settings.models[model].itemImgUrl : '';
+                  const blueprintUrl = (settings && settings.models && settings.models[model] && settings.models[model].blueprintUrl) ? settings.models[model].blueprintUrl : '';
                   
                   return (
                   <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
@@ -1543,7 +1657,7 @@ export default function App() {
                 .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
                 .map(c => {
                 const stat = calculatedData.customerStats[c.id];
-                const isActiveCustomer = stat?.activeWarranties > 0 || (c.status === 'active' && stat?.itemCount > 0);
+                const isActiveCustomer = (stat && stat.activeWarranties > 0) || (c.status === 'active' && stat && stat.itemCount > 0);
                 
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
@@ -1599,8 +1713,8 @@ export default function App() {
                         {c.phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-indigo-600 hover:underline">{c.phone}</a></div>}
                         {c.email && <div className="flex items-center gap-2"><Mail className="w-4 h-4 text-slate-400"/> {c.email}</div>}
                         <div className="flex items-center justify-between text-xs mt-3 pt-3 border-t border-slate-100">
-                          <span className="text-slate-400">התעניינות: <span className="font-medium text-slate-600">{stat?.interestDate}</span></span>
-                          <span className="text-slate-400">קשר אחרון: <span className="font-medium text-indigo-600">{stat?.lastContactDate}</span></span>
+                          <span className="text-slate-400">התעניינות: <span className="font-medium text-slate-600">{stat ? stat.interestDate : ''}</span></span>
+                          <span className="text-slate-400">קשר אחרון: <span className="font-medium text-indigo-600">{stat ? stat.lastContactDate : ''}</span></span>
                         </div>
                       </div>
                     </div>
@@ -1609,13 +1723,13 @@ export default function App() {
                       <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
                         <div>
                           <p className="text-xs text-slate-500 mb-1">רכישות</p>
-                          <p className="font-bold text-slate-800">{stat?.itemCount || 0} ברים</p>
+                          <p className="font-bold text-slate-800">{stat ? stat.itemCount : 0} ברים</p>
                         </div>
                         <div>
                           <p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p>
-                          <p className="font-bold text-indigo-700">₪{(stat?.totalRevenue || 0).toLocaleString()}</p>
+                          <p className="font-bold text-indigo-700">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p>
                         </div>
-                        {stat?.activeWarranties > 0 && (
+                        {(stat && stat.activeWarranties > 0) && (
                             <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
                                 <ShieldCheck className="w-3 h-3" /> {stat.activeWarranties} באחריות
                             </div>
@@ -1654,7 +1768,7 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {campaigns.map(c => {
                 const stat = calculatedData.campaignStats[c.id];
-                const costPerItem = stat?.itemCount > 0 ? stat.cost / stat.itemCount : 0;
+                const costPerItem = (stat && stat.itemCount > 0) ? stat.cost / stat.itemCount : 0;
                 const isActive = (!c.startDate || c.startDate <= new Date().toISOString().split('T')[0]) && (!c.endDate || c.endDate >= new Date().toISOString().split('T')[0]);
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
@@ -1667,7 +1781,7 @@ export default function App() {
                     </div>
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between"><span className="text-slate-500">עלות קמפיין:</span> <span className="font-medium">₪{Number(c.totalCost).toLocaleString()}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">ברים שנמכרו:</span> <span className="font-medium">{stat?.itemCount || 0} יח'</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">ברים שנמכרו:</span> <span className="font-medium">{stat ? stat.itemCount : 0} יח'</span></div>
                       <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center"><span className="text-slate-500 font-medium">עלות לבר:</span> <span className="font-bold text-indigo-700 text-lg">₪{Math.round(costPerItem).toLocaleString()}</span></div>
                       <button onClick={() => handleGenerateAd(c.name)} className="mt-4 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> צור מודעת שיווק AI ✨</button>
                     </div>
@@ -1694,7 +1808,7 @@ export default function App() {
                   className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded-md p-1" 
                 />
               </div>
-              {settings?.companyLogoUrl && (
+              {(settings && settings.companyLogoUrl) && (
                 <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
                   <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
                   <button onClick={() => setSettings({...settings, companyLogoUrl: ''})} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
@@ -1881,15 +1995,15 @@ export default function App() {
                 <div className="flex justify-between items-start mb-6">
                   <div>
                     <h2 className="text-2xl font-bold text-indigo-900">
-                      {selectedQuote.customerInfo?.businessName || selectedQuote.customerInfo?.contactName || 'לקוח כללי'}
+                      {(selectedQuote.customerInfo && selectedQuote.customerInfo.businessName) ? selectedQuote.customerInfo.businessName : ((selectedQuote.customerInfo && selectedQuote.customerInfo.contactName) ? selectedQuote.customerInfo.contactName : 'לקוח כללי')}
                     </h2>
                     <p className="text-slate-500 text-sm">הופק בתאריך: {new Date(selectedQuote.date).toLocaleDateString('he-IL')}</p>
                     {campaign && <span className="inline-block mt-2 bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded font-medium">מקור הגעה: קמפיין {campaign.name}</span>}
                   </div>
                   <div className="text-left">
                      <div className="text-3xl font-black text-indigo-700 mb-1">₪{Math.round(grandTotal).toLocaleString()}</div>
-                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
-                       סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status || 'pending']}
+                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
+                       סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status ? selectedQuote.status : 'pending']}
                      </span>
                   </div>
                 </div>
@@ -1960,11 +2074,11 @@ export default function App() {
                 <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
                   <div>
                     <p className="text-xs text-slate-500 font-medium">תאריך יצירת ליד (התעניינות)</p>
-                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><CalendarDays className="w-4 h-4 text-indigo-500"/> {calculatedData.customerStats[selectedCustomer.id]?.interestDate || '---'}</p>
+                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><CalendarDays className="w-4 h-4 text-indigo-500"/> {(calculatedData.customerStats[selectedCustomer.id] && calculatedData.customerStats[selectedCustomer.id].interestDate) ? calculatedData.customerStats[selectedCustomer.id].interestDate : ''}</p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 font-medium">תאריך קשר אחרון</p>
-                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><Activity className="w-4 h-4 text-blue-500"/> {calculatedData.customerStats[selectedCustomer.id]?.lastContactDate || '---'}</p>
+                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><Activity className="w-4 h-4 text-blue-500"/> {(calculatedData.customerStats[selectedCustomer.id] && calculatedData.customerStats[selectedCustomer.id].lastContactDate) ? calculatedData.customerStats[selectedCustomer.id].lastContactDate : ''}</p>
                   </div>
                 </div>
 
@@ -2224,7 +2338,7 @@ export default function App() {
                   {/* Header / Logo */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #c91028', paddingBottom: '15px' }}>
                     <div style={{ width: '200px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
-                      {settings?.companyLogoUrl ? (
+                      {(settings && settings.companyLogoUrl) ? (
                         <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
                       ) : (
                         <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>D.S Logistics</div>
@@ -2330,13 +2444,13 @@ export default function App() {
                   </div>
 
                   {/* Mockups */}
-                  {quoteData.items.some((item: any) => settings.models?.[item.model]?.blueprintUrl || settings.models?.[item.model]?.itemImgUrl) && (
+                  {quoteData.items.some((item: any) => settings.models && settings.models[item.model] && (settings.models[item.model].blueprintUrl || settings.models[item.model].itemImgUrl)) && (
                     <div style={{ marginTop: '30px', fontSize: '13.5px', pageBreakInside: 'avoid' }}>
                       <strong style={{ fontSize: '14px' }}>19. הדמיות מאושרות</strong><br/>
                       להלן סרטוטים ותמונות הדמיה עבור הפריטים שהוזמנו:
                       
                       {quoteData.items.map((item: any, idx: number) => {
-                         const modelSettings = settings.models?.[item.model] || {};
+                         const modelSettings = (settings.models && settings.models[item.model]) ? settings.models[item.model] : {};
                          if (!modelSettings.blueprintUrl && !modelSettings.itemImgUrl) return null;
                          
                          return (
@@ -2365,7 +2479,7 @@ export default function App() {
                   {/* Signatures */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '50px', pageBreakInside: 'avoid' }}>
                       <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
-                          <strong>שם וחתימת הלקוח ({currentCustomer.contactName || '---'})</strong>
+                          <strong>שם וחתימת הלקוח ({(currentCustomer && currentCustomer.contactName) ? currentCustomer.contactName : '---'})</strong>
                       </div>
                       <div style={{ width: '40%', textAlign: 'center', borderTop: '1px solid #000', paddingTop: '10px' }}>
                           <strong>שם וחתימת נציג ד.ש. לוגיסטיקה<br/>(שחף שלום / דניאל יוסף)</strong>
@@ -2670,4 +2784,4 @@ export default function App() {
 
     </div>
   );
-}  
+}
