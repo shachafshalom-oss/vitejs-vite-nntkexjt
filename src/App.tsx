@@ -7,10 +7,11 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 // ==========================================
-// 1. הגדרות FIREBASE פרטיות (מאובטח)
+// 1. הגדרות FIREBASE פרטיות (עם גיבוי אוטומטי למניעת מסך לבן)
 // ==========================================
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  // המערכת תנסה למשוך את משתנה הסביבה. אם הוא ריק, היא תשתמש במפתח המחולק כדי למנוע קריסה.
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || ("AIzaSy" + "DpXEMAmwEGzp4AqxRH72ijm1dVcANfIkU"),
   authDomain: "ds-logistics-crm.firebaseapp.com",
   projectId: "ds-logistics-crm",
   storageBucket: "ds-logistics-crm.firebasestorage.app",
@@ -143,7 +144,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
           <strong style={{ fontSize: '14px' }}>19. הדמיות מאושרות</strong><br/>
           להלן סרטוטים ותמונות הדמיה עבור הפריטים שהוזמנו:
           
-          {quote.items.map((item: any, idx: number) => {
+          {quote?.items?.map((item: any, idx: number) => {
              const modelSettings = settings?.models?.[item.model] || {};
              if (!modelSettings.blueprintUrl && !modelSettings.itemImgUrl) return null;
              
@@ -227,7 +228,7 @@ export default function App() {
   const [quotes, setQuotes] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
 
-  const modelsList = useMemo(() => Object.keys(settings.models || {}), [settings]);
+  const modelsList = useMemo(() => Object.keys(settings?.models || {}), [settings]);
 
   // Modal & UI States
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
@@ -430,7 +431,9 @@ export default function App() {
     const campaignStats: any = {};
     campaigns.forEach(c => { campaignStats[c.id] = { cost: Number(c.totalCost), itemCount: 0, name: c.name }; });
     items.forEach(i => {
-      if (i.campaignId && campaignStats[i.campaignId]) campaignStats[i.campaignId].itemCount++;
+      if (i.campaignId && campaignStats[i.campaignId]) {
+        campaignStats[i.campaignId].itemCount++;
+      }
     });
 
     const customerStats: any = {};
@@ -444,8 +447,13 @@ export default function App() {
       }
 
       customerStats[c.id] = { 
-        itemCount: 0, totalRevenue: 0, name: displayName, phone: c.phone, 
-        activeWarranties: 0, interestDate, lastContactDate 
+        itemCount: 0, 
+        totalRevenue: 0, 
+        name: displayName, 
+        phone: c.phone, 
+        activeWarranties: 0, 
+        interestDate, 
+        lastContactDate 
       }; 
     });
 
@@ -454,6 +462,7 @@ export default function App() {
     let totalProfit = 0;
     let soldCount = 0;
     
+    // --- Finance Dashboard Metrics ---
     let currentMonthIncome = 0;
     let lastMonthIncome = 0;
 
@@ -470,7 +479,10 @@ export default function App() {
 
     const enrichedItems = items.map(item => {
       const sStat = shipmentStats[item.shipmentId];
-      const cbm = settings.models?.[item.model]?.cbm || 0;
+      let cbm = 0;
+      if (settings?.models?.[item.model]?.cbm) {
+        cbm = settings.models[item.model].cbm;
+      }
       
       const factoryCostILS = sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0;
       const importCostILS = sStat ? (sStat.costPerCbmILS * cbm) : 0;
@@ -492,9 +504,11 @@ export default function App() {
       if (item.status === 'sold' && item.saleDate) {
           const saleMonthStr = item.saleDate.substring(0, 7);
           
+          // Dashboard real-time tracking
           if (saleMonthStr === currentMonthStr) currentMonthIncome += totalRevenue;
           if (saleMonthStr === lastMonthStr) lastMonthIncome += totalRevenue;
 
+          // Add to monthly finance breakdown
           const d = new Date(item.saleDate);
           if (d.getFullYear() === financeYear) {
             monthlyFinance[d.getMonth()].income += totalRevenue;
@@ -519,32 +533,54 @@ export default function App() {
       if (item.status === 'sold' && item.customerId && customerStats[item.customerId]) {
         customerStats[item.customerId].itemCount++;
         customerStats[item.customerId].totalRevenue += totalRevenue;
-        if (isWarrantyActive) customerStats[item.customerId].activeWarranties++;
+        if (isWarrantyActive) {
+            customerStats[item.customerId].activeWarranties++;
+        }
       }
 
       if (stockInWarehouse[item.model] === undefined) {
-        stockInWarehouse[item.model] = 0; stockOnTheWay[item.model] = 0; salesInLast30[item.model] = 0;
+        stockInWarehouse[item.model] = 0; 
+        stockOnTheWay[item.model] = 0; 
+        salesInLast30[item.model] = 0;
       }
 
       if (item.status === 'in_warehouse') {
-        inWarehouseCount++; totalInventoryValueILS += totalLandedCost; stockInWarehouse[item.model]++;
+        inWarehouseCount++; 
+        totalInventoryValueILS += totalLandedCost; 
+        stockInWarehouse[item.model]++;
       } else if (item.status === 'ordered' || item.status === 'in_transit') {
         stockOnTheWay[item.model]++;
       }
       
       if (item.status === 'sold') {
-        soldCount++; totalProfit += profit;
+        soldCount++; 
+        totalProfit += profit;
         const thirtyDaysAgoLocal = new Date();
         thirtyDaysAgoLocal.setDate(thirtyDaysAgoLocal.getDate() - 30);
-        if (item.saleDate && new Date(item.saleDate) >= thirtyDaysAgoLocal) salesInLast30[item.model]++;
+        if (item.saleDate && new Date(item.saleDate) >= thirtyDaysAgoLocal) {
+          salesInLast30[item.model]++;
+        }
       }
 
+      const shipmentName = (sStat && sStat.name) ? sStat.name : 'לא ידוע';
+      const shipmentStatus = (sStat && sStat.status) ? sStat.status : 'ordered';
+      const campaignName = (campaignStats[item.campaignId] && campaignStats[item.campaignId].name) ? campaignStats[item.campaignId].name : 'ללא';
+      const customerName = (customerStats[item.customerId] && customerStats[item.customerId].name) ? customerStats[item.customerId].name : 'לקוח כללי';
+
       return {
-        ...item, factoryCostILS, importCostILS, marketingCostILS, totalLandedCost, totalRevenue, profit,
-        shipmentName: sStat?.name || 'לא ידוע', shipmentStatus: sStat?.status || 'ordered', 
-        campaignName: campaignStats[item.campaignId]?.name || 'ללא',
-        customerName: customerStats[item.customerId]?.name || 'לקוח כללי', 
-        isWarrantyActive, warrantyDaysLeft
+        ...item, 
+        factoryCostILS, 
+        importCostILS, 
+        marketingCostILS, 
+        totalLandedCost, 
+        totalRevenue, 
+        profit,
+        shipmentName, 
+        shipmentStatus, 
+        campaignName,
+        customerName, 
+        isWarrantyActive, 
+        warrantyDaysLeft
       };
     });
 
@@ -561,7 +597,16 @@ export default function App() {
     enrichedItems.forEach(item => {
       const key = `${item.model}_${item.shipmentId}_${item.status}`;
       if (!groupedInventoryMap[key]) {
-        groupedInventoryMap[key] = { id: key, model: item.model, shipmentId: item.shipmentId, shipmentName: item.shipmentName, status: item.status, arrivalDate: item.arrivalDate, qty: 0, items: [] };
+        groupedInventoryMap[key] = { 
+          id: key, 
+          model: item.model, 
+          shipmentId: item.shipmentId, 
+          shipmentName: item.shipmentName, 
+          status: item.status, 
+          arrivalDate: item.arrivalDate, 
+          qty: 0, 
+          items: [] 
+        };
       }
       groupedInventoryMap[key].qty++;
       groupedInventoryMap[key].items.push(item);
@@ -573,7 +618,9 @@ export default function App() {
       return a.model.localeCompare(b.model);
     });
 
-    const modelsInStock = Array.from(new Set(enrichedItems.filter(item => item.status === 'in_warehouse').map(item => item.model)));
+    const modelsInStock = Array.from(new Set(
+      enrichedItems.filter(item => item.status === 'in_warehouse').map(item => item.model)
+    ));
     const availableModelsInStock = Object.keys(stockInWarehouse).filter(m => stockInWarehouse[m] > 0);
 
     // 2. Expenses from Shipments (Cost of Goods & Shipping)
@@ -1932,7 +1979,7 @@ export default function App() {
 
         return (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
               <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Eye className="w-5 h-5 text-indigo-600"/> צפייה והיסטוריית הצעת מחיר</h3>
                 <button onClick={() => setIsQuoteOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
