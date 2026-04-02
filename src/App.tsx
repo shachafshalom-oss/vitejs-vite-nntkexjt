@@ -285,6 +285,7 @@ export default function App() {
 
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
 
   // --- Auth & Data Fetching ---
   useEffect(() => {
@@ -512,6 +513,7 @@ export default function App() {
           const d = new Date(item.saleDate);
           if (d.getFullYear() === financeYear) {
             monthlyFinance[d.getMonth()].income += totalRevenue;
+            // הוספת עלויות תיקונים ותוספות (הוצאות בזמן מכירה) להוצאות אותו חודש אוטומטית
             const itemSpecificCosts = (Number(item.repairCost) || 0) + (Number(item.addOnCost) || 0);
             monthlyFinance[d.getMonth()].expense += itemSpecificCosts;
             monthlyFinance[d.getMonth()].breakdowns.itemCosts += itemSpecificCosts;
@@ -584,7 +586,6 @@ export default function App() {
       };
     });
 
-    const allModelsForForecast = Array.from(new Set([...modelsList, ...items.map(i => i.model)]));
     const forecasts = allModelsForForecast.map((model: any) => {
       const stock = stockInWarehouse[model] || 0;
       const onTheWay = stockOnTheWay[model] || 0;
@@ -694,7 +695,7 @@ export default function App() {
       inWarehouseCount, totalInventoryValueILS, avgProfit: calculatedAvgProfit, forecasts, modelsInStock, availableModelsInStock, stockInWarehouse,
       monthlyFinance, availableMonths, selectedMonthData, yearlyIncome, yearlyExpense, currentMonthIncome, lastMonthIncome
     };
-  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr]);
+  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr]);
 
   // --- Handlers ---
   const generateWithGemini = async (prompt: string) => {
