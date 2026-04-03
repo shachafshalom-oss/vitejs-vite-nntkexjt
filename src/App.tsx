@@ -276,16 +276,21 @@ export default function App() {
   const [showAiModal, setShowAiModal] = useState(false);
 
   // --- Date Calculations ---
+  // פונקציית עזר לשמירה על שעון מקומי מדויק (מונעת באגים של UTC בישראל)
+  const getLocalYYYYMMDD = (d: Date) => {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = getLocalYYYYMMDD(today);
   const currentMonthStr = todayStr.substring(0, 7); 
   
   let lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const lastMonthStr = lastMonthDate.toISOString().substring(0, 7);
+  const lastMonthStr = getLocalYYYYMMDD(lastMonthDate).substring(0, 7);
 
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+  const thirtyDaysAgoStr = getLocalYYYYMMDD(thirtyDaysAgo);
 
   // --- Auth & Data Fetching ---
   useEffect(() => {
