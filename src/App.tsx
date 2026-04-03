@@ -425,6 +425,8 @@ export default function App() {
         status: s.status || 'ordered',
         arrivalDate: s.arrivalDate,
         date: s.date,
+        factoryTotalILS: factoryTotalILS,
+        shippingTotalILS: shippingTotalILS,
         totalCostILS: shippingTotalILS + factoryTotalILS
       };
     });
@@ -586,9 +588,7 @@ export default function App() {
       };
     });
 
-    // --- הוספת השורה החסרה שכאן גרמה למסך הלבן ---
     const allModelsForForecast = Array.from(new Set([...modelsList, ...items.map(i => i.model)]));
-
     const forecasts = allModelsForForecast.map((model: any) => {
       const stock = stockInWarehouse[model] || 0;
       const onTheWay = stockOnTheWay[model] || 0;
@@ -628,12 +628,23 @@ export default function App() {
     ));
     const availableModelsInStock = Object.keys(stockInWarehouse).filter(m => stockInWarehouse[m] > 0);
 
-    // 2. Expenses from Shipments (Cost of Goods & Shipping)
+    // 2. Expenses from Shipments (Cost of Goods on order date, Shipping on arrival date)
     Object.values(shipmentStats).forEach((s: any) => {
-       const d = new Date(s.arrivalDate || s.date);
-       if (d.getFullYear() === financeYear) {
-           monthlyFinance[d.getMonth()].expense += s.totalCostILS;
-           monthlyFinance[d.getMonth()].breakdowns.shipping += s.totalCostILS;
+       // עלות המפעל (מוצרים) משולמת ונספרת בתאריך פתיחת המשלוח
+       if (s.date) {
+           const orderDate = new Date(s.date);
+           if (orderDate.getFullYear() === financeYear) {
+               monthlyFinance[orderDate.getMonth()].expense += s.factoryTotalILS;
+               monthlyFinance[orderDate.getMonth()].breakdowns.itemCosts += s.factoryTotalILS;
+           }
+       }
+       // עלות השילוח והמיסים נספרת רק בתאריך ההגעה (אם הגיע)
+       if (s.arrivalDate) {
+           const arrDate = new Date(s.arrivalDate);
+           if (arrDate.getFullYear() === financeYear) {
+               monthlyFinance[arrDate.getMonth()].expense += s.shippingTotalILS;
+               monthlyFinance[arrDate.getMonth()].breakdowns.shipping += s.shippingTotalILS;
+           }
        }
     });
 
@@ -1311,9 +1322,9 @@ export default function App() {
                 </p>
                 <p className="text-3xl font-bold text-red-600">₪{Math.round(calculatedData.selectedMonthData.expense).toLocaleString()}</p>
                 <div className="mt-3 text-xs text-slate-500 grid grid-cols-2 gap-1 pt-2 border-t border-slate-100">
-                  <span>משלוחים: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.shipping).toLocaleString()}</span>
+                  <span>משלוחים (בהגעה): ₪{Math.round(calculatedData.selectedMonthData.breakdowns.shipping).toLocaleString()}</span>
                   <span>קמפיינים: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.marketing).toLocaleString()}</span>
-                  <span>עלות רכש לבר: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.itemCosts).toLocaleString()}</span>
+                  <span>רכש (מפעל+התקנות): ₪{Math.round(calculatedData.selectedMonthData.breakdowns.itemCosts).toLocaleString()}</span>
                   <span>הוצאות כלליות: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.manual).toLocaleString()}</span>
                 </div>
               </div>
