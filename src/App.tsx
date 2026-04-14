@@ -265,6 +265,10 @@ export default function App() {
   const [showQuickImport, setShowQuickImport] = useState(false);
   const [quickImportText, setQuickImportText] = useState('');
 
+  // ט-יב: חיפוש, פילטר, התראות
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [quoteStatusFilter, setQuoteStatusFilter] = useState<string>('all');
+
   const [newModelName, setNewModelName] = useState('');
   const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -1401,6 +1405,51 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {/* ט - התראות אחריות */}
+            {(() => {
+              const todayMs = new Date().getTime();
+              const warrantyAlerts = calculatedData.enrichedItems
+                .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && item.saleDate)
+                .map((item: any) => {
+                  const expiry = new Date(item.saleDate);
+                  expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths));
+                  const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24));
+                  return { ...item, daysLeft, expiryDate: expiry };
+                })
+                .filter((item: any) => item.daysLeft <= 30)
+                .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
+
+              if (warrantyAlerts.length === 0) return null;
+
+              return (
+                <div className="mt-8">
+                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
+                    <ShieldAlert className="w-5 h-5 text-amber-500"/> התראות אחריות ({warrantyAlerts.length})
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {warrantyAlerts.map((item: any) => {
+                      const customer = customers.find((c: any) => c.id === item.customerId);
+                      const isExpired = item.daysLeft <= 0;
+                      return (
+                        <div key={item.id} className={`p-4 rounded-lg border flex items-start gap-3 ${isExpired ? 'bg-red-50 border-red-200' : item.daysLeft <= 7 ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'}`}>
+                          <div className={`p-2 rounded-full shrink-0 ${isExpired ? 'bg-red-100' : 'bg-amber-100'}`}>
+                            <ShieldAlert className={`w-4 h-4 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}/>
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-800 text-sm truncate">{customer?.businessName || customer?.contactName || 'לקוח לא ידוע'}</p>
+                            <p className="text-xs text-slate-600">דגם: {item.model}</p>
+                            <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>
+                              {isExpired ? `פגה לפני ${Math.abs(item.daysLeft)} ימים` : `${item.daysLeft} ימים לפקיעה`}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1542,6 +1591,25 @@ export default function App() {
                 <Plus className="w-4 h-4"/> הצעת מחיר חדשה
               </button>
             </div>
+
+            {/* י - פילטר סטטוס */}
+            <div className="flex gap-2 mb-4 flex-wrap">
+              {[
+                { val: 'all', label: `הכל (${quotes.length})` },
+                { val: 'pending', label: `ממתינות (${quotes.filter(q=>q.status==='pending'||!q.status).length})` },
+                { val: 'approved', label: `אושרו עם מלאי (${quotes.filter(q=>q.status==='approved').length})` },
+                { val: 'approved_no_stock', label: `אושרו ללא מלאי (${quotes.filter(q=>q.status==='approved_no_stock').length})` },
+                { val: 'rejected', label: `נדחו (${quotes.filter(q=>q.status==='rejected').length})` },
+              ].map(f => (
+                <button
+                  key={f.val}
+                  onClick={() => setQuoteStatusFilter(f.val)}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${quoteStatusFilter === f.val ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
             
             <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -1555,7 +1623,9 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {quotes.map(q => {
+                  {quotes
+                    .filter(q => quoteStatusFilter === 'all' || (quoteStatusFilter === 'pending' ? (!q.status || q.status === 'pending') : q.status === quoteStatusFilter))
+                    .map(q => {
                     const customer = customers.find(c => c.id === q.customerId) || { name: 'לקוח נמחק' };
                     const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0);
                     const grandTotal = itemsTotal + Number(q.shippingCost || 0);
@@ -1567,10 +1637,9 @@ export default function App() {
                         <td className="px-4 py-4 font-bold text-indigo-700">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
                           <select 
-                            className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${q.status === 'approved' || q.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : q.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`} 
+                            className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
                             value={q.status ? q.status : 'pending'} 
                             onChange={(e) => handleQuoteStatusChange(q, e.target.value)}
-                            disabled={q.status === 'approved' || q.status === 'approved_no_stock'}
                           >
                             <option value="pending">ממתינה לאישור</option>
                             <option value="approved">מאושרת (יגרא מלאי)</option>
@@ -1585,8 +1654,8 @@ export default function App() {
                       </tr>
                     );
                   })}
-                  {quotes.length === 0 && (
-                      <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">לא נמצאו הצעות מחיר במערכת.</td></tr>
+                  {quotes.filter(q => quoteStatusFilter === 'all' || (quoteStatusFilter === 'pending' ? (!q.status || q.status === 'pending') : q.status === quoteStatusFilter)).length === 0 && (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">{quoteStatusFilter !== 'all' ? 'אין הצעות מחיר בסטטוס זה.' : 'לא נמצאו הצעות מחיר במערכת.'}</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1815,6 +1884,22 @@ export default function App() {
               </button>
             </div>
 
+            {/* י - שורת חיפוש */}
+            <div className="mb-4 relative">
+              <input
+                type="text"
+                placeholder="חיפוש לפי שם, טלפון, אימייל..."
+                value={customerSearch}
+                onChange={e => setCustomerSearch(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+              />
+              {customerSearch && (
+                <button onClick={() => setCustomerSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                  <X className="w-4 h-4"/>
+                </button>
+              )}
+            </div>
+
             {/* Sub-navigation for Customers / Leads */}
             <div className="flex gap-4 mb-6 border-b border-slate-200">
               <button 
@@ -1834,9 +1919,31 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {customers
                 .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
+                .filter(c => {
+                  if (!customerSearch.trim()) return true;
+                  const q = customerSearch.toLowerCase();
+                  return (
+                    (c.businessName || '').toLowerCase().includes(q) ||
+                    (c.contactName || '').toLowerCase().includes(q) ||
+                    (c.phone || '').includes(q) ||
+                    (c.email || '').toLowerCase().includes(q) ||
+                    (c.companyName || '').toLowerCase().includes(q)
+                  );
+                })
                 .map(c => {
                 const stat = calculatedData.customerStats[c.id];
-                const isActiveCustomer = (stat && stat.activeWarranties > 0) || (c.status === 'active' && stat && stat.itemCount > 0);
+                const todayMs2 = new Date().getTime();
+                // יא: לקוח "עבר" חזותי - פעיל אבל אין לו אחריות פעילה ואין רכישות ב-6 חודשים אחרונים
+                const customerSoldItems = calculatedData.enrichedItems?.filter((i: any) => i.customerId === c.id && i.status === 'sold') || [];
+                const hasActiveWarranty = customerSoldItems.some((i: any) => {
+                  if (!i.warrantyMonths || !i.saleDate) return false;
+                  const exp = new Date(i.saleDate); exp.setMonth(exp.getMonth() + Number(i.warrantyMonths));
+                  return exp.getTime() > todayMs2;
+                });
+                const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && customerSoldItems.length > 0;
+                const isActiveCustomer = c.status === 'active' && (hasActiveWarranty || customerSoldItems.length > 0);
+                const displayStatus = c.status === 'lead' ? 'ליד מתעניין' : isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
+                const badgeColor = c.status === 'lead' ? 'bg-blue-100 text-blue-700' : isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
                 
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
@@ -1854,8 +1961,8 @@ export default function App() {
                           <div>
                             <h3 className="font-bold text-lg text-slate-800">{c.businessName || c.contactName}</h3>
                             {c.businessName && c.contactName && <p className="text-xs text-slate-500 mb-1">{c.contactName}</p>}
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${c.status === 'lead' ? 'bg-blue-100 text-blue-700' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {c.status === 'lead' ? 'ליד מתעניין' : isActiveCustomer ? 'לקוח פעיל (באחריות)' : 'לקוח עבר'}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${badgeColor}`}>
+                              {displayStatus}
                             </span>
                             {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
                               {c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}
@@ -1865,7 +1972,7 @@ export default function App() {
                         <div className="flex gap-1 customer-actions">
                           <button 
                             onClick={() => { 
-                              setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); 
+                              setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                               setIsQuoteModalOpen(true); 
                             }} 
                             className="text-slate-400 hover:text-green-600 p-1" 
@@ -1918,11 +2025,11 @@ export default function App() {
                   </div>
                 )
               })}
-              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').length === 0 && (
+              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
                 <div className="col-span-full bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
                   <Users className="w-12 h-12 mx-auto text-slate-300 mb-3" />
-                  <p className="font-medium text-lg">אין נתונים להצגה ברשימה זו.</p>
-                  <p className="text-sm">הוסף איש קשר חדש כדי להתחיל.</p>
+                  <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין נתונים להצגה ברשימה זו.'}</p>
+                  <p className="text-sm">{customerSearch ? 'נסה לחפש במילות מפתח אחרות.' : 'הוסף איש קשר חדש כדי להתחיל.'}</p>
                 </div>
               )}
             </div>
