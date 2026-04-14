@@ -100,7 +100,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
       {/* Sections */}
       <div style={{ fontSize: '13.5px', lineHeight: '1.4', textAlign: 'justify' }}>
         <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>1. מחיר ותנאי תשלום</strong><br/>מחיר ההזמנה הינו קבוע וסופי, ולא יחולו בו שינויים מכל סיבה שהיא, למעט עדכונים הנובעים משינויי מיסים החלים על פי דין. יש להסדיר את התשלום במלואו לפני מועד ההספקה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>2. אחריות</strong><br/>המוצר יימסר עם אחריות למשך 6 חודשים ממועד אספקתו ללקוח, וזאת בכפוף ובכפוף מלא לתנאי האחריות כפי שנקבעו על ידי החברה. החברה לא תישא בכל אחריות לנזק, שבר, תקלה, פגם או אובדן שנגרמו למוצר, לציוד או לכל רכיב ממנו, במישרין או בעקיפין, עקב שימוש לא סביר, רשלנות, פעולה או מחדל של הלקוח ו/או מי מטעמו, לרבות שבר במוצר. במקרים כאמור, הלקוח יישא במלוא האחריות והעלויות הכרוכות בתיקון, החלפה או השבת המוצר לקדמותו, והחברה תהיה פטורה מכל טענה, דרישה או תביעה בקשר לכך.</div>
+        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>2. אחריות</strong><br/>המוצר יימסר עם אחריות למשך {quote?.warrantyMonths ? `${quote.warrantyMonths} חודשים` : '6 חודשים'} ממועד אספקתו ללקוח, וזאת בכפוף ובכפוף מלא לתנאי האחריות כפי שנקבעו על ידי החברה. החברה לא תישא בכל אחריות לנזק, שבר, תקלה, פגם או אובדן שנגרמו למוצר, לציוד או לכל רכיב ממנו, במישרין או בעקיפין, עקב שימוש לא סביר, רשלנות, פעולה או מחדל של הלקוח ו/או מי מטעמו, לרבות שבר במוצר. במקרים כאמור, הלקוח יישא במלוא האחריות והעלויות הכרוכות בתיקון, החלפה או השבת המוצר לקדמותו, והחברה תהיה פטורה מכל טענה, דרישה או תביעה בקשר לכך.</div>
         <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>3. שירותי תיקונים לאחר תקופת האחריות</strong><br/>עם תום תקופת האחריות, החברה תעמיד לרשות הלקוח שירותי תיקונים ותחזוקה בתשלום, בהתאם למחירים ותנאים שייקבעו על ידה מעת לעת.</div>
         <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>4. מועדי אספקה</strong><br/>מועדי האספקה הנמסרים ללקוח ניתנים לצורכי הערכה בלבד, והם עשויים להשתנות בהתאם לנסיבות שונות. החברה לא תישא באחריות לכל דחייה או שינוי במועדי האספקה.</div>
         <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>5. הפרת התחייבויות הלקוח</strong><br/>במקרה שהלקוח לא יעמוד בהתחייבויותיו על פי הסכם זה, לרבות אי-תשלום במועדים שנקבעו, החברה תהא רשאית לבטל את אספקת הסחורה ו/או לחייב את הלקוח בגין החלק מההזמנה שכבר בוצע, ולמנוע אספקת יתרת ההזמנה.</div>
@@ -237,6 +237,7 @@ export default function App() {
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isCustomerOverviewOpen, setIsCustomerOverviewOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [activeCustomerOverviewTab, setActiveCustomerOverviewTab] = useState<'log' | 'purchases' | 'quotes'>('log');
   const [newNoteText, setNewNoteText] = useState('');
   const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false);
   const [editingData, setEditingData] = useState<any>(null);
@@ -954,11 +955,56 @@ export default function App() {
           updatedAt: new Date().toISOString()
         };
         await updateDoc(doc(db, 'crm_items', availableItem.id), updatePayload);
+
+        // שינוי א: עדכון סטטוס לקוח ל-active במכירה ישירה
+        if (data.customerId) {
+          const customer = customers.find(c => c.id === data.customerId);
+          if (customer && customer.status !== 'active') {
+            await updateDoc(doc(db, 'crm_customers', data.customerId), {
+              status: 'active',
+              previousStatusBeforeActive: customer.status || 'lead',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
       } 
       else {
+        // שינוי ב: reverse סטטוס לקוח כשמשנים פריט מ-sold ל-in_warehouse
+        const originalItem = items.find(i => i.id === data.id);
+        const wasJustSoldAndNowNot = originalItem && originalItem.status === 'sold' && data.status !== 'sold';
+
         if (data.status === 'sold' && !data.saleDate) data.saleDate = new Date().toISOString().split('T')[0];
-        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; }
+        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; }
         await updateDoc(doc(db, 'crm_items', data.id), data);
+
+        // אם פריט עבר מ-sold חזרה — בדוק אם ללקוח יש עוד פריטים נמכרים
+        if (wasJustSoldAndNowNot && originalItem.customerId) {
+          const otherSoldItems = items.filter(i =>
+            i.id !== data.id &&
+            i.customerId === originalItem.customerId &&
+            i.status === 'sold'
+          );
+          if (otherSoldItems.length === 0) {
+            const customer = customers.find(c => c.id === originalItem.customerId);
+            const revertStatus = customer?.previousStatusBeforeActive || 'lead';
+            await updateDoc(doc(db, 'crm_customers', originalItem.customerId), {
+              status: revertStatus,
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+
+        // אם פריט עבר ל-sold עם customerId — עדכן סטטוס לקוח
+        if (data.status === 'sold' && data.customerId) {
+          const customer = customers.find(c => c.id === data.customerId);
+          if (customer && customer.status !== 'active') {
+            await updateDoc(doc(db, 'crm_customers', data.customerId), {
+              status: 'active',
+              previousStatusBeforeActive: customer.status || 'lead',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
       }
       setIsItemModalOpen(false);
     } catch (err: any) { alert(err.message || "שגיאה בשמירה"); }
@@ -1078,6 +1124,7 @@ export default function App() {
         date: quoteData.date,
         items: quoteData.items,
         shippingCost: quoteData.shippingCost,
+        warrantyMonths: Number(quoteData.warrantyMonths) || 0,
         campaignId: quoteData.campaignId || '',
         status: 'pending', 
         createdAt: new Date().toISOString()
@@ -1117,21 +1164,66 @@ export default function App() {
   };
 
   const handleQuoteStatusChange = async (quote: any, newStatus: string) => {
+    // נתיב 1: אישור עם גריעת מלאי (מכל סטטוס שאינו approved)
     if (newStatus === 'approved') {
       const itemsToProcess = quote.items.map((item: any) => ({
-        model: item.model, qty: item.qty, salePrice: item.price, saleDate: todayStr, warrantyMonths: 12, campaignId: quote.campaignId || '', processed: 0
+        model: item.model, qty: item.qty, salePrice: item.price,
+        saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
+        campaignId: quote.campaignId || '', processed: 0
       }));
-      setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess: itemsToProcess });
+      setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess });
       setIsQuoteApprovalModalOpen(true);
-    } else if (newStatus === 'approved_no_stock') {
-      try { 
-          await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() }); 
-          alert("הצעת המחיר סומנה כמאושרת. שים לב - לא בוצעה גריעת מלאי.");
-      } catch (err) { alert("שגיאה בעדכון סטטוס."); }
-    } else {
-      try { await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() }); } 
-      catch (err) { alert("שגיאה בעדכון סטטוס."); }
+      return;
     }
+
+    // נתיב 2: Reverse — מ-approved (עם גריעה) לכל סטטוס אחר
+    if (quote.status === 'approved') {
+      if (!window.confirm(`ביטול האישור יחזיר את כל הפריטים למלאי והלקוח יחזור לסטטוסו הקודם.\nהאם להמשיך?`)) return;
+      setIsSaving(true);
+      try {
+        const approvedItemIds: string[] = Array.isArray(quote.approvedItemIds) ? quote.approvedItemIds : [];
+        if (approvedItemIds.length > 0) {
+          await Promise.all(approvedItemIds.map((itemId: string) =>
+            updateDoc(doc(db, 'crm_items', itemId), {
+              status: 'in_warehouse',
+              saleDate: null, warrantyMonths: 0, salePrice: 0,
+              addOnPrice: 0, customerId: '', campaignId: '',
+              updatedAt: new Date().toISOString()
+            })
+          ));
+        }
+        // החזרת סטטוס לקוח
+        if (quote.customerId) {
+          const prevStatus = quote.previousCustomerStatus || 'lead';
+          await updateDoc(doc(db, 'crm_customers', quote.customerId), {
+            status: prevStatus,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        await updateDoc(doc(db, 'crm_quotes', quote.id), {
+          status: newStatus,
+          approvedItemIds: [],
+          updatedAt: new Date().toISOString()
+        });
+        alert('הסטטוס עודכן. הפריטים הוחזרו למלאי והלקוח הוחזר לסטטוסו הקודם.');
+      } catch (err) { alert('שגיאה בביטול האישור.'); }
+      setIsSaving(false);
+      return;
+    }
+
+    // נתיב 3: אושר ללא גריעת מלאי
+    if (newStatus === 'approved_no_stock') {
+      try {
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() });
+        alert("הצעת המחיר סומנה כמאושרת. שים לב - לא בוצעה גריעת מלאי.");
+      } catch (err) { alert("שגיאה בעדכון סטטוס."); }
+      return;
+    }
+
+    // נתיב 4: כל שאר העדכונים
+    try {
+      await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, updatedAt: new Date().toISOString() });
+    } catch (err) { alert("שגיאה בעדכון סטטוס."); }
   };
 
   const executeQuoteApproval = async (e: any) => {
@@ -1156,9 +1248,26 @@ export default function App() {
             }
         }
 
+        // שמירת IDs שנגרעו לצורך reverse עתידי
+        const approvedItemIds = updatesToMake.map(u => u.id);
+
+        // שמירת סטטוס לקוח לפני האישור
+        const customer = customers.find(c => c.id === quoteApprovalData.customerId);
+        const previousCustomerStatus = customer?.status || 'lead';
+
         await Promise.all(updatesToMake.map(update => updateDoc(doc(db, 'crm_items', update.id), update.data)));
-        await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { status: 'approved', approvedAt: new Date().toISOString() });
-        await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), { status: 'active', updatedAt: new Date().toISOString() });
+        await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), {
+          status: 'approved',
+          approvedAt: new Date().toISOString(),
+          approvedItemIds: approvedItemIds,
+          previousCustomerStatus: previousCustomerStatus,
+          updatedAt: new Date().toISOString()
+        });
+        await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), {
+          status: 'active',
+          previousStatusBeforeActive: previousCustomerStatus,
+          updatedAt: new Date().toISOString()
+        });
 
         setIsQuoteApprovalModalOpen(false);
         alert("הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.");
@@ -1425,7 +1534,7 @@ export default function App() {
               <button 
                 onClick={() => { 
                   setIsFabOpen(false); 
-                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); 
+                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                   setIsQuoteModalOpen(true); 
                 }} 
                 className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
@@ -1733,6 +1842,7 @@ export default function App() {
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
                     if ((e.target as HTMLElement).closest('.customer-actions')) return;
                     setSelectedCustomer(c);
+                    setActiveCustomerOverviewTab('log');
                     setIsCustomerOverviewOpen(true);
                   }}>
                     <div className="p-5 flex-1">
@@ -1909,7 +2019,7 @@ export default function App() {
                icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 12, model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
+                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
                 setIsItemModalOpen(true); 
               }} 
             />
@@ -1925,7 +2035,7 @@ export default function App() {
                icon={FileText} iconColor="text-blue-500" label="הצעת מחיר חדשה"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '' }); 
+                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                 setIsQuoteModalOpen(true); 
               }} 
             />
@@ -2357,23 +2467,30 @@ export default function App() {
       })()}
 
       {/* CUSTOMER OVERVIEW MODAL (Timeline & Details) */}
-      {isCustomerOverviewOpen && selectedCustomer && (
+      {isCustomerOverviewOpen && selectedCustomer && (() => {
+        const customerItems = calculatedData.enrichedItems
+          ? calculatedData.enrichedItems.filter((i: any) => i.customerId === selectedCustomer.id && i.status === 'sold')
+          : items.filter(i => i.customerId === selectedCustomer.id && i.status === 'sold');
+        const customerQuotes = quotes.filter(q => q.customerId === selectedCustomer.id);
+        const todayMs = new Date().getTime();
+
+        return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-indigo-600"/> תיק לקוח / ליד</h3>
               <button onClick={() => setIsCustomerOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             
             <div className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
-              {/* Left Sidebar: Customer Details */}
-              <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-l border-slate-200 bg-slate-50 p-6 md:overflow-y-auto shrink-0">
-                <div className="mb-6">
-                  <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
-                    <Users className="w-8 h-8"/>
+              {/* Left Sidebar: Customer Details + Warranty */}
+              <div className="w-full md:w-[280px] border-b md:border-b-0 md:border-l border-slate-200 bg-slate-50 p-5 md:overflow-y-auto shrink-0 space-y-5">
+                <div>
+                  <div className="w-14 h-14 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
+                    <Users className="w-7 h-7"/>
                   </div>
-                  <h2 className="text-xl font-bold text-center text-slate-800">{selectedCustomer.businessName || selectedCustomer.contactName}</h2>
-                  <p className="text-center text-sm text-slate-500 mb-2">{selectedCustomer.companyName}</p>
+                  <h2 className="text-lg font-bold text-center text-slate-800">{selectedCustomer.businessName || selectedCustomer.contactName}</h2>
+                  {selectedCustomer.companyName && <p className="text-center text-xs text-slate-500 mb-2">{selectedCustomer.companyName}</p>}
                   <div className="flex justify-center">
                     <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${selectedCustomer.status === 'lead' ? 'bg-blue-100 text-blue-700' : selectedCustomer.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-600'}`}>
                       {selectedCustomer.status === 'lead' ? 'ליד מתעניין' : selectedCustomer.status === 'active' ? 'לקוח פעיל' : 'לקוח עבר'}
@@ -2381,82 +2498,213 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-4 text-sm">
-                  <div className="flex items-center gap-3 text-slate-600"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${selectedCustomer.phone}`} className="hover:text-indigo-600">{selectedCustomer.phone || '---'}</a></div>
-                  <div className="flex items-center gap-3 text-slate-600"><Mail className="w-4 h-4 text-slate-400"/> {selectedCustomer.email || '---'}</div>
-                  <div className="flex items-center gap-3 text-slate-600"><MapPin className="w-4 h-4 text-slate-400"/> {selectedCustomer.address || '---'}</div>
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center gap-2 text-slate-600"><Phone className="w-4 h-4 text-slate-400 shrink-0"/> <a href={`tel:${selectedCustomer.phone}`} className="hover:text-indigo-600">{selectedCustomer.phone || '---'}</a></div>
+                  <div className="flex items-center gap-2 text-slate-600"><Mail className="w-4 h-4 text-slate-400 shrink-0"/> <span className="truncate">{selectedCustomer.email || '---'}</span></div>
+                  <div className="flex items-center gap-2 text-slate-600"><MapPin className="w-4 h-4 text-slate-400 shrink-0"/> <span className="text-xs">{selectedCustomer.address || '---'}</span></div>
                 </div>
 
-                <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
+                <div className="pt-4 border-t border-slate-200 space-y-3 text-xs">
                   <div>
-                    <p className="text-xs text-slate-500 font-medium">תאריך יצירת ליד (התעניינות)</p>
-                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><CalendarDays className="w-4 h-4 text-indigo-500"/> {(calculatedData.customerStats[selectedCustomer.id] && calculatedData.customerStats[selectedCustomer.id].interestDate) ? calculatedData.customerStats[selectedCustomer.id].interestDate : ''}</p>
+                    <p className="text-slate-400 font-medium">תאריך יצירת ליד</p>
+                    <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><CalendarDays className="w-3.5 h-3.5 text-indigo-400"/> {calculatedData.customerStats?.[selectedCustomer.id]?.interestDate || '---'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500 font-medium">תאריך קשר אחרון</p>
-                    <p className="font-bold text-slate-700 flex items-center gap-1.5 mt-1"><Activity className="w-4 h-4 text-blue-500"/> {(calculatedData.customerStats[selectedCustomer.id] && calculatedData.customerStats[selectedCustomer.id].lastContactDate) ? calculatedData.customerStats[selectedCustomer.id].lastContactDate : ''}</p>
+                    <p className="text-slate-400 font-medium">קשר אחרון</p>
+                    <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><Activity className="w-3.5 h-3.5 text-blue-400"/> {calculatedData.customerStats?.[selectedCustomer.id]?.lastContactDate || '---'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400 font-medium">סה"כ רכישות</p>
+                    <p className="font-bold text-indigo-700 text-sm mt-0.5">{customerItems.length} פריטים · ₪{(calculatedData.customerStats?.[selectedCustomer.id]?.totalRevenue || 0).toLocaleString()}</p>
                   </div>
                 </div>
 
-                <div className="mt-6 pt-6 border-t border-slate-200">
-                  <p className="text-xs text-slate-500 mb-2 font-medium">הערות בסיס</p>
-                  <p className="text-sm text-slate-700 whitespace-pre-wrap bg-white p-3 rounded border border-slate-200 min-h-[80px]">{selectedCustomer.notes || 'אין הערות בסיס'}</p>
-                </div>
-              </div>
-
-              {/* Right Sidebar: Interaction Log & Notes */}
-              <div className="flex-1 flex flex-col bg-white">
-                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-indigo-50/30">
-                  <h4 className="font-bold text-indigo-900 flex items-center gap-2"><MessageSquare className="w-5 h-5 text-indigo-600"/> יומן מעקב והתקשרויות</h4>
-                </div>
-                
-                {/* Timeline */}
-                <div className="flex-1 p-6 space-y-6 md:overflow-y-auto">
-                  {(!selectedCustomer.interactionLogs || selectedCustomer.interactionLogs.length === 0) ? (
-                    <div className="text-center text-slate-400 py-12">
-                      <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-20"/>
-                      <p>אין עדיין תיעוד התקשרויות עם הלקוח.</p>
-                      <p className="text-sm mt-1">הוסף הערה למטה כדי להתחיל מעקב.</p>
-                    </div>
-                  ) : (
-                    <div className="relative border-r-2 border-indigo-100 pr-4 ml-2 space-y-6">
-                      {[...selectedCustomer.interactionLogs].reverse().map((log: any, idx: number) => (
-                        <div key={idx} className="relative">
-                          <div className="absolute -right-[23px] top-1 w-3 h-3 bg-indigo-500 rounded-full border-4 border-white shadow-sm"></div>
-                          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                            <div className="flex justify-between items-center mb-1">
-                              <span className="text-xs font-bold text-slate-500">{new Date(log.date).toLocaleString('he-IL')}</span>
-                              <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-600">{log.user || 'משתמש מערכת'}</span>
-                            </div>
-                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{log.text}</p>
+                {/* ה - ספירת אחריות לאחור */}
+                {customerItems.length > 0 && (
+                  <div className="pt-4 border-t border-slate-200">
+                    <p className="text-xs text-slate-400 font-medium mb-2 flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5"/> סטטוס אחריות</p>
+                    <div className="space-y-2">
+                      {customerItems.map((item: any) => {
+                        if (!item.warrantyMonths || item.warrantyMonths === 0) return (
+                          <div key={item.id} className="bg-white border border-slate-200 rounded p-2 text-xs">
+                            <span className="font-medium text-slate-700">{item.model}</span>
+                            <span className="text-slate-400 block">ללא אחריות</span>
                           </div>
-                        </div>
-                      ))}
+                        );
+                        const saleDate = new Date(item.saleDate);
+                        const expiryDate = new Date(saleDate);
+                        expiryDate.setMonth(expiryDate.getMonth() + Number(item.warrantyMonths));
+                        const daysLeft = Math.ceil((expiryDate.getTime() - todayMs) / (1000 * 60 * 60 * 24));
+                        const isActive = daysLeft > 0;
+                        const isExpiringSoon = isActive && daysLeft <= 30;
+                        return (
+                          <div key={item.id} className={`border rounded p-2 text-xs ${isActive ? (isExpiringSoon ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200') : 'bg-red-50 border-red-200'}`}>
+                            <span className="font-medium text-slate-700">{item.model}</span>
+                            {isActive ? (
+                              <div className={`flex items-center gap-1 mt-0.5 font-bold ${isExpiringSoon ? 'text-amber-700' : 'text-green-700'}`}>
+                                <ShieldCheck className="w-3 h-3"/>
+                                {daysLeft >= 30 ? `${Math.floor(daysLeft/30)} חודשים ו-${daysLeft%30} ימים` : `${daysLeft} ימים`} נותרו
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 mt-0.5 font-bold text-red-600">
+                                <ShieldAlert className="w-3 h-3"/> פגה ב-{expiryDate.toLocaleDateString('he-IL')}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
-
-                {/* Add Note Input */}
-                <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
-                  <textarea 
-                    className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" 
-                    rows={3}
-                    placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..."
-                    value={newNoteText}
-                    onChange={e => setNewNoteText(e.target.value)}
-                  ></textarea>
-                  <div className="flex justify-end mt-2">
-                    <button onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm">
-                      {isSaving ? 'שומר...' : 'שמור הערה ועדכן תאריך'}
-                    </button>
                   </div>
+                )}
+
+                <div className="pt-4 border-t border-slate-200">
+                  <p className="text-xs text-slate-400 mb-1 font-medium">הערות בסיס</p>
+                  <p className="text-xs text-slate-700 whitespace-pre-wrap bg-white p-2 rounded border border-slate-200 min-h-[60px]">{selectedCustomer.notes || 'אין הערות בסיס'}</p>
                 </div>
               </div>
 
+              {/* Right Panel: Tabs */}
+              <div className="flex-1 flex flex-col bg-white min-w-0">
+                {/* Tab Bar */}
+                <div className="flex border-b border-slate-200 bg-slate-50/50 shrink-0">
+                  {[
+                    { id: 'log', label: 'יומן התקשרויות', icon: MessageSquare },
+                    { id: 'purchases', label: `רכישות (${customerItems.length})`, icon: ShoppingCart },
+                    { id: 'quotes', label: `הצעות מחיר (${customerQuotes.length})`, icon: FileText }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveCustomerOverviewTab(tab.id as any)}
+                      className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeCustomerOverviewTab === tab.id ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                    >
+                      <tab.icon className="w-4 h-4"/> {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Tab: יומן */}
+                {activeCustomerOverviewTab === 'log' && (
+                  <div className="flex-1 flex flex-col overflow-hidden">
+                    <div className="flex-1 p-5 space-y-4 md:overflow-y-auto">
+                      {(!selectedCustomer.interactionLogs || selectedCustomer.interactionLogs.length === 0) ? (
+                        <div className="text-center text-slate-400 py-12">
+                          <MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-20"/>
+                          <p>אין עדיין תיעוד התקשרויות.</p>
+                        </div>
+                      ) : (
+                        <div className="relative border-r-2 border-indigo-100 pr-4 ml-2 space-y-5">
+                          {[...selectedCustomer.interactionLogs].reverse().map((log: any, idx: number) => (
+                            <div key={idx} className="relative">
+                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-indigo-500 rounded-full border-4 border-white shadow-sm"></div>
+                              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className="text-xs font-bold text-slate-500">{new Date(log.date).toLocaleString('he-IL')}</span>
+                                  <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-600">{log.user || 'משתמש מערכת'}</span>
+                                </div>
+                                <p className="text-sm text-slate-800 whitespace-pre-wrap">{log.text}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
+                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" rows={3} placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..." value={newNoteText} onChange={e => setNewNoteText(e.target.value)}></textarea>
+                      <div className="flex justify-end mt-2">
+                        <button onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm">
+                          {isSaving ? 'שומר...' : 'שמור הערה ועדכן תאריך'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tab: ו - רכישות */}
+                {activeCustomerOverviewTab === 'purchases' && (
+                  <div className="flex-1 p-5 md:overflow-y-auto">
+                    {customerItems.length === 0 ? (
+                      <div className="text-center text-slate-400 py-12">
+                        <ShoppingCart className="w-10 h-10 mx-auto mb-3 opacity-20"/>
+                        <p>לא בוצעו רכישות עדיין.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {customerItems.map((item: any) => {
+                          const saleDate = item.saleDate ? new Date(item.saleDate) : null;
+                          const expiryDate = saleDate && item.warrantyMonths ? (() => { const d = new Date(saleDate); d.setMonth(d.getMonth() + Number(item.warrantyMonths)); return d; })() : null;
+                          const daysLeft = expiryDate ? Math.ceil((expiryDate.getTime() - todayMs) / (1000 * 60 * 60 * 24)) : null;
+                          const isWarrantyActive = daysLeft !== null && daysLeft > 0;
+                          return (
+                            <div key={item.id} className="bg-white border border-slate-200 rounded-lg p-4 flex justify-between items-start">
+                              <div>
+                                <p className="font-bold text-slate-800">{item.model}</p>
+                                <p className="text-xs text-slate-500 mt-0.5">תאריך מכירה: {saleDate ? saleDate.toLocaleDateString('he-IL') : '---'}</p>
+                                {item.warrantyMonths > 0 && (
+                                  <div className={`flex items-center gap-1 text-xs mt-1 font-medium ${isWarrantyActive ? (daysLeft! <= 30 ? 'text-amber-600' : 'text-green-600') : 'text-red-500'}`}>
+                                    {isWarrantyActive ? <ShieldCheck className="w-3.5 h-3.5"/> : <ShieldAlert className="w-3.5 h-3.5"/>}
+                                    {isWarrantyActive ? (daysLeft! >= 30 ? `${Math.floor(daysLeft!/30)} חודשים ו-${daysLeft!%30} ימים לפקיעה` : `${daysLeft} ימים לפקיעה`) : `פגה ${expiryDate?.toLocaleDateString('he-IL')}`}
+                                    {' '} ({item.warrantyMonths} חודשי אחריות)
+                                  </div>
+                                )}
+                                {item.serialNumber && <p className="text-xs text-slate-400 mt-0.5">סריאל: {item.serialNumber}</p>}
+                              </div>
+                              <div className="text-left shrink-0 ml-4">
+                                <p className="font-bold text-indigo-700">₪{Math.round(item.totalRevenue || item.salePrice || 0).toLocaleString()}</p>
+                                <p className="text-xs text-green-600">רווח: ₪{Math.round(item.profit || 0).toLocaleString()}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Tab: ז - הצעות מחיר */}
+                {activeCustomerOverviewTab === 'quotes' && (
+                  <div className="flex-1 p-5 md:overflow-y-auto">
+                    {customerQuotes.length === 0 ? (
+                      <div className="text-center text-slate-400 py-12">
+                        <FileText className="w-10 h-10 mx-auto mb-3 opacity-20"/>
+                        <p>לא נשלחו הצעות מחיר ללקוח זה.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {customerQuotes.map((q: any) => {
+                          const total = (q.items || []).reduce((s: number, i: any) => s + (Number(i.price) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
+                          const statusLabel = QUOTE_STATUS_MAP[q.status] || q.status;
+                          const statusColor = q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-700' : q.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600';
+                          return (
+                            <div key={q.id} className="bg-white border border-slate-200 rounded-lg p-4">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <p className="text-xs text-slate-400">{q.date ? new Date(q.date).toLocaleDateString('he-IL') : '---'}</p>
+                                  <p className="text-sm text-slate-700 mt-1">{(q.items || []).map((i: any) => `${i.model} ×${i.qty}`).join(', ')}</p>
+                                </div>
+                                <div className="text-left shrink-0 ml-3">
+                                  <p className="font-bold text-indigo-700">₪{Math.round(total).toLocaleString()}</p>
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${statusColor}`}>{statusLabel}</span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => { setSelectedQuote({...q, customerInfo: selectedCustomer}); setIsQuoteOverviewOpen(true); }}
+                                className="mt-2 text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"
+                              >
+                                <Eye className="w-3.5 h-3.5"/> צפה בהצעה
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* QUOTE APPROVAL MODAL */}
       {isQuoteApprovalModalOpen && quoteApprovalData && (
@@ -2614,6 +2862,11 @@ export default function App() {
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-1">עלות משלוח כוללת (₪ לפני מע"מ)</label>
                   <input type="number" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.shippingCost || 0} onChange={e => setQuoteData({...quoteData, shippingCost: Number(e.target.value)})} />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">חודשי אחריות (יוצג בחוזה)</label>
+                  <input type="number" min="0" max="60" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.warrantyMonths || 0} onChange={e => setQuoteData({...quoteData, warrantyMonths: Number(e.target.value)})} placeholder="לדוגמה: 12" />
                 </div>
 
                 <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 mt-4">
