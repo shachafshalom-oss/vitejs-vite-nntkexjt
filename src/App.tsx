@@ -1957,6 +1957,235 @@ export default function App() {
 
       {/* --- MODALS --- */}
 
+      {/* ITEM SALE/EDIT MODAL */}
+      {isItemModalOpen && editingData && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-white rounded-t-xl">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <ShoppingCart className="w-5 h-5 text-green-600"/>
+                {editingData.isGlobalSale ? 'מכירה חדשה (גריעת מלאי)' : 'עריכת פריט'}
+              </h3>
+              <button onClick={() => setIsItemModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <form onSubmit={saveItem} className="p-6 overflow-y-auto flex-1 space-y-4">
+              {editingData.isGlobalSale ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">בחר דגם למכירה <span className="text-red-500">*</span></label>
+                    <select required className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.model || ''} onChange={e => setEditingData({...editingData, model: e.target.value})}>
+                      {calculatedData.availableModelsInStock.length === 0 && <option value="">אין דגמים במלאי</option>}
+                      {calculatedData.availableModelsInStock.map((m: string) => (
+                        <option key={m} value={m}>{m} ({calculatedData.stockInWarehouse[m]} במלאי)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">תאריך מכירה</label>
+                      <input type="date" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.saleDate || ''} onChange={e => setEditingData({...editingData, saleDate: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">חודשי אחריות</label>
+                      <input type="number" min="0" max="60" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.warrantyMonths || 0} onChange={e => setEditingData({...editingData, warrantyMonths: Number(e.target.value)})} />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">דגם</label>
+                      <input type="text" readOnly className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-100 text-slate-600" value={editingData.model || ''} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס</label>
+                      <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 font-bold" value={editingData.status || 'in_warehouse'} onChange={e => setEditingData({...editingData, status: e.target.value})}>
+                        {Object.entries(STATUS_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">מספר סריאלי / הערה</label>
+                    <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.serialNumber || ''} onChange={e => setEditingData({...editingData, serialNumber: e.target.value})} placeholder="S/N או הערה מזהה" />
+                  </div>
+                  {editingData.status === 'sold' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">תאריך מכירה</label>
+                        <input type="date" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.saleDate || ''} onChange={e => setEditingData({...editingData, saleDate: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">חודשי אחריות</label>
+                        <input type="number" min="0" max="60" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.warrantyMonths || 0} onChange={e => setEditingData({...editingData, warrantyMonths: Number(e.target.value)})} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="border-t border-slate-200 pt-4 mt-2">
+                <h4 className="font-bold text-slate-700 mb-3 text-sm">פרטי מכירה ועלויות</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">מחיר מכירה (₪)</label>
+                    <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border bg-green-50 text-green-700 font-bold" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">תוספות (₪ הכנסה)</label>
+                    <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.addOnPrice || 0} onChange={e => setEditingData({...editingData, addOnPrice: Number(e.target.value)})} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">עלות תיקונים (₪)</label>
+                    <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.repairCost || 0} onChange={e => setEditingData({...editingData, repairCost: Number(e.target.value)})} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">עלות תוספות (₪)</label>
+                    <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.addOnCost || 0} onChange={e => setEditingData({...editingData, addOnCost: Number(e.target.value)})} />
+                  </div>
+                </div>
+              </div>
+
+              {(editingData.isGlobalSale || editingData.status === 'sold') && (
+                <div className="border-t border-slate-200 pt-4 space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">שיוך ללקוח</label>
+                    <div className="flex gap-2">
+                      <select className="flex-1 border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.customerId || ''} onChange={e => setEditingData({...editingData, customerId: e.target.value})}>
+                        <option value="">ללא שיוך לקוח</option>
+                        {customers.map((c: any) => <option key={c.id} value={c.id}>{c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}</option>)}
+                      </select>
+                      <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-100 text-indigo-700 px-3 rounded-md text-sm font-bold hover:bg-indigo-200 whitespace-nowrap"><UserPlus className="w-4 h-4"/></button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">שיוך לקמפיין שיווקי</label>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.campaignId || ''} onChange={e => setEditingData({...editingData, campaignId: e.target.value})}>
+                      <option value="">ללא שיוך</option>
+                      {campaigns.filter((c: any) => { const isStarted = !c.startDate || c.startDate <= todayStr; const isNotTooOld = !c.endDate || c.endDate >= thirtyDaysAgoStr; return isStarted && isNotTooOld; }).map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 mt-6 pt-4 border-t">
+                <button type="submit" disabled={isSaving} className="flex-1 bg-green-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:opacity-50">{isSaving ? 'שומר...' : editingData.isGlobalSale ? 'בצע מכירה וגרא מהמלאי' : 'שמור שינויים'}</button>
+                <button type="button" onClick={() => setIsItemModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* SHIPMENT ADD/EDIT MODAL */}
+      {isShipmentModalOpen && editingData && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-white rounded-t-xl">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Ship className="w-5 h-5 text-indigo-600"/> {editingData.id ? 'עריכת משלוח' : 'משלוח חדש מסין'}</h3>
+              <button onClick={() => setIsShipmentModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <form onSubmit={saveShipment} className="p-6 overflow-y-auto flex-1 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שם המשלוח <span className="text-red-500">*</span></label>
+                  <input required type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.name || ''} onChange={e => setEditingData({...editingData, name: e.target.value})} placeholder="לדוגמה: משלוח ינואר 2025" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">תאריך הזמנה</label>
+                  <input type="date" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.date || ''} onChange={e => setEditingData({...editingData, date: e.target.value})} />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שער דולר (₪)</label>
+                  <input type="number" step="0.01" min="0" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.exchangeRate || 3.7} onChange={e => setEditingData({...editingData, exchangeRate: Number(e.target.value)})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">עלות שילוח ($)</label>
+                  <input type="number" step="0.01" min="0" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.shippingCostUSD || 0} onChange={e => setEditingData({...editingData, shippingCostUSD: Number(e.target.value)})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">עלות שילוח (₪)</label>
+                  <input type="number" step="0.01" min="0" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.shippingCostILS || 0} onChange={e => setEditingData({...editingData, shippingCostILS: Number(e.target.value)})} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">סה"כ CBM של המשלוח</label>
+                <input type="number" step="0.01" min="0" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.totalCbm || 0} onChange={e => setEditingData({...editingData, totalCbm: Number(e.target.value)})} />
+              </div>
+              <div className="border-t border-slate-200 pt-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="font-bold text-slate-700">שורות פריטים במשלוח</h4>
+                  <button type="button" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף שורה</button>
+                </div>
+                {(editingData.lines || []).map((line: any, idx: number) => (
+                  <div key={idx} className="flex gap-2 items-end mb-3 bg-slate-50 p-3 rounded-lg border border-slate-200 relative">
+                    {editingData.lines.length > 1 && <button type="button" onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
+                    <div className="flex-1">
+                      <label className="block text-xs font-bold text-slate-600 mb-1">דגם</label>
+                      <select className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value}; setEditingData({...editingData, lines: newLines}); }}>
+                        {modelsList.map((m: string) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div className="w-20">
+                      <label className="block text-xs font-bold text-slate-600 mb-1">כמות</label>
+                      <input type="number" min="1" className="w-full border-slate-300 rounded p-2 text-sm border font-bold" value={line.qty} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], qty: Number(e.target.value)}; setEditingData({...editingData, lines: newLines}); }} />
+                    </div>
+                    <div className="w-28">
+                      <label className="block text-xs font-bold text-slate-600 mb-1">עלות יחידה ($)</label>
+                      <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded p-2 text-sm border" value={line.unitCostUSD} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], unitCostUSD: Number(e.target.value)}; setEditingData({...editingData, lines: newLines}); }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-6 pt-4 border-t">
+                <button type="submit" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 disabled:opacity-50">{isSaving ? 'שומר...' : editingData.id ? 'עדכן משלוח' : 'צור משלוח חדש'}</button>
+                <button type="button" onClick={() => setIsShipmentModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CAMPAIGN ADD/EDIT MODAL */}
+      {isCampaignModalOpen && editingData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h3 className="text-lg font-bold mb-4 border-b pb-2 flex items-center gap-2"><Megaphone className="w-5 h-5 text-orange-600"/> {editingData.id ? 'עריכת קמפיין' : 'קמפיין שיווקי חדש'}</h3>
+            <form onSubmit={saveCampaign} className="space-y-4">
+              <div><label className="block text-sm font-medium mb-1">שם הקמפיין <span className="text-red-500">*</span></label><input required type="text" className="border border-slate-300 p-2 rounded w-full" value={editingData.name || ''} onChange={e => setEditingData({...editingData, name: e.target.value})} placeholder="לדוגמה: קמפיין אינסטגרם קיץ" /></div>
+              <div><label className="block text-sm font-medium mb-1">עלות כוללת (₪)</label><input type="number" min="0" step="0.01" className="border border-slate-300 p-2 rounded w-full" value={editingData.totalCost || 0} onChange={e => setEditingData({...editingData, totalCost: Number(e.target.value)})} /></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="block text-sm font-medium mb-1">תאריך התחלה</label><input type="date" className="border border-slate-300 p-2 rounded w-full" value={editingData.startDate || ''} onChange={e => setEditingData({...editingData, startDate: e.target.value})} /></div>
+                <div><label className="block text-sm font-medium mb-1">תאריך סיום</label><input type="date" className="border border-slate-300 p-2 rounded w-full" value={editingData.endDate || ''} onChange={e => setEditingData({...editingData, endDate: e.target.value})} /></div>
+              </div>
+              <div className="flex gap-2 mt-6 pt-4 border-t">
+                <button type="submit" disabled={isSaving} className="bg-orange-600 text-white p-2 rounded flex-1 font-bold disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור קמפיין'}</button>
+                <button type="button" onClick={() => setIsCampaignModalOpen(false)} className="bg-slate-200 text-slate-700 p-2 rounded px-4 font-medium">ביטול</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADD MODEL MODAL (from FAB) */}
+      {isModelModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
+            <h3 className="text-lg font-bold mb-4 border-b pb-2 flex items-center gap-2"><Layers className="w-5 h-5 text-blue-600"/> הוספת דגם חדש</h3>
+            <form onSubmit={handleAddNewModelWithData} className="space-y-4">
+              <div><label className="block text-sm font-medium mb-1">שם הדגם <span className="text-red-500">*</span></label><input required type="text" className="border border-slate-300 p-2 rounded w-full" value={newModelData.name} onChange={e => setNewModelData({...newModelData, name: e.target.value})} placeholder="לדוגמה: Premium Bar" /></div>
+              <div><label className="block text-sm font-medium mb-1">CBM (נפח ליחידה)</label><input type="number" min="0" step="0.01" className="border border-slate-300 p-2 rounded w-full" value={newModelData.cbm} onChange={e => setNewModelData({...newModelData, cbm: Number(e.target.value)})} /></div>
+              <div className="flex gap-2 mt-6 pt-4 border-t">
+                <button type="submit" disabled={isSaving} className="bg-blue-600 text-white p-2 rounded flex-1 font-bold disabled:opacity-50">{isSaving ? 'שומר...' : 'הוסף דגם'}</button>
+                <button type="button" onClick={() => setIsModelModalOpen(false)} className="bg-slate-200 text-slate-700 p-2 rounded px-4 font-medium">ביטול</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* CUSTOMER ADD/EDIT MODAL */}
       {isCustomerModalOpen && customerEditingData && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
