@@ -365,6 +365,34 @@ export default function App() {
     return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); };
   }, [user]);
 
+  // --- Dynamic favicon & apple-touch-icon from company logo ---
+  useEffect(() => {
+    if (!settings?.companyLogoUrl) return;
+    const logoUrl = settings.companyLogoUrl;
+
+    // עדכון favicon
+    let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!favicon) {
+      favicon = document.createElement('link');
+      favicon.rel = 'icon';
+      document.head.appendChild(favicon);
+    }
+    favicon.href = logoUrl;
+    favicon.type = 'image/png';
+
+    // עדכון apple-touch-icon (קיצור דרך iOS)
+    let appleIcon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    if (!appleIcon) {
+      appleIcon = document.createElement('link');
+      appleIcon.rel = 'apple-touch-icon';
+      document.head.appendChild(appleIcon);
+    }
+    appleIcon.href = logoUrl;
+
+    // עדכון כותרת הדף
+    document.title = 'D.S Logistics CRM';
+  }, [settings?.companyLogoUrl]);
+
   // --- Login Handler ---
   const handleLogin = async (e: any) => {
     e.preventDefault();
@@ -1316,11 +1344,28 @@ export default function App() {
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
-          <div className="flex items-center gap-3">
-            <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-6 w-6 text-indigo-700" /></div>
-            <h1 className="text-xl font-bold text-slate-800 hidden sm:block">D.S Logistics CRM</h1>
+          {/* שמאל - שם מערכת */}
+          <div className="flex items-center gap-3 min-w-[120px]">
+            <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-5 w-5 text-indigo-700" /></div>
+            <h1 className="text-sm font-bold text-slate-600 hidden sm:block">D.S Logistics CRM</h1>
           </div>
-          <div className="flex items-center gap-4 relative z-10">
+
+          {/* מרכז - לוגו החברה */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center h-12">
+            {settings?.companyLogoUrl ? (
+              <img
+                src={settings.companyLogoUrl}
+                alt="לוגו החברה"
+                className="h-10 max-w-[140px] object-contain"
+                crossOrigin="anonymous"
+              />
+            ) : (
+              <span className="text-lg font-bold text-slate-700 tracking-tight">D.S Logistics</span>
+            )}
+          </div>
+
+          {/* ימין - יציאה */}
+          <div className="flex items-center gap-4 relative z-10 min-w-[120px] justify-end">
             <span className="text-sm text-slate-500 hidden md:inline">{user?.email || ''}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
