@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -226,6 +226,15 @@ export default function App() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [quotes, setQuotes] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+
+  // Supplier UI States
+  const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
+  const [supplierEditingData, setSupplierEditingData] = useState<any>(null);
+  const [selectedSupplier, setSelectedSupplier] = useState<any>(null);
+  const [isSupplierOverviewOpen, setIsSupplierOverviewOpen] = useState(false);
+  const [activeSupplierTab, setActiveSupplierTab] = useState<'details'|'orders'|'notes'>('details');
+  const [supplierNoteText, setSupplierNoteText] = useState('');
 
   const modelsList = useMemo(() => Object.keys(settings?.models || {}), [settings]);
 
@@ -362,7 +371,13 @@ export default function App() {
       setLoading(false);
     });
 
-    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); };
+    const unsubSuppliers = onSnapshot(collection(db, 'crm_suppliers'), (snap) => {
+      let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+      setSuppliers(data);
+    });
+
+    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); };
   }, [user]);
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
@@ -744,9 +759,59 @@ export default function App() {
     return { 
       enrichedItems, groupedInventory: groupedArray, shipmentStats, campaignStats, customerStats, 
       inWarehouseCount, totalInventoryValueILS, avgProfit: calculatedAvgProfit, forecasts, modelsInStock, availableModelsInStock, stockInWarehouse,
-      monthlyFinance, availableMonths, selectedMonthData, yearlyIncome, yearlyExpense, currentMonthIncome, lastMonthIncome
+      monthlyFinance, availableMonths, selectedMonthData, yearlyIncome, yearlyExpense, currentMonthIncome, lastMonthIncome,
+      supplierStats: (() => {
+        const stats: any = {};
+        // בנה map: modelName → supplierId
+        const modelToSupplier: any = {};
+        if (settings?.models) {
+          Object.entries(settings.models).forEach(([modelName, modelData]: [string, any]) => {
+            if (modelData.supplierId) modelToSupplier[modelName] = modelData.supplierId;
+          });
+        }
+        // חשב per-supplier מהמשלוחים
+        shipments.forEach((s: any) => {
+          if (!s.lines) return;
+          const exchangeRate = Number(s.exchangeRate) || 1;
+          const arrivalDate = s.arrivalDate;
+          const orderDate = s.date;
+          const leadTimeDays = (arrivalDate && orderDate)
+            ? Math.round((new Date(arrivalDate).getTime() - new Date(orderDate).getTime()) / (1000*60*60*24))
+            : null;
+          s.lines.forEach((line: any) => {
+            const supplierId = modelToSupplier[line.model];
+            if (!supplierId) return;
+            if (!stats[supplierId]) {
+              stats[supplierId] = { totalPaidUSD: 0, totalPaidILS: 0, orderCount: 0, shipmentIds: new Set(), models: new Set(), shipmentHistory: [], priceHistory: {}, leadTimes: [] };
+            }
+            const lineCostUSD = Number(line.qty) * Number(line.unitCostUSD);
+            stats[supplierId].totalPaidUSD += lineCostUSD;
+            stats[supplierId].totalPaidILS += lineCostUSD * exchangeRate;
+            stats[supplierId].models.add(line.model);
+            if (!stats[supplierId].shipmentIds.has(s.id)) {
+              stats[supplierId].shipmentIds.add(s.id);
+              stats[supplierId].orderCount++;
+              if (leadTimeDays !== null && leadTimeDays > 0) stats[supplierId].leadTimes.push(leadTimeDays);
+            }
+            // היסטוריית מחירים לכל דגם
+            if (!stats[supplierId].priceHistory[line.model]) stats[supplierId].priceHistory[line.model] = [];
+            stats[supplierId].priceHistory[line.model].push({ date: s.date, shipmentName: s.name, unitCostUSD: Number(line.unitCostUSD), shipmentId: s.id });
+          });
+        });
+        // המר Sets ל-arrays וחשב ממוצעים
+        Object.values(stats).forEach((s: any) => {
+          s.models = Array.from(s.models);
+          s.shipmentIds = Array.from(s.shipmentIds);
+          s.avgLeadTimeDays = s.leadTimes.length > 0 ? Math.round(s.leadTimes.reduce((a: number, b: number) => a+b, 0) / s.leadTimes.length) : null;
+          // מיין priceHistory לפי תאריך
+          Object.keys(s.priceHistory).forEach(model => {
+            s.priceHistory[model].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          });
+        });
+        return stats;
+      })()
     };
-  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr]);
+  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr, suppliers]);
 
   // --- Handlers ---
   const generateWithGemini = async (prompt: string) => {
@@ -1141,6 +1206,37 @@ export default function App() {
     setIsSaving(false);
   };
 
+  const saveSupplier = async (e: any) => {
+    e.preventDefault();
+    setIsSaving(true);
+    try {
+      const data = { ...supplierEditingData, updatedAt: new Date().toISOString() };
+      if (data.id) {
+        await updateDoc(doc(db, 'crm_suppliers', data.id), data);
+      } else {
+        data.createdAt = new Date().toISOString();
+        data.interactionLogs = [];
+        data.catalog = data.catalog || [];
+        await addDoc(collection(db, 'crm_suppliers'), data);
+      }
+      setIsSupplierModalOpen(false);
+    } catch (err) { alert('שגיאה בשמירת ספק'); }
+    setIsSaving(false);
+  };
+
+  const addSupplierNote = async () => {
+    if (!supplierNoteText.trim() || !selectedSupplier) return;
+    setIsSaving(true);
+    try {
+      const newLog = { date: new Date().toISOString(), text: supplierNoteText, user: user?.email || 'משתמש מערכת' };
+      const updatedLogs = [...(selectedSupplier.interactionLogs || []), newLog];
+      await updateDoc(doc(db, 'crm_suppliers', selectedSupplier.id), { interactionLogs: updatedLogs, updatedAt: new Date().toISOString() });
+      setSelectedSupplier({ ...selectedSupplier, interactionLogs: updatedLogs });
+      setSupplierNoteText('');
+    } catch (err) { alert('שגיאה בהוספת הערה'); }
+    setIsSaving(false);
+  };
+
   // --- Quote Generation & Management ---
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
@@ -1378,6 +1474,7 @@ export default function App() {
               { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
               { id: 'shipments', icon: Ship, label: 'משלוחים' },
               { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
+              { id: 'suppliers', icon: Building2, label: 'ספקים' },
               { id: 'models', icon: Layers, label: 'דגמים' },
               { id: 'customers', icon: Users, label: 'לקוחות' },
               { id: 'marketing', icon: Megaphone, label: 'קמפיינים' },
@@ -1708,6 +1805,147 @@ export default function App() {
           </div>
         )}
 
+        {/* --- TAB: SUPPLIERS --- */}
+        {activeTab === 'suppliers' && (
+          <div>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-6 h-6 text-indigo-600"/> ספקים מסין</h2>
+              <button onClick={() => { setSupplierEditingData({ name: '', contactName: '', whatsapp: '', wechat: '', email: '', city: '', notes: '', catalog: [] }); setIsSupplierModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2">
+                <Plus className="w-4 h-4"/> הוסף ספק
+              </button>
+            </div>
+
+            {/* השוואת מחירים לפי דגם */}
+            {(() => {
+              const modelToSuppliers: any = {};
+              suppliers.forEach((s: any) => {
+                (s.catalog || []).forEach((c: any) => {
+                  if (!modelToSuppliers[c.model]) modelToSuppliers[c.model] = [];
+                  modelToSuppliers[c.model].push({ supplierName: s.name, supplierId: s.id, unitCostUSD: Number(c.unitCostUSD) });
+                });
+              });
+              const modelsWithMultiple = Object.entries(modelToSuppliers).filter(([, sups]: any) => sups.length > 1);
+              if (modelsWithMultiple.length === 0) return null;
+              return (
+                <div className="mb-6 bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
+                  <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-indigo-500"/> השוואת מחירים בין ספקים</h3>
+                  <div className="space-y-3">
+                    {modelsWithMultiple.map(([model, sups]: any) => {
+                      const sorted = [...sups].sort((a,b) => a.unitCostUSD - b.unitCostUSD);
+                      const cheapest = sorted[0].unitCostUSD;
+                      return (
+                        <div key={model} className="bg-slate-50 rounded-lg p-3">
+                          <p className="font-bold text-slate-700 text-sm mb-2">דגם {model}</p>
+                          <div className="flex flex-wrap gap-2">
+                            {sorted.map((sup: any) => {
+                              const isCheapest = sup.unitCostUSD === cheapest;
+                              const diff = cheapest > 0 ? ((sup.unitCostUSD - cheapest) / cheapest * 100).toFixed(1) : '0';
+                              return (
+                                <div key={sup.supplierId} className={`px-3 py-1.5 rounded-md text-xs font-medium border ${isCheapest ? 'bg-green-100 border-green-300 text-green-800' : 'bg-white border-slate-200 text-slate-700'}`}>
+                                  {sup.supplierName}: ${sup.unitCostUSD}
+                                  {!isCheapest && <span className="text-red-500 mr-1"> (+{diff}%)</span>}
+                                  {isCheapest && <span className="mr-1"> ✓ זול יותר</span>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* כרטיסי ספקים */}
+            {suppliers.length === 0 ? (
+              <div className="bg-white p-12 rounded-lg border border-slate-200 text-center text-slate-400">
+                <Building2 className="w-12 h-12 mx-auto mb-3 opacity-20"/>
+                <p className="font-medium text-lg">אין ספקים במערכת עדיין</p>
+                <p className="text-sm mt-1">הוסף את הספקים שלך כדי לעקוב אחרי הזמנות ומחירים.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {suppliers.map((s: any) => {
+                  const stats = calculatedData.supplierStats?.[s.id] || { totalPaidUSD: 0, totalPaidILS: 0, orderCount: 0, models: [], avgLeadTimeDays: null, priceHistory: {} };
+                  // בדיקת עליות מחיר
+                  const priceAlerts = Object.entries(stats.priceHistory || {}).filter(([, history]: any) => {
+                    if (history.length < 2) return false;
+                    const last = history[history.length - 1].unitCostUSD;
+                    const prev = history[history.length - 2].unitCostUSD;
+                    return last > prev;
+                  });
+
+                  return (
+                    <div key={s.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow">
+                      <div className="p-5 cursor-pointer" onClick={() => { setSelectedSupplier(s); setActiveSupplierTab('details'); setIsSupplierOverviewOpen(true); }}>
+                        <div className="flex justify-between items-start mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-indigo-100 p-2.5 rounded-full"><Building2 className="w-5 h-5 text-indigo-600"/></div>
+                            <div>
+                              <h3 className="font-bold text-slate-800">{s.name}</h3>
+                              {s.contactName && <p className="text-xs text-slate-500">{s.contactName}</p>}
+                              {s.city && <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3"/> {s.city}</p>}
+                            </div>
+                          </div>
+                          <div className="flex gap-1">
+                            <button onClick={e => { e.stopPropagation(); setSupplierEditingData(s); setIsSupplierModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
+                            <button onClick={e => { e.stopPropagation(); deleteDocHandler('crm_suppliers', s.id); }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
+                          </div>
+                        </div>
+
+                        {/* מודלים שמספק */}
+                        {stats.models.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mb-3">
+                            {stats.models.map((m: string) => <span key={m} className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{m}</span>)}
+                          </div>
+                        )}
+
+                        {/* התראת עלייה במחיר */}
+                        {priceAlerts.length > 0 && (
+                          <div className="bg-amber-50 border border-amber-200 rounded p-2 mb-3 text-xs text-amber-700 flex items-center gap-1.5">
+                            <ArrowUpRight className="w-3.5 h-3.5 shrink-0"/>
+                            עלייה במחיר: {priceAlerts.map(([model]) => model).join(', ')}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-slate-100 text-center">
+                          <div>
+                            <p className="text-xs text-slate-400">סה"כ שולם</p>
+                            <p className="font-bold text-slate-800 text-sm">${Math.round(stats.totalPaidUSD).toLocaleString()}</p>
+                            <p className="text-[10px] text-slate-400">₪{Math.round(stats.totalPaidILS).toLocaleString()}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-slate-400">הזמנות</p>
+                            <p className="font-bold text-slate-800 text-sm">{stats.orderCount}</p>
+                            {stats.avgLeadTimeDays && <p className="text-[10px] text-slate-400">~{stats.avgLeadTimeDays} ימי ייצור</p>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* כפתורי קשר */}
+                      <div className="px-5 pb-4 flex gap-2">
+                        {s.whatsapp && (
+                          <a href={`https://wa.me/${s.whatsapp.replace(/[^0-9]/g,'')}`} target="_blank" rel="noopener noreferrer"
+                             className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-green-50 text-green-700 border border-green-200 rounded-md py-1.5 hover:bg-green-100 transition-colors"
+                             onClick={e => e.stopPropagation()}>
+                            <ExternalLink className="w-3.5 h-3.5"/> WhatsApp
+                          </a>
+                        )}
+                        {s.wechat && (
+                          <div className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-slate-50 text-slate-600 border border-slate-200 rounded-md py-1.5">
+                            WeChat: {s.wechat}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* --- TAB: MODELS --- */}
         {activeTab === 'models' && (
           <div className="max-w-4xl mx-auto space-y-6">
@@ -1732,9 +1970,22 @@ export default function App() {
                   <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
                     <div className="flex justify-between items-center mb-4">
                         <h4 className="font-bold text-lg text-slate-800">{model}</h4>
-                        <div className="flex items-center gap-2">
-                            <label className="text-sm font-medium text-slate-600">CBM:</label>
-                            <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white" value={modelCbm} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <div className="flex items-center gap-2">
+                              <label className="text-sm font-medium text-slate-600">ספק ראשי:</label>
+                              <select
+                                className="text-sm border border-slate-300 rounded p-1.5 bg-white focus:ring-indigo-500"
+                                value={settings.models?.[model]?.supplierId || ''}
+                                onChange={e => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], supplierId: e.target.value }}})}
+                              >
+                                <option value="">— לא שויך —</option>
+                                {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <label className="text-sm font-medium text-slate-600">CBM:</label>
+                                <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white" value={settings.models?.[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
+                            </div>
                         </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2849,6 +3100,261 @@ export default function App() {
                         })}
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* SUPPLIER ADD/EDIT MODAL */}
+      {isSupplierModalOpen && supplierEditingData && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-5 h-5 text-indigo-600"/> {supplierEditingData.id ? 'עריכת ספק' : 'ספק חדש'}</h3>
+              <button onClick={() => setIsSupplierModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <form onSubmit={saveSupplier} className="p-6 overflow-y-auto flex-1 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שם החברה <span className="text-red-500">*</span></label>
+                  <input required type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.name || ''} onChange={e => setSupplierEditingData({...supplierEditingData, name: e.target.value})} placeholder="לדוגמה: Guangzhou Steel Co." />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">איש קשר</label>
+                  <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.contactName || ''} onChange={e => setSupplierEditingData({...supplierEditingData, contactName: e.target.value})} placeholder="שם איש הקשר" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">עיר בסין</label>
+                  <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.city || ''} onChange={e => setSupplierEditingData({...supplierEditingData, city: e.target.value})} placeholder="לדוגמה: Foshan" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">WhatsApp (בינלאומי)</label>
+                  <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.whatsapp || ''} onChange={e => setSupplierEditingData({...supplierEditingData, whatsapp: e.target.value})} placeholder="86-131-2345-6789" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">WeChat ID</label>
+                  <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.wechat || ''} onChange={e => setSupplierEditingData({...supplierEditingData, wechat: e.target.value})} placeholder="wechat_id" />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label>
+                  <input type="email" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.email || ''} onChange={e => setSupplierEditingData({...supplierEditingData, email: e.target.value})} placeholder="supplier@factory.com" />
+                </div>
+              </div>
+
+              {/* קטלוג מחירים */}
+              <div className="border-t border-slate-200 pt-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="font-bold text-slate-700 text-sm">קטלוג — דגמים ומחירים מוצעים</h4>
+                  <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, catalog: [...(supplierEditingData.catalog||[]), { model: modelsList[0] || '', unitCostUSD: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף דגם</button>
+                </div>
+                {(supplierEditingData.catalog || []).map((c: any, idx: number) => (
+                  <div key={idx} className="flex gap-2 items-center mb-2">
+                    <select className="flex-1 border-slate-300 rounded p-2 text-sm border" value={c.model} onChange={e => { const nc = [...supplierEditingData.catalog]; nc[idx] = {...nc[idx], model: e.target.value}; setSupplierEditingData({...supplierEditingData, catalog: nc}); }}>
+                      {modelsList.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <input type="number" min="0" step="0.01" className="w-28 border-slate-300 rounded p-2 text-sm border" value={c.unitCostUSD} onChange={e => { const nc = [...supplierEditingData.catalog]; nc[idx] = {...nc[idx], unitCostUSD: Number(e.target.value)}; setSupplierEditingData({...supplierEditingData, catalog: nc}); }} placeholder="$ ליחידה" />
+                    <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, catalog: supplierEditingData.catalog.filter((_: any, i: number) => i !== idx)})} className="text-red-400 hover:text-red-600"><X className="w-4 h-4"/></button>
+                  </div>
+                ))}
+                {(!supplierEditingData.catalog || supplierEditingData.catalog.length === 0) && <p className="text-xs text-slate-400 text-center py-2">הוסף דגמים שספק זה יכול לספק</p>}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">הערות</label>
+                <textarea className="w-full border-slate-300 rounded-md p-2.5 border min-h-[60px]" value={supplierEditingData.notes || ''} onChange={e => setSupplierEditingData({...supplierEditingData, notes: e.target.value})} placeholder="תנאי תשלום, הערות על איכות, הסכמות מיוחדות..."/>
+              </div>
+
+              <div className="flex gap-2 pt-4 border-t">
+                <button type="submit" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור ספק'}</button>
+                <button type="button" onClick={() => setIsSupplierModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* SUPPLIER OVERVIEW MODAL */}
+      {isSupplierOverviewOpen && selectedSupplier && (() => {
+        const stats = calculatedData.supplierStats?.[selectedSupplier.id] || { totalPaidUSD: 0, totalPaidILS: 0, orderCount: 0, models: [], avgLeadTimeDays: null, priceHistory: {} };
+        // בנה היסטוריית הזמנות לפי משלוח
+        const modelToSupplier: any = {};
+        if (settings?.models) Object.entries(settings.models).forEach(([m, d]: any) => { if (d.supplierId === selectedSupplier.id) modelToSupplier[m] = true; });
+        const supplierShipments = shipments.filter(s => s.lines?.some((l: any) => modelToSupplier[l.model])).map(s => {
+          const myLines = (s.lines || []).filter((l: any) => modelToSupplier[l.model]);
+          const totalUSD = myLines.reduce((acc: number, l: any) => acc + Number(l.qty) * Number(l.unitCostUSD), 0);
+          return { ...s, myLines, totalUSD, totalILS: totalUSD * (Number(s.exchangeRate) || 1) };
+        }).sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+        return (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[88vh] flex flex-col">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
+              <h3 className="text-lg font-bold flex items-center gap-2"><Building2 className="w-5 h-5 text-indigo-600"/> {selectedSupplier.name}</h3>
+              <button onClick={() => setIsSupplierOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+
+            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+              {/* Sidebar */}
+              <div className="w-full md:w-64 border-b md:border-b-0 md:border-l border-slate-200 bg-slate-50 p-5 shrink-0 md:overflow-y-auto space-y-4">
+                <div className="text-center">
+                  <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-2"><Building2 className="w-7 h-7 text-indigo-600"/></div>
+                  <p className="font-bold text-slate-800">{selectedSupplier.name}</p>
+                  {selectedSupplier.contactName && <p className="text-xs text-slate-500">{selectedSupplier.contactName}</p>}
+                  {selectedSupplier.city && <p className="text-xs text-slate-400 flex items-center justify-center gap-1"><MapPin className="w-3 h-3"/> {selectedSupplier.city}</p>}
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  {selectedSupplier.whatsapp && <a href={`https://wa.me/${selectedSupplier.whatsapp.replace(/[^0-9]/g,'')}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 rounded-md px-3 py-2 text-xs font-medium hover:bg-green-100"><ExternalLink className="w-3.5 h-3.5"/> פתח WhatsApp</a>}
+                  {selectedSupplier.wechat && <div className="flex items-center gap-2 text-xs text-slate-600 bg-white border border-slate-200 rounded-md px-3 py-2">WeChat: {selectedSupplier.wechat}</div>}
+                  {selectedSupplier.email && <div className="flex items-center gap-2 text-xs text-slate-600"><Mail className="w-3.5 h-3.5 text-slate-400"/> {selectedSupplier.email}</div>}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-200">
+                  <div className="bg-white rounded-lg p-2 text-center border border-slate-200">
+                    <p className="text-[10px] text-slate-400">סה"כ שולם</p>
+                    <p className="font-bold text-sm">${Math.round(stats.totalPaidUSD).toLocaleString()}</p>
+                  </div>
+                  <div className="bg-white rounded-lg p-2 text-center border border-slate-200">
+                    <p className="text-[10px] text-slate-400">הזמנות</p>
+                    <p className="font-bold text-sm">{stats.orderCount}</p>
+                  </div>
+                  {stats.avgLeadTimeDays && <div className="col-span-2 bg-white rounded-lg p-2 text-center border border-slate-200">
+                    <p className="text-[10px] text-slate-400">זמן ייצור ממוצע</p>
+                    <p className="font-bold text-sm">{stats.avgLeadTimeDays} ימים</p>
+                  </div>}
+                </div>
+              </div>
+
+              {/* Main Panel */}
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="flex border-b border-slate-200 bg-slate-50/50 shrink-0">
+                  {[{id:'details',label:'פרטים וקטלוג'},{id:'orders',label:`הזמנות (${supplierShipments.length})`},{id:'notes',label:'הערות'}].map(tab => (
+                    <button key={tab.id} onClick={() => setActiveSupplierTab(tab.id as any)} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeSupplierTab === tab.id ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>{tab.label}</button>
+                  ))}
+                </div>
+
+                {/* Tab: פרטים */}
+                {activeSupplierTab === 'details' && (
+                  <div className="flex-1 p-5 md:overflow-y-auto space-y-4">
+                    {selectedSupplier.notes && <div className="bg-slate-50 rounded-lg p-3 text-sm text-slate-700 border border-slate-200"><p className="text-xs text-slate-400 mb-1 font-medium">הערות</p>{selectedSupplier.notes}</div>}
+                    <div>
+                      <p className="font-bold text-slate-700 text-sm mb-3">קטלוג מחירים</p>
+                      {(!selectedSupplier.catalog || selectedSupplier.catalog.length === 0) ? (
+                        <p className="text-sm text-slate-400">לא הוגדרו מחירים בקטלוג.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedSupplier.catalog.map((c: any, idx: number) => {
+                            const history = stats.priceHistory?.[c.model] || [];
+                            const lastShipmentPrice = history.length > 0 ? history[history.length-1].unitCostUSD : null;
+                            const prevShipmentPrice = history.length > 1 ? history[history.length-2].unitCostUSD : null;
+                            const priceChange = lastShipmentPrice && prevShipmentPrice ? lastShipmentPrice - prevShipmentPrice : null;
+                            return (
+                              <div key={idx} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center">
+                                <div>
+                                  <p className="font-bold text-slate-800">{c.model}</p>
+                                  <p className="text-xs text-slate-500">מחיר מוצע בקטלוג: ${c.unitCostUSD}</p>
+                                  {history.length > 0 && <p className="text-xs text-indigo-600 mt-0.5">מחיר הזמנה אחרונה: ${lastShipmentPrice}</p>}
+                                </div>
+                                {priceChange !== null && (
+                                  <div className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-md ${priceChange > 0 ? 'bg-red-50 text-red-600' : priceChange < 0 ? 'bg-green-50 text-green-600' : 'bg-slate-50 text-slate-500'}`}>
+                                    {priceChange > 0 ? <ArrowUpRight className="w-3.5 h-3.5"/> : priceChange < 0 ? <ArrowDownRight className="w-3.5 h-3.5"/> : null}
+                                    {priceChange > 0 ? `+$${priceChange.toFixed(2)}` : priceChange < 0 ? `-$${Math.abs(priceChange).toFixed(2)}` : 'ללא שינוי'}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    {/* מגמת מחירים */}
+                    {Object.entries(stats.priceHistory || {}).filter(([, h]: any) => h.length > 1).map(([model, history]: any) => (
+                      <div key={model} className="bg-white border border-slate-200 rounded-lg p-3">
+                        <p className="text-xs font-bold text-slate-600 mb-2">היסטוריית מחיר — {model}</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {history.map((h: any, i: number) => {
+                            const prev = i > 0 ? history[i-1].unitCostUSD : null;
+                            const changed = prev !== null && h.unitCostUSD !== prev;
+                            const up = prev !== null && h.unitCostUSD > prev;
+                            return (
+                              <div key={i} className={`text-xs px-2 py-1 rounded border ${changed ? (up ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700') : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                                <span className="font-medium">${h.unitCostUSD}</span>
+                                <span className="text-[10px] block opacity-70">{new Date(h.date).toLocaleDateString('he-IL')}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Tab: הזמנות */}
+                {activeSupplierTab === 'orders' && (
+                  <div className="flex-1 p-5 md:overflow-y-auto">
+                    {supplierShipments.length === 0 ? (
+                      <div className="text-center text-slate-400 py-12"><Ship className="w-10 h-10 mx-auto mb-3 opacity-20"/><p>אין הזמנות משויכות לספק זה עדיין.</p><p className="text-xs mt-1">שייך דגמים לספק זה בטאב "דגמים".</p></div>
+                    ) : (
+                      <div className="space-y-3">
+                        {supplierShipments.map((s: any) => (
+                          <div key={s.id} className="bg-white border border-slate-200 rounded-lg p-4">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-bold text-slate-800">{s.name}</p>
+                                <p className="text-xs text-slate-500 mt-0.5">{new Date(s.date).toLocaleDateString('he-IL')} {s.arrivalDate && `← הגיע: ${new Date(s.arrivalDate).toLocaleDateString('he-IL')}`}</p>
+                                <div className="flex gap-1 mt-1 flex-wrap">
+                                  {s.myLines.map((l: any, i: number) => <span key={i} className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{l.model} ×{l.qty} @ ${l.unitCostUSD}</span>)}
+                                </div>
+                              </div>
+                              <div className="text-left shrink-0 ml-3">
+                                <p className="font-bold text-indigo-700">${Math.round(s.totalUSD).toLocaleString()}</p>
+                                <p className="text-xs text-slate-400">₪{Math.round(s.totalILS).toLocaleString()}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold flex justify-between">
+                          <span>סה"כ כל ההזמנות:</span>
+                          <span className="text-indigo-700">${Math.round(stats.totalPaidUSD).toLocaleString()} / ₪{Math.round(stats.totalPaidILS).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Tab: הערות */}
+                {activeSupplierTab === 'notes' && (
+                  <div className="flex-1 flex flex-col overflow-hidden">
+                    <div className="flex-1 p-5 md:overflow-y-auto space-y-4">
+                      {(!selectedSupplier.interactionLogs || selectedSupplier.interactionLogs.length === 0) ? (
+                        <div className="text-center text-slate-400 py-12"><MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-20"/><p>אין עדיין תיעוד.</p></div>
+                      ) : (
+                        <div className="relative border-r-2 border-indigo-100 pr-4 ml-2 space-y-4">
+                          {[...selectedSupplier.interactionLogs].reverse().map((log: any, idx: number) => (
+                            <div key={idx} className="relative">
+                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-indigo-500 rounded-full border-4 border-white shadow-sm"></div>
+                              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className="text-xs font-bold text-slate-500">{new Date(log.date).toLocaleString('he-IL')}</span>
+                                  <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-600">{log.user}</span>
+                                </div>
+                                <p className="text-sm text-slate-800 whitespace-pre-wrap">{log.text}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
+                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" rows={3} placeholder="תאר שיחה, עסקה, הסכמה עם הספק..." value={supplierNoteText} onChange={e => setSupplierNoteText(e.target.value)}/>
+                      <div className="flex justify-end mt-2">
+                        <button onClick={addSupplierNote} disabled={!supplierNoteText.trim() || isSaving} className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50">שמור הערה</button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
