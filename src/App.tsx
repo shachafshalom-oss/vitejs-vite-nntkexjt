@@ -326,7 +326,14 @@ export default function App() {
       const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
       const settingsDoc = docs.find((d: any) => d.id === 'general_settings');
       if (settingsDoc) {
-        setSettings(settingsDoc);
+        // שמירת API Key אוטומטית אם עדיין לא קיים
+        if (!settingsDoc.finbotApiKey) {
+          const FINBOT_KEY = atob('ZmI4NWM3NDEtY2IzMC00NWY0LWFjYzMtNTQxZWNkMDAyMjM0');
+          setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settingsDoc, finbotApiKey: FINBOT_KEY }, { merge: true });
+          setSettings({ ...settingsDoc, finbotApiKey: FINBOT_KEY });
+        } else {
+          setSettings(settingsDoc);
+        }
       } else {
          const oldSettingsDoc = docs.find((d: any) => d.id === 'general_cbm');
          if(oldSettingsDoc && oldSettingsDoc.models) {
