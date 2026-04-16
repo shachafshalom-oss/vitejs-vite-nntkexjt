@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -28,6 +29,7 @@ const geminiApiKey = "YOUR_GEMINI_API_KEY";
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 // קבועים ומילונים
 const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
@@ -235,6 +237,8 @@ export default function App() {
   const [isSupplierOverviewOpen, setIsSupplierOverviewOpen] = useState(false);
   const [activeSupplierTab, setActiveSupplierTab] = useState<'details'|'orders'|'notes'>('details');
   const [supplierNoteText, setSupplierNoteText] = useState('');
+  const [catalogUploadProgress, setCatalogUploadProgress] = useState<number|null>(null);
+  const [isCatalogUploading, setIsCatalogUploading] = useState(false);
 
   const modelsList = useMemo(() => Object.keys(settings?.models || {}), [settings]);
 
@@ -1237,6 +1241,95 @@ export default function App() {
     setIsSaving(false);
   };
 
+  // --- Supplier Catalog Upload ---
+  const uploadSupplierCatalog = async (supplierId: string, file: File) => {
+    if (!file) return;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (!['pdf','xlsx','xls'].includes(ext || '')) { alert('יש להעלות קובץ PDF או Excel בלבד.'); return; }
+    setIsCatalogUploading(true);
+    setCatalogUploadProgress(0);
+    try {
+      const path = `supplier-catalogs/${supplierId}/catalog.${ext}`;
+      const fileRef = storageRef(storage, path);
+      const uploadTask = uploadBytesResumable(fileRef, file);
+      await new Promise<void>((resolve, reject) => {
+        uploadTask.on('state_changed',
+          (snap) => setCatalogUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+          (err) => reject(err),
+          () => resolve()
+        );
+      });
+      const url = await getDownloadURL(fileRef);
+      await updateDoc(doc(db, 'crm_suppliers', supplierId), {
+        catalogFileUrl: url,
+        catalogFileName: file.name,
+        catalogUploadedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      setSelectedSupplier((prev: any) => prev ? { ...prev, catalogFileUrl: url, catalogFileName: file.name, catalogUploadedAt: new Date().toISOString() } : prev);
+      alert('הקטלוג הועלה בהצלחה!');
+    } catch (err) { alert('שגיאה בהעלאת הקטלוג.'); }
+    setIsCatalogUploading(false);
+    setCatalogUploadProgress(null);
+  };
+
+  // --- Finbot Integration ---
+  const sendToFinbot = async (quoteItems: any[], shippingCost: number, customer: any): Promise<string|null> => {
+    const apiKey = settings?.finbotApiKey;
+    if (!apiKey) return null;
+    const today = new Date();
+    const dd = String(today.getDate()).padStart(2,'0');
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const yyyy = today.getFullYear();
+    const dateStr = `${dd}/${mm}/${yyyy}`;
+
+    const items = quoteItems.map((item: any) => ({
+      name: `תחנת נירוסטה דגם ${item.model}`,
+      amount: Number(item.qty),
+      price: Number(item.price),
+      save: false
+    }));
+    if (Number(shippingCost) > 0) {
+      items.push({ name: 'הובלה והתקנה', amount: 1, price: Number(shippingCost), save: false });
+    }
+
+    const taxRaw = (customer.hp || '').toString().replace(/\D/g, '').slice(0, 9);
+
+    const body: any = {
+      type: '3',
+      date: dateStr,
+      language: 'he',
+      currency: 'ILS',
+      vatType: true,
+      rounding: true,
+      confirmationNumber: false,
+      customer: {
+        name: customer.companyName || customer.businessName || customer.contactName || '',
+        phone: (customer.phone || '').slice(0, 20),
+        address: (customer.address || '').slice(0, 100),
+        save: true,
+        ...(taxRaw ? { tax: taxRaw } : {}),
+        ...(customer.email ? { email: customer.email.slice(0, 50) } : {})
+      },
+      items
+    };
+
+    try {
+      const res = await fetch('https://api.finbotai.co.il/income', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'secret': apiKey },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (data.status === 1 && data.data) return data.data;
+      console.error('Finbot error:', data);
+      return null;
+    } catch (err) {
+      console.error('Finbot fetch error:', err);
+      return null;
+    }
+  };
+
   // --- Quote Generation & Management ---
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
@@ -1299,7 +1392,7 @@ export default function App() {
         saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
         campaignId: quote.campaignId || '', processed: 0
       }));
-      setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess });
+      setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess, shippingCost: Number(quote.shippingCost) || 0 });
       setIsQuoteApprovalModalOpen(true);
       return;
     }
@@ -1388,6 +1481,7 @@ export default function App() {
           status: 'approved',
           approvedAt: new Date().toISOString(),
           approvedItemIds: approvedItemIds,
+          approvedShippingCost: quoteApprovalData.shippingCost || 0,
           previousCustomerStatus: previousCustomerStatus,
           updatedAt: new Date().toISOString()
         });
@@ -1398,7 +1492,27 @@ export default function App() {
         });
 
         setIsQuoteApprovalModalOpen(false);
-        alert("הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.");
+
+        // --- Finbot Integration ---
+        if (settings?.finbotApiKey) {
+          try {
+            const invoiceUrl = await sendToFinbot(
+              quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
+              quoteApprovalData.shippingCost || 0,
+              customer
+            );
+            if (invoiceUrl) {
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString() });
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Finbot בהצלחה.');
+            } else {
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
+            }
+          } catch {
+            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
+          }
+        } else {
+          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.');
+        }
       } catch (err: any) { alert(err.message || "שגיאה בתהליך אישור ההצעה."); }
       setIsSaving(false);
   };
@@ -1924,7 +2038,7 @@ export default function App() {
                       </div>
 
                       {/* כפתורי קשר */}
-                      <div className="px-5 pb-4 flex gap-2">
+                      <div className="px-5 pb-4 flex gap-2 flex-wrap">
                         {s.whatsapp && (
                           <a href={`https://wa.me/${s.whatsapp.replace(/[^0-9]/g,'')}`} target="_blank" rel="noopener noreferrer"
                              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-green-50 text-green-700 border border-green-200 rounded-md py-1.5 hover:bg-green-100 transition-colors"
@@ -1936,6 +2050,13 @@ export default function App() {
                           <div className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-slate-50 text-slate-600 border border-slate-200 rounded-md py-1.5">
                             WeChat: {s.wechat}
                           </div>
+                        )}
+                        {s.catalogFileUrl && (
+                          <a href={s.catalogFileUrl} target="_blank" rel="noopener noreferrer"
+                             className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md py-1.5 hover:bg-indigo-100 transition-colors"
+                             onClick={e => e.stopPropagation()}>
+                            <FileText className="w-3.5 h-3.5"/> קטלוג
+                          </a>
                         )}
                       </div>
                     </div>
@@ -2394,6 +2515,31 @@ export default function App() {
                 <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
                   <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
                   <button onClick={() => setSettings({...settings, companyLogoUrl: ''})} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
+                </div>
+              )}
+            </div>
+
+            {/* Finbot Integration Settings */}
+            <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
+              <h2 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                <ExternalLink className="w-5 h-5 text-indigo-600"/> חיבור ל-Finbot
+              </h2>
+              <p className="text-sm text-slate-500 mb-4">מפתח ה-API ישמש להנפקת דרישת תשלום אוטומטית ב-Finbot בעת אישור הצעת מחיר.</p>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">מפתח API של Finbot</label>
+                <input
+                  type="password"
+                  dir="ltr"
+                  className="w-full border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                  placeholder="הדבק כאן את ה-API Key"
+                  value={settings?.finbotApiKey || ''}
+                  onChange={e => setSettings({...settings, finbotApiKey: e.target.value})}
+                />
+                <p className="text-xs text-slate-400 mt-1.5">Finbot: הגדרות עסק ← מפתח API להפקת הכנסות. המפתח נשמר ב-Firebase בלבד.</p>
+              </div>
+              {settings?.finbotApiKey && (
+                <div className="mt-3 flex items-center gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0"/> מפתח API מוגדר — הנפקת דרישות תשלום פעילה
                 </div>
               )}
             </div>
@@ -3095,6 +3241,12 @@ export default function App() {
                               >
                                 <Eye className="w-3.5 h-3.5"/> צפה בהצעה
                               </button>
+                              {q.finbotInvoiceUrl && (
+                                <a href={q.finbotInvoiceUrl} target="_blank" rel="noopener noreferrer"
+                                   className="mt-1 text-xs text-green-700 hover:text-green-900 font-medium flex items-center gap-1">
+                                  <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Finbot
+                                </a>
+                              )}
                             </div>
                           );
                         })}
@@ -3167,6 +3319,40 @@ export default function App() {
                 <label className="block text-sm font-medium text-slate-700 mb-1">הערות</label>
                 <textarea className="w-full border-slate-300 rounded-md p-2.5 border min-h-[60px]" value={supplierEditingData.notes || ''} onChange={e => setSupplierEditingData({...supplierEditingData, notes: e.target.value})} placeholder="תנאי תשלום, הערות על איכות, הסכמות מיוחדות..."/>
               </div>
+
+              {/* קטלוג קבצים */}
+              {supplierEditingData.id && (
+                <div className="border-t border-slate-200 pt-4">
+                  <h4 className="font-bold text-slate-700 text-sm mb-3 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-500"/> קטלוג מוצרים (PDF / Excel)</h4>
+                  {supplierEditingData.catalogFileUrl ? (
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between mb-2">
+                      <div>
+                        <p className="text-xs font-medium text-slate-700 truncate max-w-[200px]">{supplierEditingData.catalogFileName || 'קטלוג קיים'}</p>
+                        {supplierEditingData.catalogUploadedAt && <p className="text-[10px] text-slate-400 mt-0.5">הועלה: {new Date(supplierEditingData.catalogUploadedAt).toLocaleDateString('he-IL')}</p>}
+                      </div>
+                      <a href={supplierEditingData.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 mb-2">אין קטלוג מועלה עדיין.</p>
+                  )}
+                  <label className="cursor-pointer block">
+                    <div className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 text-sm font-medium transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-50 text-indigo-500' : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600'}`}>
+                      {isCatalogUploading ? (
+                        <span>מעלה... {catalogUploadProgress}%</span>
+                      ) : (
+                        <><Download className="w-4 h-4"/> {supplierEditingData.catalogFileUrl ? 'החלף קטלוג' : 'העלה קטלוג'}</>
+                      )}
+                    </div>
+                    <input type="file" accept=".pdf,.xlsx,.xls" className="hidden" disabled={isCatalogUploading}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) uploadSupplierCatalog(supplierEditingData.id, f).then(() => { const updated = suppliers.find((s: any) => s.id === supplierEditingData.id); if (updated) setSupplierEditingData(updated); }); e.target.value = ''; }}
+                    />
+                  </label>
+                  {catalogUploadProgress !== null && (
+                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
+                  )}
+                </div>
+              )}
+              {!supplierEditingData.id && <p className="text-xs text-slate-400 border-t pt-3">שמור את הספק תחילה כדי להעלות קטלוג.</p>}
 
               <div className="flex gap-2 pt-4 border-t">
                 <button type="submit" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור ספק'}</button>
@@ -3241,6 +3427,29 @@ export default function App() {
                 {activeSupplierTab === 'details' && (
                   <div className="flex-1 p-5 md:overflow-y-auto space-y-4">
                     {selectedSupplier.notes && <div className="bg-slate-50 rounded-lg p-3 text-sm text-slate-700 border border-slate-200"><p className="text-xs text-slate-400 mb-1 font-medium">הערות</p>{selectedSupplier.notes}</div>}
+
+                    {/* קטלוג קובץ */}
+                    <div>
+                      <p className="font-bold text-slate-700 text-sm mb-2 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-500"/> קטלוג מוצרים</p>
+                      {selectedSupplier.catalogFileUrl ? (
+                        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium text-indigo-800 truncate max-w-[200px]">{selectedSupplier.catalogFileName || 'קטלוג'}</p>
+                            {selectedSupplier.catalogUploadedAt && <p className="text-[10px] text-indigo-500 mt-0.5">עודכן: {new Date(selectedSupplier.catalogUploadedAt).toLocaleDateString('he-IL')}</p>}
+                          </div>
+                          <div className="flex gap-2">
+                            <a href={selectedSupplier.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-md font-medium hover:bg-indigo-700 flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
+                            <a href={selectedSupplier.catalogFileUrl} download className="text-xs bg-white border border-indigo-300 text-indigo-700 px-3 py-1.5 rounded-md font-medium hover:bg-indigo-50 flex items-center gap-1"><Download className="w-3.5 h-3.5"/> הורד</a>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-4 text-center">
+                          <p className="text-sm text-slate-400">אין קטלוג מועלה.</p>
+                          <p className="text-xs text-slate-400 mt-1">ערוך את הספק כדי להעלות קטלוג PDF או Excel.</p>
+                        </div>
+                      )}
+                    </div>
+
                     <div>
                       <p className="font-bold text-slate-700 text-sm mb-3">קטלוג מחירים</p>
                       {(!selectedSupplier.catalog || selectedSupplier.catalog.length === 0) ? (
