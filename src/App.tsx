@@ -1328,7 +1328,6 @@ export default function App() {
     const body: any = {
       type: '3',
       date: dateStr,
-      language: 'HE',
       currency: 'ILS',
       vatType: true,
       rounding: true,
