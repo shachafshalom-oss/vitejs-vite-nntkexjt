@@ -1237,9 +1237,9 @@ export default function App() {
 
   const retryFinbot = async (quote: any, customer: any) => {
     if (!settings?.finbotApiKey) { alert('אין מפתח API של Finbot בהגדרות.'); return; }
-    if (!quote.approvedShippingCost && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
+    if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
     try {
-      const invoiceUrl = await sendToFinbot(
+      const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
         (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: i.price })),
         Number(quote.approvedShippingCost) || 0,
         customer
@@ -1248,8 +1248,7 @@ export default function App() {
         await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
         alert('✓ דרישת תשלום נוצרה ב-Finbot בהצלחה!');
       } else {
-        const errMsg = 'השרת החזיר תשובה ללא קישור — בדוק פרטי לקוח/פריטים.';
-        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: finbotErr, finbotSentAt: new Date().toISOString() });
         alert('⚠️ שליחה ל-Finbot נכשלה שוב. ראה הודעת שגיאה בדף הלקוח.');
       }
     } catch(err: any) {
@@ -1305,9 +1304,9 @@ export default function App() {
   };
 
   // --- Finbot Integration ---
-  const sendToFinbot = async (quoteItems: any[], shippingCost: number, customer: any): Promise<string|null> => {
+  const sendToFinbot = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
     const apiKey = settings?.finbotApiKey;
-    if (!apiKey) return null;
+    if (!apiKey) return { url: null, error: 'אין מפתח API מוגדר בהגדרות.' };
     const today = new Date();
     const dd = String(today.getDate()).padStart(2,'0');
     const mm = String(today.getMonth()+1).padStart(2,'0');
@@ -1352,12 +1351,20 @@ export default function App() {
         body: JSON.stringify(body)
       });
       const data = await res.json();
-      if (data.status === 1 && data.data) return data.data;
-      console.error('Finbot error:', data);
-      return null;
-    } catch (err) {
-      console.error('Finbot fetch error:', err);
-      return null;
+      if (data.status === 1 && data.data) {
+        return { url: data.data, error: null };
+      }
+      // בניית הודעת שגיאה מפורטת מ-Finbot
+      let errMsg = `status=${data.status} | message: ${data.message || 'לא התקבלה הודעה'}`;
+      if (data.errors && data.errors.length > 0) {
+        const errDetails = data.errors.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
+        errMsg += ` | שגיאות: ${errDetails}`;
+      }
+      if (!data.data) errMsg += ' | data: null';
+      console.error('Finbot error response:', JSON.stringify(data));
+      return { url: null, error: errMsg };
+    } catch (err: any) {
+      return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Finbot'}` };
     }
   };
 
@@ -1527,7 +1534,7 @@ export default function App() {
         // --- Finbot Integration ---
         if (settings?.finbotApiKey) {
           try {
-            const invoiceUrl = await sendToFinbot(
+            const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
               quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
               quoteApprovalData.shippingCost || 0,
               customer
@@ -1536,7 +1543,7 @@ export default function App() {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
               alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Finbot בהצלחה.');
             } else {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: 'השרת החזיר תשובה ללא קישור — בדוק פרטי לקוח/פריטים.', finbotSentAt: new Date().toISOString() });
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: finbotErr, finbotSentAt: new Date().toISOString() });
               alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
             }
           } catch(err: any) {
