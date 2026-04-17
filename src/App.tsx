@@ -1350,19 +1350,19 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body, secret: apiKey })
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(rawText); } catch { return { url: null, error: `תגובה לא תקינה: ${rawText.slice(0, 200)}` }; }
+
+      if (data.error) return { url: null, error: `שגיאת proxy: ${data.error}` };
+
       if (data.status === 1 && data.data) {
         return { url: data.data, error: null };
       }
-      // בניית הודעת שגיאה מפורטת מ-Finbot
-      let errMsg = `status=${data.status} | message: ${data.message || 'לא התקבלה הודעה'}`;
-      if (data.errors && data.errors.length > 0) {
-        const errDetails = data.errors.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
-        errMsg += ` | שגיאות: ${errDetails}`;
-      }
-      if (!data.data) errMsg += ' | data: null';
-      console.error('Finbot error response:', JSON.stringify(data));
-      return { url: null, error: errMsg };
+      // שמירת תגובה מלאה לדיבוג
+      const fullResponse = JSON.stringify(data);
+      console.error('Finbot full response:', fullResponse);
+      return { url: null, error: `תגובה מלאה מ-Finbot: ${fullResponse}` };
     } catch (err: any) {
       return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Finbot'}` };
     }
