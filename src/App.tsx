@@ -1328,7 +1328,7 @@ export default function App() {
     const body: any = {
       type: '3',
       date: dateStr,
-      language: 'he',
+      language: 'HE',
       currency: 'ILS',
       vatType: true,
       rounding: true,
@@ -1356,13 +1356,24 @@ export default function App() {
 
       if (data.error) return { url: null, error: `שגיאת proxy: ${data.error}` };
 
+      // הצלחה
       if (data.status === 1 && data.data) {
         return { url: data.data, error: null };
       }
-      // שמירת תגובה מלאה לדיבוג
-      const fullResponse = JSON.stringify(data);
-      console.error('Finbot full response:', fullResponse);
-      return { url: null, error: `תגובה מלאה מ-Finbot: ${fullResponse}` };
+
+      // Finbot מחזירה מערך שגיאות ישירות [{"code":X,"message":"..."}]
+      if (Array.isArray(data)) {
+        const errs = data.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
+        return { url: null, error: errs };
+      }
+
+      // שגיאה עם שדה errors
+      if (data.errors && Array.isArray(data.errors)) {
+        const errs = data.errors.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
+        return { url: null, error: errs };
+      }
+
+      return { url: null, error: `תגובה מ-Finbot: ${JSON.stringify(data)}` };
     } catch (err: any) {
       return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Finbot'}` };
     }
