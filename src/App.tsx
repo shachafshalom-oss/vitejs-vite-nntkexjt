@@ -1235,6 +1235,30 @@ export default function App() {
     setIsSaving(false);
   };
 
+  const retryFinbot = async (quote: any, customer: any) => {
+    if (!settings?.finbotApiKey) { alert('אין מפתח API של Finbot בהגדרות.'); return; }
+    if (!quote.approvedShippingCost && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
+    try {
+      const invoiceUrl = await sendToFinbot(
+        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: i.price })),
+        Number(quote.approvedShippingCost) || 0,
+        customer
+      );
+      if (invoiceUrl) {
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
+        alert('✓ דרישת תשלום נוצרה ב-Finbot בהצלחה!');
+      } else {
+        const errMsg = 'השרת החזיר תשובה ללא קישור — בדוק פרטי לקוח/פריטים.';
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
+        alert('⚠️ שליחה ל-Finbot נכשלה שוב. ראה הודעת שגיאה בדף הלקוח.');
+      }
+    } catch(err: any) {
+      const errMsg = err?.message || 'שגיאת רשת.';
+      await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
+      alert('⚠️ שגיאה: ' + errMsg);
+    }
+  };
+
   const addSupplierNote = async () => {
     if (!supplierNoteText.trim() || !selectedSupplier) return;
     setIsSaving(true);
@@ -1509,12 +1533,15 @@ export default function App() {
               customer
             );
             if (invoiceUrl) {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString() });
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
               alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Finbot בהצלחה.');
             } else {
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: 'השרת החזיר תשובה ללא קישור — בדוק פרטי לקוח/פריטים.', finbotSentAt: new Date().toISOString() });
               alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
             }
-          } catch {
+          } catch(err: any) {
+            const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Finbot.';
+            await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
             alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
           }
         } else {
@@ -2534,14 +2561,27 @@ export default function App() {
               <p className="text-sm text-slate-500 mb-4">מפתח ה-API ישמש להנפקת דרישת תשלום אוטומטית ב-Finbot בעת אישור הצעת מחיר.</p>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">מפתח API של Finbot</label>
-                <input
-                  type="password"
-                  dir="ltr"
-                  className="w-full border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                  placeholder="הדבק כאן את ה-API Key"
-                  value={settings?.finbotApiKey || ''}
-                  onChange={e => setSettings({...settings, finbotApiKey: e.target.value})}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    dir="ltr"
+                    className="flex-1 border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    placeholder="הדבק כאן את ה-API Key"
+                    value={settings?.finbotApiKey || ''}
+                    onChange={e => setSettings({...settings, finbotApiKey: e.target.value})}
+                  />
+                  <button
+                    onClick={async () => {
+                      try {
+                        await setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settings }, { merge: true });
+                        alert('✓ מפתח ה-API נשמר בהצלחה ב-Firebase.');
+                      } catch { alert('שגיאה בשמירת המפתח.'); }
+                    }}
+                    className="bg-indigo-600 text-white px-4 py-2.5 rounded-md text-sm font-bold hover:bg-indigo-700 whitespace-nowrap"
+                  >
+                    שמור
+                  </button>
+                </div>
                 <p className="text-xs text-slate-400 mt-1.5">Finbot: הגדרות עסק ← מפתח API להפקת הכנסות. המפתח נשמר ב-Firebase בלבד.</p>
               </div>
               {settings?.finbotApiKey && (
@@ -2962,7 +3002,7 @@ export default function App() {
         const campaign = campaigns.find(c => c.id === selectedQuote.campaignId);
 
         return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
               <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Eye className="w-5 h-5 text-indigo-600"/> צפייה והיסטוריית הצעת מחיר</h3>
@@ -3253,6 +3293,22 @@ export default function App() {
                                    className="mt-1 text-xs text-green-700 hover:text-green-900 font-medium flex items-center gap-1">
                                   <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Finbot
                                 </a>
+                              )}
+                              {q.status === 'approved' && !q.finbotInvoiceUrl && settings?.finbotApiKey && (
+                                <div className="mt-2 space-y-1">
+                                  {q.finbotError && (
+                                    <div className="bg-red-50 border border-red-200 rounded p-2 text-[10px] text-red-700 font-mono leading-relaxed">
+                                      <span className="font-bold block mb-0.5">שגיאת Finbot:</span>
+                                      {q.finbotError}
+                                    </div>
+                                  )}
+                                  <button
+                                    onClick={() => retryFinbot(q, selectedCustomer)}
+                                    className="text-xs text-amber-700 hover:text-amber-900 font-medium flex items-center gap-1 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+                                  >
+                                    <ArrowUpRight className="w-3.5 h-3.5"/> שלח שוב ל-Finbot
+                                  </button>
+                                </div>
                               )}
                             </div>
                           );
@@ -3582,7 +3638,7 @@ export default function App() {
 
       {/* QUOTE APPROVAL MODAL */}
       {isQuoteApprovalModalOpen && quoteApprovalData && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
               <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-green-600"/> אישור הצעת מחיר וגריעת מלאי</h3>
