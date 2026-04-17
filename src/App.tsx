@@ -1345,10 +1345,10 @@ export default function App() {
     };
 
     try {
-      const res = await fetch('https://api.finbotai.co.il/income', {
+      const res = await fetch('/.netlify/functions/finbot-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'secret': apiKey },
-        body: JSON.stringify(body)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, secret: apiKey })
       });
       const data = await res.json();
       if (data.status === 1 && data.data) {
