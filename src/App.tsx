@@ -1314,13 +1314,13 @@ export default function App() {
     const dateStr = `${dd}/${mm}/${yyyy}`;
 
     const items = quoteItems.map((item: any) => ({
-      name: `תחנת נירוסטה דגם ${item.model}`,
+      name: `עמדת נירוסטה דגם ${item.model}`,
       amount: Number(item.qty),
       price: Number(item.price),
       save: false
     }));
     if (Number(shippingCost) > 0) {
-      items.push({ name: 'הובלה והתקנה', amount: 1, price: Number(shippingCost), save: false });
+      items.push({ name: 'הובלה', amount: 1, price: Number(shippingCost), save: false });
     }
 
     const taxRaw = (customer.hp || '').toString().replace(/\D/g, '').slice(0, 9);
