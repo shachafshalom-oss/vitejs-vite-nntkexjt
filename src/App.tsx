@@ -1328,6 +1328,7 @@ export default function App() {
     const body: any = {
       type: '3',
       date: dateStr,
+      language: 'HE',
       currency: 'ILS',
       vatType: true,
       rounding: true,
@@ -1336,7 +1337,7 @@ export default function App() {
         name: customer.companyName || customer.businessName || customer.contactName || '',
         phone: (customer.phone || '').slice(0, 20),
         address: (customer.address || '').slice(0, 100),
-        save: true,
+        save: false,
         ...(taxRaw ? { tax: taxRaw } : {}),
         ...(customer.email ? { email: customer.email.slice(0, 50) } : {})
       },
