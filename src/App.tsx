@@ -237,7 +237,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
 
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers');
+  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('leads');
   const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
   // Leads UI States
   const [assignDropdownId, setAssignDropdownId] = useState<string | null>(null);
@@ -1768,14 +1768,14 @@ export default function App() {
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
             {[
               { id: 'dashboard', icon: Activity, label: 'דשבורד' },
-              { id: 'finance', icon: Wallet, label: 'כספים' },
+              { id: 'customers', icon: Users, label: 'לידים ולקוחות' },
               { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
-              { id: 'shipments', icon: Ship, label: 'משלוחים' },
               { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
+              { id: 'finance', icon: Wallet, label: 'כספים' },
+              { id: 'shipments', icon: Ship, label: 'משלוחים' },
               { id: 'suppliers', icon: Building2, label: 'ספקים' },
-              { id: 'models', icon: Layers, label: 'דגמים' },
-              { id: 'customers', icon: Users, label: 'לקוחות' },
               { id: 'marketing', icon: Megaphone, label: 'קמפיינים' },
+              { id: 'models', icon: Layers, label: 'דגמים' },
               { id: 'settings', icon: Settings, label: 'הגדרות' }
             ].map(t => (
               <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
@@ -2721,7 +2721,7 @@ export default function App() {
               const allLeads = customers.filter(c => c.status === 'lead');
               const filteredLeads = allLeads
                 .filter(c => {
-                  if (leadsFilter === 'mine') { const myAgent = AGENTS.find(a => a.email === user?.email) || null; return (c.assignedTo || c.createdBy || '') === (user?.email || '') || (myAgent && c.assignedTo === myAgent.email); }
+                  if (leadsFilter === 'mine') return c.assignedTo === user?.email || c.createdBy === user?.email;
                   if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
                   return true;
                 })
@@ -2857,7 +2857,7 @@ export default function App() {
                   <div className="flex items-center gap-2 mb-4 flex-wrap">
                     {[
                       { id: 'all', label: `כל הלידים (${allLeads.length})` },
-                      { id: 'mine', label: 'הלידים שלי' },
+                      { id: 'mine', label: `הלידים שלי (${AGENTS.find(a => a.email === user?.email)?.name || user?.email?.split('@')[0] || 'לא מזוהה'})` },
                       { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
                     ].map(f => (
                       <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
