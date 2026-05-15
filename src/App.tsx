@@ -44,8 +44,8 @@ const QUOTE_STATUS_MAP: Record<string, string> = {
 };
 
 const AGENTS = [
-  { name: 'שחף', email: 'shachaf@dslogistics.com' },
-  { name: 'דניאל', email: 'daniel@dslogistics.com' },
+  { name: 'שחף', email: 'shachafshalom@gmail.com' },
+  { name: 'דניאל', email: 'danielyos205@gmail.com' },
 ];
 
 const LEAD_STAGE_MAP: Record<string, string> = {
