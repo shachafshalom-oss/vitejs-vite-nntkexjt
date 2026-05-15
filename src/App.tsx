@@ -218,6 +218,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers');
+  const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all'>('all');
   const [loading, setLoading] = useState(true);
 
   // Data States
@@ -229,6 +230,11 @@ export default function App() {
   const [quotes, setQuotes] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [localPurchases, setLocalPurchases] = useState<any[]>([]);
+
+  // Local Stock UI States
+  const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
+  const [localStockForm, setLocalStockForm] = useState<any>({ type: 'manual', supplierId: '', lines: [{ model: '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
 
   // Supplier UI States
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -388,7 +394,13 @@ export default function App() {
       setSuppliers(data);
     });
 
-    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); };
+    const unsubLocalPurchases = onSnapshot(collection(db, 'crm_local_purchases'), (snap) => {
+      let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setLocalPurchases(data);
+    });
+
+    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); };
   }, [user]);
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
@@ -550,8 +562,9 @@ export default function App() {
         cbm = settings.models[item.model].cbm;
       }
       
-      const factoryCostILS = sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0;
-      const importCostILS = sStat ? (sStat.costPerCbmILS * cbm) : 0;
+      const isLocal = item.source === 'local';
+      const factoryCostILS = isLocal ? (Number(item.localCostILS) || 0) : (sStat ? (Number(item.factoryUnitCostUSD) * sStat.exchangeRate) : 0);
+      const importCostILS = isLocal ? 0 : (sStat ? (sStat.costPerCbmILS * cbm) : 0);
       const repairCostILS = Number(item.repairCost) || 0;
       const addOnCostILS = Number(item.addOnCost) || 0;
       
@@ -629,8 +642,10 @@ export default function App() {
         }
       }
 
-      const shipmentName = (sStat && sStat.name) ? sStat.name : 'לא ידוע';
-      const shipmentStatus = (sStat && sStat.status) ? sStat.status : 'ordered';
+      const shipmentName = item.source === 'local'
+        ? (item.localPurchaseType === 'local_supplier' && item.localSupplierName ? `ספק: ${item.localSupplierName}` : 'רכישה ידנית')
+        : ((sStat && sStat.name) ? sStat.name : 'לא ידוע');
+      const shipmentStatus = item.source === 'local' ? 'in_warehouse' : ((sStat && sStat.status) ? sStat.status : 'ordered');
       const campaignName = (campaignStats[item.campaignId] && campaignStats[item.campaignId].name) ? campaignStats[item.campaignId].name : 'ללא';
       const customerName = (customerStats[item.customerId] && customerStats[item.customerId].name) ? customerStats[item.customerId].name : 'לקוח כללי';
 
@@ -709,6 +724,18 @@ export default function App() {
                monthlyFinance[arrDate.getMonth()].breakdowns.shipping += s.shippingTotalILS;
            }
        }
+    });
+
+    // 2b. Expenses from Local Purchases
+    localPurchases.forEach((lp: any) => {
+      if (lp.date) {
+        const lpDate = new Date(lp.date);
+        if (lpDate.getFullYear() === financeYear) {
+          const totalCostILS = Number(lp.totalCostILS) || 0;
+          monthlyFinance[lpDate.getMonth()].expense += totalCostILS;
+          monthlyFinance[lpDate.getMonth()].breakdowns.itemCosts += totalCostILS;
+        }
+      }
     });
 
     // 3. Expenses from Marketing Campaigns
@@ -822,7 +849,7 @@ export default function App() {
         return stats;
       })()
     };
-  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr, suppliers]);
+  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr, suppliers, localPurchases]);
 
   // --- Handlers ---
   const generateWithGemini = async (prompt: string) => {
@@ -1141,6 +1168,8 @@ export default function App() {
         await updateDoc(doc(db, 'crm_customers', data.id), data);
       } else { 
         data.createdAt = new Date().toISOString(); 
+        data.createdBy = user?.email || '';
+        if (!data.assignedTo) data.assignedTo = user?.email || '';
         data.interactionLogs = [];
         const docRef = await addDoc(collection(db, 'crm_customers'), data); 
         newCustomerId = docRef.id;
@@ -1181,6 +1210,72 @@ export default function App() {
     setIsSaving(false);
   };
 
+  const saveLocalPurchase = async (e: any) => {
+    e.preventDefault();
+    setIsSaving(true);
+    try {
+      const form = localStockForm;
+      const israeliSupplier = form.type === 'local_supplier' ? suppliers.find((s: any) => s.id === form.supplierId) : null;
+      const vatMultiplier = form.includesVat ? (1 / 1.18) : 1;
+      const rate = form.currency === 'USD' ? Number(form.exchangeRate) : 1;
+
+      let totalCostILS = 0;
+      form.lines.forEach((line: any) => {
+        const costILS = Number(line.unitCost) * rate * vatMultiplier;
+        totalCostILS += costILS * Number(line.qty);
+      });
+
+      const lpData: any = {
+        type: form.type,
+        supplierId: form.supplierId || null,
+        supplierName: israeliSupplier?.name || null,
+        currency: form.currency,
+        exchangeRate: rate,
+        includesVat: form.includesVat,
+        date: form.date,
+        notes: form.notes,
+        totalCostILS,
+        lines: form.lines,
+        createdAt: new Date().toISOString(),
+        createdBy: user?.email || '',
+      };
+
+      const lpRef = await addDoc(collection(db, 'crm_local_purchases'), lpData);
+
+      for (const line of form.lines) {
+        if (!line.model || Number(line.qty) < 1) continue;
+        const costPerUnit = Number(line.unitCost) * rate * vatMultiplier;
+        const costBeforeVat = form.includesVat ? Number(line.unitCost) * rate / 1.18 : Number(line.unitCost) * rate;
+        for (let i = 0; i < Number(line.qty); i++) {
+          await addDoc(collection(db, 'crm_items'), {
+            source: 'local',
+            localPurchaseId: lpRef.id,
+            localPurchaseType: form.type,
+            localSupplierName: israeliSupplier?.name || null,
+            localCostILS: costPerUnit,
+            localCostBeforeVat: costBeforeVat,
+            model: line.model,
+            status: 'in_warehouse',
+            shipmentId: null,
+            factoryUnitCostUSD: 0,
+            serialNumber: '',
+            repairCost: 0,
+            addOnCost: 0,
+            salePrice: 0,
+            addOnPrice: 0,
+            campaignId: '',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      setIsLocalStockModalOpen(false);
+      setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+      alert(`✓ מלאי מקומי נוסף בהצלחה! נוצרו ${form.lines.reduce((s: number, l: any) => s + Number(l.qty), 0)} פריטים.`);
+    } catch (err: any) { alert('שגיאה בהוספת מלאי מקומי: ' + err.message); }
+    setIsSaving(false);
+  };
+
   const saveSettings = async () => {
     try {
       await setDoc(doc(db, 'crm_settings', 'general_settings'), settings);
@@ -1194,6 +1289,10 @@ export default function App() {
       await deleteDoc(doc(db, collectionName, id)); 
       if (collectionName === 'crm_shipments') {
         const itemsToDelete = items.filter(i => i.shipmentId === id);
+        for (const item of itemsToDelete) await deleteDoc(doc(db, 'crm_items', item.id));
+      }
+      if (collectionName === 'crm_local_purchases') {
+        const itemsToDelete = items.filter(i => i.localPurchaseId === id);
         for (const item of itemsToDelete) await deleteDoc(doc(db, 'crm_items', item.id));
       }
     } catch (err) { console.error(err); }
@@ -1758,6 +1857,56 @@ export default function App() {
                 </div>
               );
             })()}
+
+            {/* לידים לפי נציג */}
+            {(() => {
+              const allLeads = customers.filter((c: any) => c.status === 'lead');
+              if (allLeads.length === 0) return null;
+              const agentMap: any = {};
+              allLeads.forEach((c: any) => {
+                const agent = c.assignedTo || c.createdBy || 'לא מוקצה';
+                if (!agentMap[agent]) agentMap[agent] = { leads: 0 };
+                agentMap[agent].leads++;
+              });
+              const convertedCustomers = customers.filter((c: any) => c.status !== 'lead');
+              convertedCustomers.forEach((c: any) => {
+                const agent = c.assignedTo || c.createdBy || null;
+                if (agent && agentMap[agent]) {
+                  if (!agentMap[agent].converted) agentMap[agent].converted = 0;
+                  agentMap[agent].converted++;
+                }
+              });
+              const agents = Object.entries(agentMap);
+              if (agents.length === 0) return null;
+              return (
+                <div className="mt-8">
+                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
+                    <Users className="w-5 h-5 text-indigo-500"/> לידים לפי נציג
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {agents.map(([agent, data]: any) => {
+                      const totalHandled = data.leads + (data.converted || 0);
+                      const convRate = totalHandled > 0 ? Math.round(((data.converted || 0) / totalHandled) * 100) : 0;
+                      return (
+                        <div key={agent} className="bg-white border border-slate-200 rounded-lg p-4 flex items-center gap-4">
+                          <div className="bg-indigo-100 p-2.5 rounded-full shrink-0"><User className="w-5 h-5 text-indigo-600"/></div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-slate-700 text-sm truncate">{agent}</p>
+                            <p className="text-xs text-slate-500">{data.leads} לידים פתוחים</p>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                                <div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: `${convRate}%` }}/>
+                              </div>
+                              <span className="text-[10px] font-bold text-indigo-600">{convRate}% המרה</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -2052,6 +2201,7 @@ export default function App() {
                               <h3 className="font-bold text-slate-800">{s.name}</h3>
                               {s.contactName && <p className="text-xs text-slate-500">{s.contactName}</p>}
                               {s.city && <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3"/> {s.city}</p>}
+                              {s.location === 'israel' && <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-bold mt-1 inline-block">ספק ישראלי 🇮🇱</span>}
                             </div>
                           </div>
                           <div className="flex gap-1">
@@ -2191,18 +2341,32 @@ export default function App() {
         {activeTab === 'shipments' && (
           <div>
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-slate-800">ניהול משלוחים מסין</h2>
-              <button 
-                onClick={() => { 
-                  setEditingData({ name: '', date: new Date().toISOString().split('T')[0], status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
-                  setIsShipmentModalOpen(true); 
-                }} 
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
-              >
-                <Plus className="w-4 h-4"/> הוסף משלוח חדש
-              </button>
+              <h2 className="text-2xl font-bold text-slate-800">ניהול משלוחים ורכישות מקומיות</h2>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => { 
+                    setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+                    setIsLocalStockModalOpen(true); 
+                  }} 
+                  className="bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-700 flex items-center gap-2"
+                >
+                  <Package className="w-4 h-4"/> הוסף מלאי מקומי
+                </button>
+                <button 
+                  onClick={() => { 
+                    setEditingData({ name: '', date: new Date().toISOString().split('T')[0], status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
+                    setIsShipmentModalOpen(true); 
+                  }} 
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4"/> הוסף משלוח מסין
+                </button>
+              </div>
             </div>
-            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
+
+            {/* משלוחים מסין */}
+            <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2"><Ship className="w-5 h-5 text-indigo-600"/> משלוחים מסין</h3>
+            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden mb-8">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50">
                   <tr>
@@ -2236,6 +2400,51 @@ export default function App() {
                       </tr>
                     );
                   })}
+                  {shipments.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">אין משלוחים מסין במערכת.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+
+            {/* רכישות מקומיות */}
+            <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2"><Package className="w-5 h-5 text-green-600"/> רכישות מקומיות</h3>
+            <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">תאריך</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">סוג רכישה</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">פריטים</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">עלות כוללת (₪)</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-500">מע"מ</th>
+                    <th className="px-4 py-3 text-left font-medium text-slate-500">פעולות</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {localPurchases.map((lp: any) => {
+                    const itemsCount = items.filter(i => i.localPurchaseId === lp.id).length;
+                    return (
+                      <tr key={lp.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-3 text-slate-700 font-medium">{new Date(lp.date).toLocaleDateString('he-IL')}</td>
+                        <td className="px-4 py-3">
+                          {lp.type === 'local_supplier' ? (
+                            <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-bold">{lp.supplierName || 'ספק ישראלי'}</span>
+                          ) : (
+                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-medium">רכישה ידנית</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          {(lp.lines || []).map((l: any, i: number) => <div key={i} className="text-xs">{l.model} × {l.qty}</div>)}
+                          <div className="text-[10px] text-slate-400">{itemsCount} פריטים במלאי</div>
+                        </td>
+                        <td className="px-4 py-3 font-medium text-green-700">₪{Math.round(Number(lp.totalCostILS)).toLocaleString()}</td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{lp.includesVat ? 'כולל מע"מ' : 'ללא מע"מ'}</td>
+                        <td className="px-4 py-3 text-left">
+                          <button onClick={() => deleteDocHandler('crm_local_purchases', lp.id)} className="text-red-500 bg-red-50 p-1.5 rounded" title="מחק רכישה ופריטים"><Trash2 className="w-4 h-4"/></button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {localPurchases.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">אין רכישות מקומיות במערכת.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -2370,7 +2579,7 @@ export default function App() {
             </div>
 
             {/* Sub-navigation for Customers / Leads */}
-            <div className="flex gap-4 mb-6 border-b border-slate-200">
+            <div className="flex gap-4 mb-4 border-b border-slate-200">
               <button 
                 onClick={() => setActiveCustomerTab('customers')} 
                 className={`pb-2 font-medium text-sm transition-colors ${activeCustomerTab === 'customers' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
@@ -2384,10 +2593,27 @@ export default function App() {
                 לידים מתעניינים
               </button>
             </div>
+
+            {/* פילטר לידים לפי משתמש */}
+            {activeCustomerTab === 'leads' && (
+              <div className="flex items-center gap-2 mb-4">
+                <button onClick={() => setLeadsFilter('mine')} className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === 'mine' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                  הלידים שלי
+                </button>
+                <button onClick={() => setLeadsFilter('all')} className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === 'all' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                  כל הלידים
+                </button>
+              </div>
+            )}
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {customers
                 .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
+                .filter(c => {
+                  if (activeCustomerTab !== 'leads') return true;
+                  if (leadsFilter === 'all') return true;
+                  return (c.assignedTo || c.createdBy || '') === (user?.email || '');
+                })
                 .filter(c => {
                   if (!customerSearch.trim()) return true;
                   const q = customerSearch.toLowerCase();
@@ -2436,6 +2662,11 @@ export default function App() {
                             {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
                               {c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}
                             </span>}
+                            {c.status === 'lead' && c.assignedTo && (
+                              <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 font-medium">
+                                {c.assignedTo.split('@')[0]}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex gap-1 customer-actions">
@@ -2494,7 +2725,7 @@ export default function App() {
                   </div>
                 )
               })}
-              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
+              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').filter(c => { if (activeCustomerTab !== 'leads' || leadsFilter === 'all') return true; return (c.assignedTo || c.createdBy || '') === (user?.email || ''); }).filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
                 <div className="col-span-full bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
                   <Users className="w-12 h-12 mx-auto text-slate-300 mb-3" />
                   <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין נתונים להצגה ברשימה זו.'}</p>
@@ -2629,6 +2860,14 @@ export default function App() {
         
         {isFabOpen && (
           <div className="flex flex-col gap-3 items-end absolute bottom-16 left-0 animate-in slide-in-from-bottom-5">
+            <FabButton 
+               icon={Package} iconColor="text-green-600" label="הוספת מלאי מקומי"
+               onClick={() => { 
+                setIsFabOpen(false); 
+                setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+                setIsLocalStockModalOpen(true); 
+              }} 
+            />
             <FabButton 
                icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)"
                onClick={() => { 
@@ -2964,6 +3203,13 @@ export default function App() {
                       <option value="inactive">לקוח עבר (לא פעיל)</option>
                     </select>
                   </div>
+                  {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">שייך לנציג</label>
+                      <input type="email" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" dir="ltr" value={customerEditingData.assignedTo || ''} onChange={e => setCustomerEditingData({...customerEditingData, assignedTo: e.target.value})} placeholder={user?.email || 'email@company.com'} />
+                      <p className="text-[11px] text-slate-400 mt-1">ברירת מחדל: המשתמש הנוכחי</p>
+                    </div>
+                  )}
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
                 </div>
@@ -3353,28 +3599,41 @@ export default function App() {
             <form onSubmit={saveSupplier} className="p-6 overflow-y-auto flex-1 space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">מיקום ספק</label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, location: 'china'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${(!supplierEditingData.location || supplierEditingData.location === 'china') ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                      🇨🇳 סין
+                    </button>
+                    <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, location: 'israel'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${supplierEditingData.location === 'israel' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-600 border-slate-300 hover:border-green-400'}`}>
+                      🇮🇱 ישראל
+                    </button>
+                  </div>
+                </div>
+                <div className="col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">שם החברה <span className="text-red-500">*</span></label>
-                  <input required type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.name || ''} onChange={e => setSupplierEditingData({...supplierEditingData, name: e.target.value})} placeholder="לדוגמה: Guangzhou Steel Co." />
+                  <input required type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.name || ''} onChange={e => setSupplierEditingData({...supplierEditingData, name: e.target.value})} placeholder={supplierEditingData.location === 'israel' ? 'לדוגמה: ציוד בר בע"מ' : 'לדוגמה: Guangzhou Steel Co.'} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">איש קשר</label>
                   <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.contactName || ''} onChange={e => setSupplierEditingData({...supplierEditingData, contactName: e.target.value})} placeholder="שם איש הקשר" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">עיר בסין</label>
-                  <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.city || ''} onChange={e => setSupplierEditingData({...supplierEditingData, city: e.target.value})} placeholder="לדוגמה: Foshan" />
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{supplierEditingData.location === 'israel' ? 'עיר בישראל' : 'עיר בסין'}</label>
+                  <input type="text" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.city || ''} onChange={e => setSupplierEditingData({...supplierEditingData, city: e.target.value})} placeholder={supplierEditingData.location === 'israel' ? 'לדוגמה: תל אביב' : 'לדוגמה: Foshan'} />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">WhatsApp (בינלאומי)</label>
-                  <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.whatsapp || ''} onChange={e => setSupplierEditingData({...supplierEditingData, whatsapp: e.target.value})} placeholder="86-131-2345-6789" />
+                  <label className="block text-sm font-medium text-slate-700 mb-1">WhatsApp</label>
+                  <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.whatsapp || ''} onChange={e => setSupplierEditingData({...supplierEditingData, whatsapp: e.target.value})} placeholder={supplierEditingData.location === 'israel' ? '050-1234567' : '86-131-2345-6789'} />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">WeChat ID</label>
-                  <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.wechat || ''} onChange={e => setSupplierEditingData({...supplierEditingData, wechat: e.target.value})} placeholder="wechat_id" />
-                </div>
-                <div className="col-span-2">
+                {(!supplierEditingData.location || supplierEditingData.location === 'china') && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">WeChat ID</label>
+                    <input type="text" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.wechat || ''} onChange={e => setSupplierEditingData({...supplierEditingData, wechat: e.target.value})} placeholder="wechat_id" />
+                  </div>
+                )}
+                <div className={supplierEditingData.location === 'israel' ? '' : 'col-span-2'}>
                   <label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label>
-                  <input type="email" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.email || ''} onChange={e => setSupplierEditingData({...supplierEditingData, email: e.target.value})} placeholder="supplier@factory.com" />
+                  <input type="email" dir="ltr" className="w-full border-slate-300 rounded-md p-2.5 border" value={supplierEditingData.email || ''} onChange={e => setSupplierEditingData({...supplierEditingData, email: e.target.value})} placeholder="supplier@example.com" />
                 </div>
               </div>
 
@@ -3903,6 +4162,139 @@ export default function App() {
             <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button onClick={() => setIsStockBreakdownModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-md font-medium hover:bg-slate-300 transition-colors w-full">סגור</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOCAL STOCK MODAL */}
+      {isLocalStockModalOpen && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-white rounded-t-xl">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package className="w-5 h-5 text-green-600"/> הוספת מלאי מקומי</h3>
+              <button onClick={() => setIsLocalStockModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <form onSubmit={saveLocalPurchase} className="p-6 overflow-y-auto flex-1 space-y-5">
+              
+              {/* סוג רכישה */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">סוג רכישה</label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setLocalStockForm({...localStockForm, type: 'manual', supplierId: ''})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${localStockForm.type === 'manual' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-300 hover:border-slate-500'}`}>
+                    רכישה ידנית (ללא ספק)
+                  </button>
+                  <button type="button" onClick={() => setLocalStockForm({...localStockForm, type: 'local_supplier'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${localStockForm.type === 'local_supplier' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-600 border-slate-300 hover:border-green-400'}`}>
+                    ספק ישראלי
+                  </button>
+                </div>
+              </div>
+
+              {/* בחירת ספק ישראלי */}
+              {localStockForm.type === 'local_supplier' && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">בחר ספק ישראלי <span className="text-red-500">*</span></label>
+                  <select required className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={localStockForm.supplierId} onChange={e => setLocalStockForm({...localStockForm, supplierId: e.target.value})}>
+                    <option value="">-- בחר ספק --</option>
+                    {suppliers.filter((s: any) => s.location === 'israel').map((s: any) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  {suppliers.filter((s: any) => s.location === 'israel').length === 0 && (
+                    <p className="text-xs text-amber-600 mt-1">אין ספקים ישראליים מוגדרים. הוסף ספק עם מיקום "ישראל" בטאב הספקים.</p>
+                  )}
+                </div>
+              )}
+
+              {/* תאריך */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">תאריך רכישה</label>
+                <input type="date" className="w-full border-slate-300 rounded-md p-2.5 border" value={localStockForm.date} onChange={e => setLocalStockForm({...localStockForm, date: e.target.value})} />
+              </div>
+
+              {/* שורות דגמים */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-sm font-medium text-slate-700">פריטים לרכישה</label>
+                  <button type="button" onClick={() => setLocalStockForm({...localStockForm, lines: [...localStockForm.lines, { model: modelsList[0] || '', qty: 1, unitCost: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף שורה</button>
+                </div>
+                <div className="space-y-2">
+                  {localStockForm.lines.map((line: any, idx: number) => (
+                    <div key={idx} className="flex gap-2 items-center bg-slate-50 p-2 rounded-lg">
+                      <select className="flex-1 border-slate-300 rounded p-2 text-sm border bg-white" value={line.model} onChange={e => { const nl = [...localStockForm.lines]; nl[idx] = {...nl[idx], model: e.target.value}; setLocalStockForm({...localStockForm, lines: nl}); }}>
+                        {modelsList.map((m: string) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-slate-500">כמות:</span>
+                        <input type="number" min="1" className="w-16 border-slate-300 rounded p-2 text-sm border" value={line.qty} onChange={e => { const nl = [...localStockForm.lines]; nl[idx] = {...nl[idx], qty: Number(e.target.value)}; setLocalStockForm({...localStockForm, lines: nl}); }} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-slate-500">עלות/יח':</span>
+                        <input type="number" min="0" step="0.01" className="w-24 border-slate-300 rounded p-2 text-sm border" value={line.unitCost} onChange={e => { const nl = [...localStockForm.lines]; nl[idx] = {...nl[idx], unitCost: Number(e.target.value)}; setLocalStockForm({...localStockForm, lines: nl}); }} />
+                      </div>
+                      {localStockForm.lines.length > 1 && (
+                        <button type="button" onClick={() => setLocalStockForm({...localStockForm, lines: localStockForm.lines.filter((_: any, i: number) => i !== idx)})} className="text-red-400 hover:text-red-600"><X className="w-4 h-4"/></button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* מטבע ושער */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">מטבע תשלום</label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setLocalStockForm({...localStockForm, currency: 'ILS'})} className={`flex-1 py-2 rounded-md text-sm font-bold border transition-colors ${localStockForm.currency === 'ILS' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300'}`}>₪ שקל</button>
+                    <button type="button" onClick={() => setLocalStockForm({...localStockForm, currency: 'USD'})} className={`flex-1 py-2 rounded-md text-sm font-bold border transition-colors ${localStockForm.currency === 'USD' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-600 border-slate-300'}`}>$ דולר</button>
+                  </div>
+                </div>
+                {localStockForm.currency === 'USD' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">שער דולר (₪/$)</label>
+                    <input type="number" step="0.01" min="0" className="w-full border-slate-300 rounded-md p-2.5 border bg-green-50 font-bold" value={localStockForm.exchangeRate} onChange={e => setLocalStockForm({...localStockForm, exchangeRate: Number(e.target.value)})} />
+                  </div>
+                )}
+              </div>
+
+              {/* מע"מ */}
+              <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <input type="checkbox" id="includesVat" checked={localStockForm.includesVat} onChange={e => setLocalStockForm({...localStockForm, includesVat: e.target.checked})} className="w-4 h-4 rounded border-slate-300 accent-amber-500" />
+                <label htmlFor="includesVat" className="text-sm text-slate-700 font-medium cursor-pointer">
+                  המחיר שהוזן כולל מע"מ (18%) — עלות הנטו תחושב אוטומטית
+                </label>
+              </div>
+
+              {/* תצוגת סיכום עלות */}
+              {(() => {
+                const rate = localStockForm.currency === 'USD' ? Number(localStockForm.exchangeRate) : 1;
+                const vatDiv = localStockForm.includesVat ? 1.18 : 1;
+                let totalGross = 0, totalNet = 0;
+                localStockForm.lines.forEach((l: any) => {
+                  const gross = Number(l.unitCost) * Number(l.qty) * rate;
+                  totalGross += gross;
+                  totalNet += gross / vatDiv;
+                });
+                if (totalGross === 0) return null;
+                return (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm">
+                    <div className="flex justify-between"><span className="text-slate-600">עלות ברוטו:</span><span className="font-bold">₪{Math.round(totalGross).toLocaleString()}</span></div>
+                    {localStockForm.includesVat && <div className="flex justify-between mt-1"><span className="text-slate-600">עלות נטו (לפני מע"מ):</span><span className="font-bold text-green-700">₪{Math.round(totalNet).toLocaleString()}</span></div>}
+                    <div className="flex justify-between mt-1"><span className="text-slate-600">פריטים סה"כ:</span><span className="font-bold">{localStockForm.lines.reduce((s: number, l: any) => s + Number(l.qty), 0)}</span></div>
+                  </div>
+                );
+              })()}
+
+              {/* הערות */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">הערות (אופציונלי)</label>
+                <textarea className="w-full border-slate-300 rounded-md p-2.5 border min-h-[60px]" value={localStockForm.notes} onChange={e => setLocalStockForm({...localStockForm, notes: e.target.value})} placeholder="מקור הרכישה, מספר חשבונית, הערות..."/>
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t">
+                <button type="submit" disabled={isSaving} className="flex-1 bg-green-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'הוסף מלאי למחסן'}</button>
+                <button type="button" onClick={() => setIsLocalStockModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
