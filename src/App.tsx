@@ -2867,6 +2867,20 @@ export default function App() {
                     ))}
                   </div>
 
+                  {/* DEBUG PANEL — לאבחון */}
+                  {leadsFilter === 'mine' && (
+                    <div className="mb-4 p-3 bg-yellow-50 border border-yellow-300 rounded-lg text-xs font-mono space-y-1">
+                      <p className="font-bold text-yellow-800">🔍 DEBUG (להסרה אחרי תיקון)</p>
+                      <p>user.email: <span className="text-blue-700">{user?.email || 'NULL'}</span></p>
+                      <p>סה"כ לידים: {allLeads.length} | אחרי פילטר: {filteredLeads.length}</p>
+                      {allLeads.map((c: any) => (
+                        <p key={c.id} className={c.assignedTo === user?.email || c.createdBy === user?.email ? 'text-green-700' : 'text-red-600'}>
+                          {c.businessName || c.contactName} → assignedTo: "{c.assignedTo || '(ריק)'}" | createdBy: "{c.createdBy || '(ריק)'}" | match: {String(c.assignedTo === user?.email || c.createdBy === user?.email)}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Unassigned section */}
                   {unassigned.length > 0 && leadsFilter !== 'mine' && (
                     <div className="mb-6">
