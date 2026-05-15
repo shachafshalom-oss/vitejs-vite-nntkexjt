@@ -43,6 +43,21 @@ const QUOTE_STATUS_MAP: Record<string, string> = {
   'rejected': 'נדחתה' 
 };
 
+const LEAD_STAGE_MAP: Record<string, string> = {
+  'new': 'חדש',
+  'contacted': 'יצירת קשר',
+  'quote_sent': 'הצעה נשלחה',
+  'waiting': 'ממתין לתשובה',
+  'not_relevant': 'לא רלוונטי',
+};
+const LEAD_STAGE_COLORS: Record<string, string> = {
+  'new': 'bg-blue-100 text-blue-700',
+  'contacted': 'bg-orange-100 text-orange-700',
+  'quote_sent': 'bg-purple-100 text-purple-700',
+  'waiting': 'bg-green-100 text-green-700',
+  'not_relevant': 'bg-slate-100 text-slate-500',
+};
+
 const defaultSettings: any = { 
   models: { 
     'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '' }, 
@@ -218,7 +233,11 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('customers');
-  const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all'>('all');
+  const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
+  // Leads UI States
+  const [assignDropdownId, setAssignDropdownId] = useState<string | null>(null);
+  const [quickAssignInput, setQuickAssignInput] = useState('');
+  const [leadFollowupEditId, setLeadFollowupEditId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Data States
@@ -1182,6 +1201,15 @@ export default function App() {
     setIsSaving(false);
   };
 
+  const saveLeadField = async (customerId: string, fields: Record<string, any>) => {
+    try {
+      await updateDoc(doc(db, 'crm_customers', customerId), { ...fields, updatedAt: new Date().toISOString() });
+      if (selectedCustomer?.id === customerId) {
+        setSelectedCustomer((prev: any) => ({ ...prev, ...fields }));
+      }
+    } catch (err) { console.error('saveLeadField error', err); }
+  };
+
   const addInteractionNote = async () => {
     if (!newNoteText.trim() || !selectedCustomer) return;
     setIsSaving(true);
@@ -1849,6 +1877,48 @@ export default function App() {
                             <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>
                               {isExpired ? `פגה לפני ${Math.abs(item.daysLeft)} ימים` : `${item.daysLeft} ימים לפקיעה`}
                             </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* תזכורות חזרה להיום */}
+            {(() => {
+              const todayStr2 = getLocalYYYYMMDD(new Date());
+              const reminders = customers.filter((c: any) =>
+                c.status === 'lead' && c.followUpDate && c.followUpDate <= todayStr2
+              ).sort((a: any, b: any) => a.followUpDate.localeCompare(b.followUpDate));
+              if (reminders.length === 0) return null;
+              return (
+                <div className="mt-8">
+                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
+                    <CalendarDays className="w-5 h-5 text-amber-500"/> תזכורות לחזרה ({reminders.length})
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {reminders.map((c: any) => {
+                      const isToday = c.followUpDate === todayStr2;
+                      const isOverdue = c.followUpDate < todayStr2;
+                      return (
+                        <div
+                          key={c.id}
+                          className={`p-4 rounded-lg border flex items-start gap-3 cursor-pointer hover:shadow-md transition-shadow ${isOverdue ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}
+                          onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+                        >
+                          <div className={`p-2 rounded-full shrink-0 ${isOverdue ? 'bg-red-100' : 'bg-amber-100'}`}>
+                            <CalendarDays className={`w-4 h-4 ${isOverdue ? 'text-red-600' : 'text-amber-600'}`}/>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-slate-800 text-sm truncate">{c.businessName || c.contactName}</p>
+                            {c.phone && <p className="text-xs text-slate-500">{c.phone}</p>}
+                            <p className={`text-xs font-bold mt-1 ${isOverdue ? 'text-red-600' : 'text-amber-700'}`}>
+                              {isToday ? '📅 היום!' : `⚠️ עבר — ${new Date(c.followUpDate).toLocaleDateString('he-IL')}`}
+                            </p>
+                            {c.followUpNote && <p className="text-xs text-slate-600 mt-1 italic truncate">"{c.followUpNote}"</p>}
+                            {c.assignedTo && <p className="text-[10px] text-indigo-500 mt-1">{c.assignedTo.split('@')[0]}</p>}
                           </div>
                         </div>
                       );
@@ -2594,41 +2664,207 @@ export default function App() {
               </button>
             </div>
 
-            {/* פילטר לידים לפי משתמש */}
-            {activeCustomerTab === 'leads' && (
-              <div className="flex items-center gap-2 mb-4">
-                <button onClick={() => setLeadsFilter('mine')} className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === 'mine' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
-                  הלידים שלי
-                </button>
-                <button onClick={() => setLeadsFilter('all')} className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === 'all' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
-                  כל הלידים
-                </button>
-              </div>
-            )}
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {customers
-                .filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead')
+            {/* ===== LEADS TAB ===== */}
+            {activeCustomerTab === 'leads' && (() => {
+              const todayStr3 = getLocalYYYYMMDD(new Date());
+              const allLeads = customers.filter(c => c.status === 'lead');
+              const filteredLeads = allLeads
                 .filter(c => {
-                  if (activeCustomerTab !== 'leads') return true;
-                  if (leadsFilter === 'all') return true;
-                  return (c.assignedTo || c.createdBy || '') === (user?.email || '');
+                  if (leadsFilter === 'mine') return (c.assignedTo || c.createdBy || '') === (user?.email || '');
+                  if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
+                  return true;
                 })
                 .filter(c => {
                   if (!customerSearch.trim()) return true;
                   const q = customerSearch.toLowerCase();
-                  return (
-                    (c.businessName || '').toLowerCase().includes(q) ||
-                    (c.contactName || '').toLowerCase().includes(q) ||
-                    (c.phone || '').includes(q) ||
-                    (c.email || '').toLowerCase().includes(q) ||
-                    (c.companyName || '').toLowerCase().includes(q)
-                  );
+                  return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q);
+                });
+              const unassigned = filteredLeads.filter(c => !c.assignedTo && !c.createdBy);
+              const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
+              const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
+
+              const renderLeadCard = (c: any) => {
+                const stat = calculatedData.customerStats[c.id];
+                const lastContactMs = c.interactionLogs && c.interactionLogs.length > 0
+                  ? new Date(c.interactionLogs[c.interactionLogs.length-1].date).getTime()
+                  : (c.createdAt ? new Date(c.createdAt).getTime() : null);
+                const daysSinceContact = lastContactMs ? Math.floor((Date.now() - lastContactMs) / (1000*60*60*24)) : null;
+                const isStale = daysSinceContact !== null && daysSinceContact >= 7;
+                const followUpOverdue = c.followUpDate && c.followUpDate < todayStr3;
+                const followUpToday = c.followUpDate && c.followUpDate === todayStr3;
+                const followUpSoon = c.followUpDate && c.followUpDate > todayStr3;
+
+                return (
+                  <div key={c.id} className={`bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col cursor-pointer relative ${isStale ? 'border-orange-200' : 'border-slate-200'}`}
+                    onClick={e => { if ((e.target as HTMLElement).closest('.lead-actions')) return; setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}>
+
+                    {/* top colored stripe based on stage */}
+                    <div className={`h-1 rounded-t-lg ${c.leadStage === 'not_relevant' ? 'bg-slate-300' : c.leadStage === 'quote_sent' ? 'bg-purple-400' : c.leadStage === 'waiting' ? 'bg-green-400' : c.leadStage === 'contacted' ? 'bg-orange-400' : 'bg-blue-400'}`}/>
+
+                    <div className="p-4 flex-1">
+                      {/* Header */}
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-bold text-slate-800 truncate">{c.businessName || c.contactName}</h3>
+                          {c.businessName && c.contactName && <p className="text-xs text-slate-500">{c.contactName}</p>}
+                        </div>
+                        <div className="flex gap-1 lead-actions shrink-0 mr-1">
+                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1" title="עריכה"><Edit className="w-3.5 h-3.5"/></button>
+                          <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1" title="מחיקה"><Trash2 className="w-3.5 h-3.5"/></button>
+                        </div>
+                      </div>
+
+                      {/* Badges row */}
+                      <div className="flex flex-wrap gap-1 mb-3">
+                        {c.leadStage && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${LEAD_STAGE_COLORS[c.leadStage] || 'bg-slate-100 text-slate-600'}`}>
+                            {LEAD_STAGE_MAP[c.leadStage] || c.leadStage}
+                          </span>
+                        )}
+                        {c.businessType && <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}</span>}
+                        {isStale && daysSinceContact !== null && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-medium">⚠️ {daysSinceContact} ימים ללא קשר</span>
+                        )}
+                        {!isStale && daysSinceContact !== null && daysSinceContact > 0 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-50 text-slate-400">{daysSinceContact} ימים</span>
+                        )}
+                      </div>
+
+                      {/* Contact info */}
+                      <div className="space-y-1 text-xs text-slate-600 mb-3">
+                        {c.phone && <div className="flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-indigo-600" onClick={e => e.stopPropagation()}>{c.phone}</a></div>}
+                        {c.address && <div className="flex items-center gap-1.5"><MapPin className="w-3 h-3 text-slate-400"/> <span className="truncate">{c.address}</span></div>}
+                      </div>
+
+                      {/* Follow-up date */}
+                      {(c.followUpDate || leadFollowupEditId === c.id) ? (
+                        <div className={`rounded-md px-2.5 py-1.5 text-xs mb-2 lead-actions ${followUpOverdue ? 'bg-red-50 border border-red-200' : followUpToday ? 'bg-amber-50 border border-amber-200' : 'bg-green-50 border border-green-200'}`}>
+                          {leadFollowupEditId === c.id ? (
+                            <div className="flex flex-col gap-1" onClick={e => e.stopPropagation()}>
+                              <input type="date" className="w-full border border-slate-300 rounded p-1 text-xs" defaultValue={c.followUpDate || todayStr3}
+                                onBlur={async e => { await saveLeadField(c.id, { followUpDate: e.target.value }); setLeadFollowupEditId(null); }}
+                                autoFocus />
+                              <input type="text" className="w-full border border-slate-300 rounded p-1 text-xs" placeholder="הערה (לדוגמה: לקוח ביקש להתקשר אחרי 17:00)" defaultValue={c.followUpNote || ''}
+                                onBlur={async e => { await saveLeadField(c.id, { followUpNote: e.target.value }); }} />
+                              <button className="text-[10px] text-slate-400 hover:text-red-500 self-end" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { followUpDate: null, followUpNote: '' }); setLeadFollowupEditId(null); }}>הסר תזכורת</button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between" onClick={e => { e.stopPropagation(); setLeadFollowupEditId(c.id); }}>
+                              <div className="flex items-center gap-1">
+                                <CalendarDays className={`w-3 h-3 ${followUpOverdue ? 'text-red-500' : followUpToday ? 'text-amber-600' : 'text-green-600'}`}/>
+                                <span className={`font-medium ${followUpOverdue ? 'text-red-600' : followUpToday ? 'text-amber-700' : 'text-green-700'}`}>
+                                  {followUpToday ? 'היום!' : followUpOverdue ? `⚠️ ${new Date(c.followUpDate).toLocaleDateString('he-IL')}` : new Date(c.followUpDate).toLocaleDateString('he-IL')}
+                                </span>
+                              </div>
+                              <Edit className="w-2.5 h-2.5 text-slate-400"/>
+                            </div>
+                          )}
+                          {!leadFollowupEditId && c.followUpNote && <p className="text-[10px] text-slate-500 mt-0.5 italic truncate">"{c.followUpNote}"</p>}
+                        </div>
+                      ) : (
+                        <button className="lead-actions text-[10px] text-slate-400 hover:text-indigo-600 flex items-center gap-1 mb-2"
+                          onClick={e => { e.stopPropagation(); setLeadFollowupEditId(c.id); }}>
+                          <CalendarDays className="w-3 h-3"/> + קבע תזכורת חזרה
+                        </button>
+                      )}
+
+                      {/* Footer: assignee + quick actions */}
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                        <div className="relative lead-actions">
+                          {assignDropdownId === c.id ? (
+                            <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                              <input autoFocus type="email" placeholder="email@..." className="text-xs border border-indigo-300 rounded px-2 py-1 w-36 outline-none" value={quickAssignInput}
+                                onChange={e => setQuickAssignInput(e.target.value)}
+                                onKeyDown={async e => {
+                                  if (e.key === 'Enter') { await saveLeadField(c.id, { assignedTo: quickAssignInput }); setAssignDropdownId(null); setQuickAssignInput(''); }
+                                  if (e.key === 'Escape') { setAssignDropdownId(null); setQuickAssignInput(''); }
+                                }} />
+                              <button className="text-xs text-indigo-600 font-bold" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: quickAssignInput }); setAssignDropdownId(null); setQuickAssignInput(''); }}>✓</button>
+                              <button className="text-xs text-slate-400" onClick={e => { e.stopPropagation(); setAssignDropdownId(null); }}>✕</button>
+                            </div>
+                          ) : (
+                            <button className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-indigo-600 transition-colors"
+                              onClick={e => { e.stopPropagation(); setQuickAssignInput(c.assignedTo || ''); setAssignDropdownId(c.id); }}>
+                              <User className="w-3 h-3"/>
+                              {c.assignedTo ? <span className="font-medium text-indigo-600">{c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
+                            </button>
+                          )}
+                        </div>
+                        <button className="lead-actions text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-medium hover:bg-indigo-100 flex items-center gap-1"
+                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
+                          <FileText className="w-3 h-3"/> הצעה
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              };
+
+              return (
+                <div>
+                  {/* Filter toolbar */}
+                  <div className="flex items-center gap-2 mb-4 flex-wrap">
+                    {[
+                      { id: 'all', label: `כל הלידים (${allLeads.length})` },
+                      { id: 'mine', label: 'הלידים שלי' },
+                      { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
+                    ].map(f => (
+                      <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
+                        className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === f.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'} ${f.id === 'today' && todayReminders > 0 ? 'animate-pulse' : ''}`}>
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Unassigned section */}
+                  {unassigned.length > 0 && leadsFilter !== 'mine' && (
+                    <div className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <AlertTriangle className="w-4 h-4 text-amber-500"/>
+                        <h4 className="text-sm font-bold text-amber-700">לא מוקצה ({unassigned.length})</h4>
+                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">לחץ על שם הנציג בכרטיס לשיוך מיידי</span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {unassigned.map(renderLeadCard)}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Assigned leads */}
+                  {assigned.length > 0 && (
+                    <div>
+                      {unassigned.length > 0 && leadsFilter !== 'mine' && (
+                        <h4 className="text-sm font-bold text-slate-600 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> לידים משויכים ({assigned.length})</h4>
+                      )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {assigned.map(renderLeadCard)}
+                      </div>
+                    </div>
+                  )}
+
+                  {filteredLeads.length === 0 && (
+                    <div className="bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500 col-span-full">
+                      <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
+                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : 'אין לידים להצגה'}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ===== CUSTOMERS TAB ===== */}
+            {activeCustomerTab === 'customers' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {customers
+                .filter(c => c.status !== 'lead')
+                .filter(c => {
+                  if (!customerSearch.trim()) return true;
+                  const q = customerSearch.toLowerCase();
+                  return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q)||(c.companyName||'').toLowerCase().includes(q);
                 })
                 .map(c => {
                 const stat = calculatedData.customerStats[c.id];
                 const todayMs2 = new Date().getTime();
-                // יא: לקוח "עבר" חזותי - פעיל אבל אין לו אחריות פעילה ואין רכישות ב-6 חודשים אחרונים
                 const customerSoldItems = calculatedData.enrichedItems?.filter((i: any) => i.customerId === c.id && i.status === 'sold') || [];
                 const hasActiveWarranty = customerSoldItems.some((i: any) => {
                   if (!i.warrantyMonths || !i.saleDate) return false;
@@ -2637,64 +2873,30 @@ export default function App() {
                 });
                 const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && customerSoldItems.length > 0;
                 const isActiveCustomer = c.status === 'active' && (hasActiveWarranty || customerSoldItems.length > 0);
-                const displayStatus = c.status === 'lead' ? 'ליד מתעניין' : isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
-                const badgeColor = c.status === 'lead' ? 'bg-blue-100 text-blue-700' : isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
-                
+                const displayStatus = isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
+                const badgeColor = isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
                     if ((e.target as HTMLElement).closest('.customer-actions')) return;
-                    setSelectedCustomer(c);
-                    setActiveCustomerOverviewTab('log');
-                    setIsCustomerOverviewOpen(true);
+                    setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true);
                   }}>
                     <div className="p-5 flex-1">
                       <div className="flex justify-between items-start mb-3">
                         <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-full ${isActiveCustomer ? 'bg-green-100 text-green-700' : c.status === 'lead' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
-                            <User className="w-5 h-5"/>
-                          </div>
+                          <div className={`p-2 rounded-full ${isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><User className="w-5 h-5"/></div>
                           <div>
                             <h3 className="font-bold text-lg text-slate-800">{c.businessName || c.contactName}</h3>
                             {c.businessName && c.contactName && <p className="text-xs text-slate-500 mb-1">{c.contactName}</p>}
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${badgeColor}`}>
-                              {displayStatus}
-                            </span>
-                            {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
-                              {c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}
-                            </span>}
-                            {c.status === 'lead' && c.assignedTo && (
-                              <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 font-medium">
-                                {c.assignedTo.split('@')[0]}
-                              </span>
-                            )}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${badgeColor}`}>{displayStatus}</span>
+                            {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">{c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}</span>}
                           </div>
                         </div>
                         <div className="flex gap-1 customer-actions">
-                          <button 
-                            onClick={() => { 
-                              setQuoteData({ customerId: c.id, items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
-                              setIsQuoteModalOpen(true); 
-                            }} 
-                            className="text-slate-400 hover:text-green-600 p-1" 
-                            title="הפק הצעת מחיר"
-                          >
-                            <FileText className="w-4 h-4"/>
-                          </button>
-                          <button 
-                            onClick={() => { 
-                              setShowQuickImport(false); 
-                              setQuickImportText(''); 
-                              setCustomerEditingData(c); 
-                              setIsCustomerModalOpen(true); 
-                            }} 
-                            className="text-slate-400 hover:text-indigo-600 p-1"
-                          >
-                            <Edit className="w-4 h-4"/>
-                          </button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
                       </div>
-                      
                       <div className="space-y-2 mt-4 text-sm text-slate-600">
                         {c.phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-indigo-600 hover:underline">{c.phone}</a></div>}
                         {c.email && <div className="flex items-center gap-2"><Mail className="w-4 h-4 text-slate-400"/> {c.email}</div>}
@@ -2704,35 +2906,26 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    
-                    {activeCustomerTab === 'customers' && (
-                      <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
-                        <div>
-                          <p className="text-xs text-slate-500 mb-1">רכישות</p>
-                          <p className="font-bold text-slate-800">{stat ? stat.itemCount : 0} ברים</p>
+                    <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
+                      <div><p className="text-xs text-slate-500 mb-1">רכישות</p><p className="font-bold text-slate-800">{stat ? stat.itemCount : 0} ברים</p></div>
+                      <div><p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p><p className="font-bold text-indigo-700">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p></div>
+                      {(stat && stat.activeWarranties > 0) && (
+                        <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
+                          <ShieldCheck className="w-3 h-3"/> {stat.activeWarranties} באחריות
                         </div>
-                        <div>
-                          <p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p>
-                          <p className="font-bold text-indigo-700">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p>
-                        </div>
-                        {(stat && stat.activeWarranties > 0) && (
-                            <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
-                                <ShieldCheck className="w-3 h-3" /> {stat.activeWarranties} באחריות
-                            </div>
-                        )}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
-                )
+                );
               })}
-              {customers.filter(c => activeCustomerTab === 'leads' ? c.status === 'lead' : c.status !== 'lead').filter(c => { if (activeCustomerTab !== 'leads' || leadsFilter === 'all') return true; return (c.assignedTo || c.createdBy || '') === (user?.email || ''); }).filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
+              {customers.filter(c => c.status !== 'lead').filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
                 <div className="col-span-full bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
-                  <Users className="w-12 h-12 mx-auto text-slate-300 mb-3" />
-                  <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין נתונים להצגה ברשימה זו.'}</p>
-                  <p className="text-sm">{customerSearch ? 'נסה לחפש במילות מפתח אחרות.' : 'הוסף איש קשר חדש כדי להתחיל.'}</p>
+                  <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
+                  <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין לקוחות להצגה.'}</p>
                 </div>
               )}
             </div>
+            )}
           </div>
         )}
 
@@ -3210,6 +3403,22 @@ export default function App() {
                       <p className="text-[11px] text-slate-400 mt-1">ברירת מחדל: המשתמש הנוכחי</p>
                     </div>
                   )}
+                  {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">שלב הליד</label>
+                      <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.leadStage || ''} onChange={e => setCustomerEditingData({...customerEditingData, leadStage: e.target.value})}>
+                        <option value="">-- בחר שלב --</option>
+                        {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5"/> תאריך חזרה ללקוח</label>
+                      <input type="date" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.followUpDate || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpDate: e.target.value})} />
+                      <input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none mt-1" placeholder="הערה לתזכורת (אופציונלי)" value={customerEditingData.followUpNote || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpNote: e.target.value})} />
+                    </div>
+                  )}
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
                 </div>
@@ -3357,6 +3566,66 @@ export default function App() {
                     </span>
                   </div>
                 </div>
+
+                {/* Lead-specific controls */}
+                {selectedCustomer.status === 'lead' && (
+                  <div className="space-y-3 pt-2">
+                    {/* Convert to customer button */}
+                    <button
+                      className="w-full bg-green-600 text-white text-sm font-bold py-2 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2 shadow-sm"
+                      onClick={async () => {
+                        if (!window.confirm(`להמיר את "${selectedCustomer.businessName || selectedCustomer.contactName}" ללקוח פעיל?`)) return;
+                        await saveLeadField(selectedCustomer.id, { status: 'active', followUpDate: null, followUpNote: '' });
+                        setIsCustomerOverviewOpen(false);
+                      }}
+                    >
+                      <CheckCircle className="w-4 h-4"/> הפוך ללקוח פעיל
+                    </button>
+
+                    {/* Lead Stage selector */}
+                    <div>
+                      <p className="text-[11px] text-slate-400 font-medium mb-1.5">שלב הליד</p>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => (
+                          <button key={k}
+                            className={`text-[10px] px-2 py-1 rounded-full font-medium border transition-colors ${selectedCustomer.leadStage === k ? LEAD_STAGE_COLORS[k] + ' border-current font-bold' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'}`}
+                            onClick={() => saveLeadField(selectedCustomer.id, { leadStage: k })}
+                          >{v}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Assignee */}
+                    <div>
+                      <p className="text-[11px] text-slate-400 font-medium mb-1">נציג מטפל</p>
+                      <input type="email" dir="ltr" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400"
+                        value={selectedCustomer.assignedTo || ''}
+                        onChange={e => setSelectedCustomer((p: any) => ({...p, assignedTo: e.target.value}))}
+                        onBlur={e => saveLeadField(selectedCustomer.id, { assignedTo: e.target.value })}
+                        placeholder="email@company.com" />
+                    </div>
+
+                    {/* Follow-up date */}
+                    <div>
+                      <p className="text-[11px] text-slate-400 font-medium mb-1 flex items-center gap-1"><CalendarDays className="w-3 h-3"/> תאריך חזרה ללקוח</p>
+                      <input type="date" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400"
+                        value={selectedCustomer.followUpDate || ''}
+                        onChange={e => setSelectedCustomer((p: any) => ({...p, followUpDate: e.target.value}))}
+                        onBlur={e => saveLeadField(selectedCustomer.id, { followUpDate: e.target.value || null })} />
+                      <input type="text" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400 mt-1"
+                        value={selectedCustomer.followUpNote || ''}
+                        placeholder="הערה לתזכורת..."
+                        onChange={e => setSelectedCustomer((p: any) => ({...p, followUpNote: e.target.value}))}
+                        onBlur={e => saveLeadField(selectedCustomer.id, { followUpNote: e.target.value })} />
+                      {selectedCustomer.followUpDate && (
+                        <button className="text-[10px] text-red-400 hover:text-red-600 mt-1"
+                          onClick={() => saveLeadField(selectedCustomer.id, { followUpDate: null, followUpNote: '' })}>
+                          הסר תזכורת
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-3 text-sm">
                   <div className="flex items-center gap-2 text-slate-600"><Phone className="w-4 h-4 text-slate-400 shrink-0"/> <a href={`tel:${selectedCustomer.phone}`} className="hover:text-indigo-600">{selectedCustomer.phone || '---'}</a></div>
