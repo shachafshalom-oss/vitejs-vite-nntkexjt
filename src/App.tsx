@@ -43,6 +43,11 @@ const QUOTE_STATUS_MAP: Record<string, string> = {
   'rejected': 'נדחתה' 
 };
 
+const AGENTS = [
+  { name: 'שחף', email: 'shachaf@dslogistics.com' },
+  { name: 'דניאל', email: 'daniel@dslogistics.com' },
+];
+
 const LEAD_STAGE_MAP: Record<string, string> = {
   'new': 'חדש',
   'contacted': 'יצירת קשר',
@@ -1785,98 +1790,235 @@ export default function App() {
         
         {/* --- TAB: DASHBOARD --- */}
         {activeTab === 'dashboard' && (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-slate-800">תמונת מצב בזמן אמת</h2>
+          <div className="space-y-8">
+
+            {/* ROW 0: Header */}
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-800">תמונת מצב</h2>
+                <p className="text-sm text-slate-400 mt-0.5">{new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+              </div>
               <button onClick={handleGetInsights} className="bg-gradient-to-l from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-yellow-300" />
+                <Sparkles className="w-5 h-5 text-yellow-300"/>
                 <span className="hidden sm:inline">יועץ עסקי AI ✨</span>
               </button>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-              <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-5 rounded-lg shadow-md text-white flex flex-col justify-between">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm font-medium text-indigo-100">הכנסות חודש נוכחי</p>
-                  <Wallet className="w-5 h-5 text-indigo-200"/>
+
+            {/* ROW 1 — REVENUE HERO */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-1 h-5 bg-indigo-600 rounded-full"/>
+                <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">הכנסות</h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2 bg-gradient-to-br from-indigo-600 via-indigo-700 to-purple-700 p-6 rounded-2xl shadow-lg text-white relative overflow-hidden">
+                  <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 80% 20%, white 0%, transparent 60%)'}}/>
+                  <p className="text-sm font-medium text-indigo-200 mb-1">הכנסות חודש נוכחי</p>
+                  <p className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
+                  <div className="flex items-center gap-3">
+                    {(() => {
+                      const diff = calculatedData.currentMonthIncome - calculatedData.lastMonthIncome;
+                      const pct = calculatedData.lastMonthIncome > 0 ? Math.round((diff / calculatedData.lastMonthIncome) * 100) : 0;
+                      const isUp = diff >= 0;
+                      return (
+                        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${isUp ? 'bg-green-400/20 text-green-200' : 'bg-red-400/20 text-red-200'}`}>
+                          {isUp ? <ArrowUpRight className="w-4 h-4"/> : <ArrowDownRight className="w-4 h-4"/>}
+                          {isUp ? '+' : ''}{pct}% לעומת חודש שעבר
+                        </div>
+                      );
+                    })()}
+                    <span className="text-indigo-300 text-sm">חודש שעבר: ₪{calculatedData.lastMonthIncome.toLocaleString()}</span>
+                  </div>
                 </div>
-                <p className="text-3xl font-bold">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
-                <p className="text-xs text-indigo-200 mt-2 flex items-center gap-1">לעומת חודש שעבר: ₪{calculatedData.lastMonthIncome.toLocaleString()}</p>
-              </div>
-              <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4 cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all group">
-                <div className="bg-indigo-100 p-3 rounded-full group-hover:bg-indigo-200 transition-colors"><Package className="text-indigo-600 w-6 h-6"/></div>
-                <div>
-                  <p className="text-sm text-slate-500 font-medium flex items-center gap-1.5">פריטים במלאי <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-colors">פירוט</span></p>
-                  <p className="text-2xl font-bold text-slate-800">{calculatedData.inWarehouseCount}</p>
+                <div className="flex flex-col gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="bg-green-100 p-1.5 rounded-lg"><TrendingUp className="w-4 h-4 text-green-600"/></div>
+                      <p className="text-xs text-slate-500 font-medium">רווח ממוצע לבר</p>
+                    </div>
+                    <p className="text-2xl font-black text-slate-800">₪{calculatedData.avgProfit.toLocaleString()}</p>
+                  </div>
+                  <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1 cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all group">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="bg-indigo-100 p-1.5 rounded-lg group-hover:bg-indigo-200 transition-colors"><Package className="w-4 h-4 text-indigo-600"/></div>
+                      <p className="text-xs text-slate-500 font-medium flex items-center gap-1">פריטים במלאי <span className="text-[10px] text-indigo-400 group-hover:text-indigo-600">פירוט ▸</span></p>
+                    </div>
+                    <p className="text-2xl font-black text-slate-800">{calculatedData.inWarehouseCount} <span className="text-sm font-medium text-slate-400">יח'</span></p>
+                    <p className="text-xs text-slate-400 mt-0.5">שווי: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="bg-green-100 p-3 rounded-full"><DollarSign className="text-green-600 w-6 h-6"/></div>
-                <div><p className="text-sm text-slate-500 font-medium">שווי מלאי (עלות Landed)</p><p className="text-2xl font-bold text-slate-800">₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p></div>
-              </div>
-              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="bg-blue-100 p-3 rounded-full"><TrendingUp className="text-blue-600 w-6 h-6"/></div>
-                <div><p className="text-sm text-slate-500 font-medium">רווח ממוצע לבר (נטו)</p><p className="text-2xl font-bold text-slate-800">₪{calculatedData.avgProfit.toLocaleString()}</p></div>
               </div>
             </div>
 
-            <h3 className="text-xl font-bold text-slate-800 mt-8 mb-4 border-b pb-2 flex items-center gap-2"><Activity className="w-5 h-5 text-indigo-600"/> תחזית מלאי וצפי הזמנות</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {calculatedData.forecasts.map((f: any) => (
-                <div key={f.model} className={`bg-white p-5 rounded-lg shadow-sm border ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}>
-                  <h4 className="font-bold text-lg text-slate-800">{f.model}</h4>
-                  <div className="mt-3 space-y-2 text-sm">
-                    <p className="flex justify-between items-center"><span className="text-slate-500">במלאי כרגע:</span> <span className="font-semibold text-base">{f.stock} יח'</span></p>
-                    <p className="flex justify-between items-center"><span className="text-slate-500">מלאי בדרך:</span> <span className="font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">{f.onTheWay} יח'</span></p>
-                    <p className="flex justify-between items-center"><span className="text-slate-500">קצב מכירה (30 יום):</span> <span className="font-semibold">{f.sold30} יח'</span></p>
-                    <div className="pt-3 mt-3 border-t border-slate-100">
-                      <p className="text-slate-600 font-medium">המלאי (במחסן) יספיק ל-</p>
-                      <p className={`text-xl font-bold ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>
-                        {f.daysLeft === 'מעל חצי שנה' ? f.daysLeft : f.daysLeft > 0 ? `~${f.daysLeft} ימים` : 'נגמר/אין נתונים'}
-                      </p>
-                      {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> מומלץ להזמין</p>}
+            {/* ROW 2 — LEADS COMMAND CENTER */}
+            {(() => {
+              const todayStr4 = getLocalYYYYMMDD(new Date());
+              const allLeads = customers.filter((c: any) => c.status === 'lead');
+              const overdueReminders = allLeads.filter((c: any) => c.followUpDate && c.followUpDate < todayStr4);
+              const todayReminders2 = allLeads.filter((c: any) => c.followUpDate && c.followUpDate === todayStr4);
+              const unassignedLeads = allLeads.filter((c: any) => !c.assignedTo && !c.createdBy);
+              const urgentLeads = [...overdueReminders, ...todayReminders2].filter((v: any, i: number, a: any[]) => a.findIndex((x: any) => x.id === v.id) === i);
+              const stageCount: Record<string, number> = {};
+              allLeads.forEach((c: any) => { const s = c.leadStage || 'new'; stageCount[s] = (stageCount[s] || 0) + 1; });
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-1 h-5 bg-orange-500 rounded-full"/>
+                      <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">לידים</h3>
+                      <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">{allLeads.length} פעילים</span>
+                    </div>
+                    <button onClick={() => { setActiveTab('customers'); setActiveCustomerTab('leads'); }} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">לכל הלידים ▸</button>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {/* Lead stage funnel */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-4">משפך לידים</p>
+                      <div className="space-y-2.5">
+                        {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => {
+                          const count = stageCount[k] || 0;
+                          const pct = allLeads.length > 0 ? Math.round((count / allLeads.length) * 100) : 0;
+                          return (
+                            <div key={k}>
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="font-medium text-slate-600">{v}</span>
+                                <span className="font-bold text-slate-700">{count}</span>
+                              </div>
+                              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div className={`h-full rounded-full transition-all ${k === 'new' ? 'bg-blue-400' : k === 'contacted' ? 'bg-orange-400' : k === 'quote_sent' ? 'bg-purple-400' : k === 'waiting' ? 'bg-green-400' : 'bg-slate-300'}`} style={{ width: pct + '%' }}/>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {unassignedLeads.length > 0 && (
+                        <div className="mt-4 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700 font-medium">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0"/>{unassignedLeads.length} לידים לא מוקצים
+                        </div>
+                      )}
+                    </div>
+                    {/* Today's follow-ups */}
+                    <div className={`rounded-xl p-5 shadow-sm border ${urgentLeads.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
+                      <div className="flex items-center gap-2 mb-4">
+                        <CalendarDays className={`w-4 h-4 ${urgentLeads.length > 0 ? 'text-amber-600' : 'text-slate-400'}`}/>
+                        <p className="text-xs font-bold text-slate-600 uppercase tracking-wide">לחזור היום / באיחור</p>
+                        {urgentLeads.length > 0 && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-black animate-pulse">{urgentLeads.length}</span>}
+                      </div>
+                      {urgentLeads.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-6 text-slate-300">
+                          <CalendarDays className="w-10 h-10 mb-2"/>
+                          <p className="text-sm font-medium text-slate-400">אין תזכורות להיום 🎉</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 max-h-44 overflow-y-auto">
+                          {urgentLeads.map((c: any) => {
+                            const isOverdue = c.followUpDate < todayStr4;
+                            return (
+                              <div key={c.id} onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+                                className={`flex items-start gap-3 p-2.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity ${isOverdue ? 'bg-red-100 border border-red-200' : 'bg-white border border-amber-200'}`}>
+                                <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-amber-500'}`}/>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-bold text-slate-800 truncate">{c.businessName || c.contactName}</p>
+                                  <p className={`text-[10px] font-medium ${isOverdue ? 'text-red-600' : 'text-amber-700'}`}>{isOverdue ? '⚠️ ' + new Date(c.followUpDate).toLocaleDateString('he-IL') : '📅 היום'}</p>
+                                  {c.followUpNote && <p className="text-[10px] text-slate-400 truncate italic">"{c.followUpNote}"</p>}
+                                </div>
+                                {c.phone && <a href={'tel:' + c.phone} onClick={e => e.stopPropagation()} className="text-green-600 hover:text-green-800 shrink-0"><Phone className="w-3.5 h-3.5"/></a>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    {/* Leads by agent */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-4">לידים לפי נציג</p>
+                      {(() => {
+                        const agentMap: any = {};
+                        allLeads.forEach((c: any) => { const agent = c.assignedTo || c.createdBy || 'לא מוקצה'; if (!agentMap[agent]) agentMap[agent] = { leads: 0, converted: 0 }; agentMap[agent].leads++; });
+                        customers.filter((c: any) => c.status !== 'lead').forEach((c: any) => { const agent = c.assignedTo || c.createdBy || null; if (agent && agentMap[agent]) agentMap[agent].converted++; });
+                        const agents = Object.entries(agentMap);
+                        if (agents.length === 0) return <p className="text-sm text-slate-400 text-center py-6">אין נתונים</p>;
+                        return (
+                          <div className="space-y-3">
+                            {agents.map(([agent, data]: any) => {
+                              const total = data.leads + (data.converted || 0);
+                              const pct = total > 0 ? Math.round(((data.converted || 0) / total) * 100) : 0;
+                              const shortName = agent === 'לא מוקצה' ? agent : agent.split('@')[0];
+                              return (
+                                <div key={agent} className="flex items-center gap-3">
+                                  <div className="w-7 h-7 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-xs font-black shrink-0">{shortName[0]?.toUpperCase()}</div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex justify-between text-xs mb-0.5">
+                                      <span className="font-medium text-slate-700 truncate">{shortName}</span>
+                                      <span className="text-slate-500 shrink-0 mr-2">{data.leads} לידים</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="flex-1 bg-slate-100 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: pct + '%' }}/></div>
+                                      <span className="text-[10px] font-bold text-indigo-600 w-8 text-left">{pct}%</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
-              ))}
+              );
+            })()}
+
+            {/* ROW 3 — INVENTORY FORECAST */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-1 h-5 bg-slate-400 rounded-full"/>
+                <h3 className="text-base font-bold text-slate-500 uppercase tracking-wide">תחזית מלאי</h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {calculatedData.forecasts.map((f: any) => (
+                  <div key={f.model} className={`bg-white p-4 rounded-xl shadow-sm border ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}>
+                    <h4 className="font-bold text-slate-800 mb-3">{f.model}</h4>
+                    <div className="space-y-1.5 text-sm">
+                      <p className="flex justify-between"><span className="text-slate-500">במלאי:</span><span className="font-bold">{f.stock} יח'</span></p>
+                      <p className="flex justify-between"><span className="text-slate-500">בדרך:</span><span className="font-bold text-indigo-600">{f.onTheWay} יח'</span></p>
+                      <p className="flex justify-between"><span className="text-slate-500">מכירות/30י:</span><span className="font-bold">{f.sold30} יח'</span></p>
+                      <div className="pt-2 mt-2 border-t border-slate-100">
+                        <p className={`text-lg font-black ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>{f.daysLeft === 'מעל חצי שנה' ? '6+ חודשים' : f.daysLeft > 0 ? '~' + f.daysLeft + ' ימים' : 'נגמר'}</p>
+                        {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-0.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> מומלץ להזמין</p>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
-            {/* ט - התראות אחריות */}
+            {/* ROW 4 — WARRANTY ALERTS */}
             {(() => {
               const todayMs = new Date().getTime();
               const warrantyAlerts = calculatedData.enrichedItems
                 .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && item.saleDate)
-                .map((item: any) => {
-                  const expiry = new Date(item.saleDate);
-                  expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths));
-                  const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24));
-                  return { ...item, daysLeft, expiryDate: expiry };
-                })
+                .map((item: any) => { const expiry = new Date(item.saleDate); expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths)); const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24)); return { ...item, daysLeft }; })
                 .filter((item: any) => item.daysLeft <= 30)
                 .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
-
               if (warrantyAlerts.length === 0) return null;
-
               return (
-                <div className="mt-8">
-                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
-                    <ShieldAlert className="w-5 h-5 text-amber-500"/> התראות אחריות ({warrantyAlerts.length})
-                  </h3>
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-1 h-5 bg-amber-400 rounded-full"/>
+                    <h3 className="text-base font-bold text-slate-500 uppercase tracking-wide">התראות אחריות ({warrantyAlerts.length})</h3>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {warrantyAlerts.map((item: any) => {
                       const customer = customers.find((c: any) => c.id === item.customerId);
                       const isExpired = item.daysLeft <= 0;
                       return (
-                        <div key={item.id} className={`p-4 rounded-lg border flex items-start gap-3 ${isExpired ? 'bg-red-50 border-red-200' : item.daysLeft <= 7 ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'}`}>
-                          <div className={`p-2 rounded-full shrink-0 ${isExpired ? 'bg-red-100' : 'bg-amber-100'}`}>
-                            <ShieldAlert className={`w-4 h-4 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}/>
-                          </div>
+                        <div key={item.id} className={`p-4 rounded-xl border flex items-start gap-3 ${isExpired ? 'bg-red-50 border-red-200' : item.daysLeft <= 7 ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'}`}>
+                          <ShieldAlert className={`w-4 h-4 mt-0.5 shrink-0 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}/>
                           <div className="min-w-0">
                             <p className="font-bold text-slate-800 text-sm truncate">{customer?.businessName || customer?.contactName || 'לקוח לא ידוע'}</p>
-                            <p className="text-xs text-slate-600">דגם: {item.model}</p>
-                            <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>
-                              {isExpired ? `פגה לפני ${Math.abs(item.daysLeft)} ימים` : `${item.daysLeft} ימים לפקיעה`}
-                            </p>
+                            <p className="text-xs text-slate-500">דגם: {item.model}</p>
+                            <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>{isExpired ? 'פגה לפני ' + Math.abs(item.daysLeft) + ' ימים' : item.daysLeft + ' ימים לפקיעה'}</p>
                           </div>
                         </div>
                       );
@@ -1886,101 +2028,10 @@ export default function App() {
               );
             })()}
 
-            {/* תזכורות חזרה להיום */}
-            {(() => {
-              const todayStr2 = getLocalYYYYMMDD(new Date());
-              const reminders = customers.filter((c: any) =>
-                c.status === 'lead' && c.followUpDate && c.followUpDate <= todayStr2
-              ).sort((a: any, b: any) => a.followUpDate.localeCompare(b.followUpDate));
-              if (reminders.length === 0) return null;
-              return (
-                <div className="mt-8">
-                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
-                    <CalendarDays className="w-5 h-5 text-amber-500"/> תזכורות לחזרה ({reminders.length})
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {reminders.map((c: any) => {
-                      const isToday = c.followUpDate === todayStr2;
-                      const isOverdue = c.followUpDate < todayStr2;
-                      return (
-                        <div
-                          key={c.id}
-                          className={`p-4 rounded-lg border flex items-start gap-3 cursor-pointer hover:shadow-md transition-shadow ${isOverdue ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}
-                          onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
-                        >
-                          <div className={`p-2 rounded-full shrink-0 ${isOverdue ? 'bg-red-100' : 'bg-amber-100'}`}>
-                            <CalendarDays className={`w-4 h-4 ${isOverdue ? 'text-red-600' : 'text-amber-600'}`}/>
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-slate-800 text-sm truncate">{c.businessName || c.contactName}</p>
-                            {c.phone && <p className="text-xs text-slate-500">{c.phone}</p>}
-                            <p className={`text-xs font-bold mt-1 ${isOverdue ? 'text-red-600' : 'text-amber-700'}`}>
-                              {isToday ? '📅 היום!' : `⚠️ עבר — ${new Date(c.followUpDate).toLocaleDateString('he-IL')}`}
-                            </p>
-                            {c.followUpNote && <p className="text-xs text-slate-600 mt-1 italic truncate">"{c.followUpNote}"</p>}
-                            {c.assignedTo && <p className="text-[10px] text-indigo-500 mt-1">{c.assignedTo.split('@')[0]}</p>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* לידים לפי נציג */}
-            {(() => {
-              const allLeads = customers.filter((c: any) => c.status === 'lead');
-              if (allLeads.length === 0) return null;
-              const agentMap: any = {};
-              allLeads.forEach((c: any) => {
-                const agent = c.assignedTo || c.createdBy || 'לא מוקצה';
-                if (!agentMap[agent]) agentMap[agent] = { leads: 0 };
-                agentMap[agent].leads++;
-              });
-              const convertedCustomers = customers.filter((c: any) => c.status !== 'lead');
-              convertedCustomers.forEach((c: any) => {
-                const agent = c.assignedTo || c.createdBy || null;
-                if (agent && agentMap[agent]) {
-                  if (!agentMap[agent].converted) agentMap[agent].converted = 0;
-                  agentMap[agent].converted++;
-                }
-              });
-              const agents = Object.entries(agentMap);
-              if (agents.length === 0) return null;
-              return (
-                <div className="mt-8">
-                  <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
-                    <Users className="w-5 h-5 text-indigo-500"/> לידים לפי נציג
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {agents.map(([agent, data]: any) => {
-                      const totalHandled = data.leads + (data.converted || 0);
-                      const convRate = totalHandled > 0 ? Math.round(((data.converted || 0) / totalHandled) * 100) : 0;
-                      return (
-                        <div key={agent} className="bg-white border border-slate-200 rounded-lg p-4 flex items-center gap-4">
-                          <div className="bg-indigo-100 p-2.5 rounded-full shrink-0"><User className="w-5 h-5 text-indigo-600"/></div>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-bold text-slate-700 text-sm truncate">{agent}</p>
-                            <p className="text-xs text-slate-500">{data.leads} לידים פתוחים</p>
-                            <div className="mt-1.5 flex items-center gap-2">
-                              <div className="flex-1 bg-slate-100 rounded-full h-1.5">
-                                <div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: `${convRate}%` }}/>
-                              </div>
-                              <span className="text-[10px] font-bold text-indigo-600">{convRate}% המרה</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
           </div>
         )}
 
-        {/* --- TAB: FINANCE --- */}
+                {/* --- TAB: FINANCE --- */}
         {activeTab === 'finance' && (
           <div className="space-y-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
@@ -2670,7 +2721,7 @@ export default function App() {
               const allLeads = customers.filter(c => c.status === 'lead');
               const filteredLeads = allLeads
                 .filter(c => {
-                  if (leadsFilter === 'mine') return (c.assignedTo || c.createdBy || '') === (user?.email || '');
+                  if (leadsFilter === 'mine') { const myAgent = AGENTS.find(a => a.email === user?.email) || null; return (c.assignedTo || c.createdBy || '') === (user?.email || '') || (myAgent && c.assignedTo === myAgent.email); }
                   if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
                   return true;
                 })
@@ -2772,21 +2823,21 @@ export default function App() {
                       <div className="flex items-center justify-between pt-2 border-t border-slate-100">
                         <div className="relative lead-actions">
                           {assignDropdownId === c.id ? (
-                            <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                              <input autoFocus type="email" placeholder="email@..." className="text-xs border border-indigo-300 rounded px-2 py-1 w-36 outline-none" value={quickAssignInput}
-                                onChange={e => setQuickAssignInput(e.target.value)}
-                                onKeyDown={async e => {
-                                  if (e.key === 'Enter') { await saveLeadField(c.id, { assignedTo: quickAssignInput }); setAssignDropdownId(null); setQuickAssignInput(''); }
-                                  if (e.key === 'Escape') { setAssignDropdownId(null); setQuickAssignInput(''); }
-                                }} />
-                              <button className="text-xs text-indigo-600 font-bold" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: quickAssignInput }); setAssignDropdownId(null); setQuickAssignInput(''); }}>✓</button>
-                              <button className="text-xs text-slate-400" onClick={e => { e.stopPropagation(); setAssignDropdownId(null); }}>✕</button>
+                            <div className="flex items-center gap-1 flex-wrap" onClick={e => e.stopPropagation()}>
+                              {AGENTS.map(a => (
+                                <button key={a.email}
+                                  className={`text-xs px-2.5 py-1 rounded-full font-bold border transition-colors ${c.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                                  onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: a.email }); setAssignDropdownId(null); }}>
+                                  {a.name}
+                                </button>
+                              ))}
+                              <button className="text-[10px] text-slate-400 hover:text-red-500 px-1" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: '' }); setAssignDropdownId(null); }}>✕ הסר</button>
                             </div>
                           ) : (
                             <button className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-indigo-600 transition-colors"
-                              onClick={e => { e.stopPropagation(); setQuickAssignInput(c.assignedTo || ''); setAssignDropdownId(c.id); }}>
+                              onClick={e => { e.stopPropagation(); setAssignDropdownId(c.id); }}>
                               <User className="w-3 h-3"/>
-                              {c.assignedTo ? <span className="font-medium text-indigo-600">{c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
+                              {c.assignedTo ? <span className="font-medium text-indigo-600">{AGENTS.find(a => a.email === c.assignedTo)?.name || c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
                             </button>
                           )}
                         </div>
@@ -3399,8 +3450,15 @@ export default function App() {
                   {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">שייך לנציג</label>
-                      <input type="email" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" dir="ltr" value={customerEditingData.assignedTo || ''} onChange={e => setCustomerEditingData({...customerEditingData, assignedTo: e.target.value})} placeholder={user?.email || 'email@company.com'} />
-                      <p className="text-[11px] text-slate-400 mt-1">ברירת מחדל: המשתמש הנוכחי</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {AGENTS.map(a => (
+                          <button key={a.email} type="button"
+                            className={`text-sm px-4 py-2 rounded-lg font-bold border transition-colors ${customerEditingData.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                            onClick={() => setCustomerEditingData({...customerEditingData, assignedTo: a.email})}>
+                            {a.name}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
@@ -3598,11 +3656,18 @@ export default function App() {
                     {/* Assignee */}
                     <div>
                       <p className="text-[11px] text-slate-400 font-medium mb-1">נציג מטפל</p>
-                      <input type="email" dir="ltr" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400"
-                        value={selectedCustomer.assignedTo || ''}
-                        onChange={e => setSelectedCustomer((p: any) => ({...p, assignedTo: e.target.value}))}
-                        onBlur={e => saveLeadField(selectedCustomer.id, { assignedTo: e.target.value })}
-                        placeholder="email@company.com" />
+                      <div className="flex gap-1.5 flex-wrap">
+                        {AGENTS.map(a => (
+                          <button key={a.email}
+                            className={`text-xs px-3 py-1.5 rounded-full font-bold border transition-colors ${selectedCustomer.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-500 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                            onClick={() => saveLeadField(selectedCustomer.id, { assignedTo: a.email })}>
+                            {a.name}
+                          </button>
+                        ))}
+                        {selectedCustomer.assignedTo && (
+                          <button className="text-[10px] text-slate-400 hover:text-red-500 self-center" onClick={() => saveLeadField(selectedCustomer.id, { assignedTo: '' })}>✕</button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Follow-up date */}
