@@ -8,6 +8,40 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 // ==========================================
+// Hebrew product translation map
+// ==========================================
+const PRODUCT_TRANSLATIONS: Record<string, string> = {
+  'bar': 'עמדת בר',
+  'bar without refrigerator': 'עמדת בר ללא מקרר',
+  'refrigerated workbench': 'ספסל עבודה מקורר',
+  'glass storage rack': 'מדף אחסון כוסות',
+  'stainless steel rack': 'מדף נירוסטה',
+  'stainless steel single-door glass door bar counter, freezer': 'דלפק בר דלת זכוכית יחידה עם הקפאה',
+  'coffee table': 'שולחן קפה',
+  'stainless steel cabinet': 'ארון נירוסטה',
+  'stainless steel cabinet, with pull-out trash can': 'ארון נירוסטה עם פח אשפה נשלף',
+  'refrigerated flat-top worktable, 6 drawers': 'שולחן עבודה מקורר 6 מגירות',
+  'sliding door refrigerator': 'מקרר דלת הזזה',
+  'faucet': 'ברז',
+  'sink': 'כיור',
+  'ice machine': 'מכונת קרח',
+  'glass washer': 'מדיח כוסות',
+  'worktable': 'שולחן עבודה',
+  'shelf': 'מדף',
+  'cabinet': 'ארון',
+  'freezer': 'מקפיא',
+  'refrigerator': 'מקרר',
+};
+const translateProduct = (name: string): string => {
+  const key = name.toLowerCase().trim();
+  if (PRODUCT_TRANSLATIONS[key]) return PRODUCT_TRANSLATIONS[key];
+  for (const [en, he] of Object.entries(PRODUCT_TRANSLATIONS)) {
+    if (key.includes(en)) return he;
+  }
+  return name;
+};
+
+// ==========================================
 // 1. הגדרות FIREBASE פרטיות (עם גיבוי אוטומטי)
 // ==========================================
 const firebaseConfig = {
@@ -255,6 +289,20 @@ export default function App() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [localPurchases, setLocalPurchases] = useState<any[]>([]);
+  const [customProjects, setCustomProjects] = useState<any[]>([]);
+
+  // Custom Projects UI States
+  const [isCustomProjectModalOpen, setIsCustomProjectModalOpen] = useState(false);
+  const [customProjectView, setCustomProjectView] = useState<any>(null); // project being viewed
+  const [customProjectForm, setCustomProjectForm] = useState<any>({
+    name: '', clientName: '', date: new Date().toISOString().split('T')[0], status: 'preparation',
+    products: [],
+    params: { exchangeRate: 3.7, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 },
+    marginPercent: 30,
+  });
+  const [isParsingExcel, setIsParsingExcel] = useState(false);
+  const [customProjectLiveParams, setCustomProjectLiveParams] = useState<any>(null); // inline editing in detail view
+  const [customProjectStatusFilter, setCustomProjectStatusFilter] = useState<string>('all');
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
@@ -424,7 +472,13 @@ export default function App() {
       setLocalPurchases(data);
     });
 
-    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); };
+    const unsubCustomProjects = onSnapshot(collection(db, 'crm_custom_projects'), (snap) => {
+      let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setCustomProjects(data);
+    });
+
+    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); unsubCustomProjects(); };
   }, [user]);
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
@@ -455,25 +509,7 @@ export default function App() {
     document.title = 'D.S Logistics CRM';
   }, [settings?.companyLogoUrl]);
 
-  // Migration: update old agent emails to new ones
-  useEffect(() => {
-    if (!user) return;
-    const EMAIL_MIGRATION: Record<string, string> = {
-      'shachaf@dslogistics.com': 'shachafshalom@gmail.com',
-      'daniel@dslogistics.com': 'danielyos205@gmail.com',
-    };
-    const runMigration = async () => {
-      const snap = await getDocs(collection(db, 'crm_customers'));
-      for (const docSnap of snap.docs) {
-        const data = docSnap.data();
-        const updates: Record<string, string> = {};
-        if (data.assignedTo && EMAIL_MIGRATION[data.assignedTo]) updates.assignedTo = EMAIL_MIGRATION[data.assignedTo];
-        if (data.createdBy && EMAIL_MIGRATION[data.createdBy]) updates.createdBy = EMAIL_MIGRATION[data.createdBy];
-        if (Object.keys(updates).length > 0) await updateDoc(doc(db, 'crm_customers', docSnap.id), updates);
-      }
-    };
-    runMigration().catch(console.error);
-  }, [user]);
+  // --- Login Handler ---
   const handleLogin = async (e: any) => {
     e.preventDefault();
     setAuthError('');
@@ -1261,6 +1297,239 @@ export default function App() {
     setIsSaving(false);
   };
 
+
+  // ==========================================
+  // CUSTOM PROJECTS — Excel Parse + Save/Delete
+  // ==========================================
+
+  const compressImage = (src: string, maxPx = 400, quality = 0.70): Promise<string> =>
+    new Promise((resolve) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => resolve(src); // fallback: return original
+      img.src = src;
+    });
+
+  const compressFileToBase64 = async (file: File): Promise<string> => {
+    const base64 = await new Promise<string>((res) => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result as string);
+      reader.readAsDataURL(file);
+    });
+    return compressImage(base64);
+  };
+
+  const loadJSZip = (): Promise<any> => new Promise((resolve) => {
+    if ((window as any).JSZip) { resolve((window as any).JSZip); return; }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    script.onload = () => resolve((window as any).JSZip);
+    document.head.appendChild(script);
+  });
+
+  const loadSheetJS = (): Promise<any> => new Promise((resolve) => {
+    if ((window as any).XLSX) { resolve((window as any).XLSX); return; }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    script.onload = () => resolve((window as any).XLSX);
+    document.head.appendChild(script);
+  });
+
+  const parseCustomProjectExcel = async (file: File) => {
+    setIsParsingExcel(true);
+    try {
+      const [XLSX, JSZip] = await Promise.all([loadSheetJS(), loadJSZip()]);
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
+
+      // 1. Parse spreadsheet data
+      const wb = XLSX.read(uint8, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+      // Find header row (contains "ID" and "CBM")
+      let headerRow = -1;
+      for (let i = 0; i < Math.min(raw.length, 15); i++) {
+        const row = raw[i].map((c: any) => String(c).toUpperCase());
+        if (row.includes('ID') && row.includes('CBM')) { headerRow = i; break; }
+      }
+      if (headerRow === -1) { alert('לא נמצאה שורת כותרות בקובץ'); setIsParsingExcel(false); return; }
+
+      const headers = raw[headerRow].map((h: any) => String(h).trim().toUpperCase());
+      const idxId = headers.findIndex((h: string) => h === 'ID');
+      const idxItem = headers.findIndex((h: string) => h.includes('ITEM'));
+      const idxInfo = headers.findIndex((h: string) => h.includes('INFORMATION') || h.includes('PRODUCT'));
+      const idxQty = headers.findIndex((h: string) => h === 'QTY');
+      const idxUnit = headers.findIndex((h: string) => h.includes('UNIT') && h.includes('PRICE'));
+      const idxTotal = headers.findIndex((h: string) => h.includes('TOTAL') && h.includes('PRICE'));
+      const idxCbm = headers.findIndex((h: string) => h === 'CBM');
+
+      // 2. Extract images via JSZip
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      const imgFiles: Record<string, string> = {};
+      for (const [path, zipEntry] of Object.entries(zip.files) as any[]) {
+        if (path.startsWith('xl/media/image') && (path.endsWith('.png') || path.endsWith('.jpg'))) {
+          const blob = await zipEntry.async('blob');
+          const url = await new Promise<string>((res) => {
+            const reader = new FileReader();
+            reader.onload = () => res(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          const imgName = path.split('/').pop()!;
+          imgFiles[imgName] = url;
+        }
+      }
+
+      // Parse drawing XML to map image to row
+      const drawingXml = await zip.file('xl/drawings/drawing1.xml')?.async('text') || '';
+      const relsXml = await zip.file('xl/drawings/_rels/drawing1.xml.rels')?.async('text') || '';
+      
+      // Parse rId -> image filename
+      const ridToImg: Record<string, string> = {};
+      const relsMatches = relsXml.matchAll(/Id="([^"]+)"[^>]+Target="[^"]*\/(image\d+\.\w+)"/g);
+      for (const m of relsMatches) ridToImg[m[1]] = m[2];
+
+      // Parse anchor rows -> rId mapping
+      const rowToImgs: Record<number, string[]> = {};
+      const anchorRegex = /<xdr:twoCellAnchor[^>]*>[\s\S]*?<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>[\s\S]*?<\/xdr:from>[\s\S]*?embed="([^"]+)"[\s\S]*?<\/xdr:twoCellAnchor>/g;
+      for (const m of drawingXml.matchAll(anchorRegex)) {
+        const row = parseInt(m[1]);
+        const rid = m[2];
+        const imgFile = ridToImg[rid];
+        if (imgFile && imgFiles[imgFile]) {
+          if (!rowToImgs[row]) rowToImgs[row] = [];
+          rowToImgs[row].push(imgFiles[imgFile]);
+        }
+      }
+
+      // 3. Build products array
+      const products: any[] = [];
+      for (let r = headerRow + 1; r < raw.length; r++) {
+        const row = raw[r];
+        const id = String(row[idxId] || '').trim();
+        const item = String(row[idxItem] || '').trim();
+        const qty = Number(row[idxQty]) || 0;
+        const unitPrice = Number(row[idxUnit]) || 0;
+        const cbm = Number(row[idxCbm]) || 0;
+        if (!item || item.toUpperCase() === 'TOTAL' || item.toUpperCase() === 'NOTES' || (!id && !unitPrice)) continue;
+        
+        // Excel row = r+1 (1-indexed), drawing row = r (0-indexed since header is row headerRow)
+        // Actual drawing row for this data row: r (0-indexed)
+        const drawingRow = r;
+        const imgs = rowToImgs[drawingRow] || [];
+
+        products.push({
+          id: id || String(products.length + 1),
+          itemEn: item,
+          itemHe: translateProduct(item),
+          info: String(row[idxInfo] || '').replace(/\n/g, ' ').trim(),
+          qty: qty || 1,
+          unitPriceUSD: unitPrice,
+          totalPriceUSD: Number(row[idxTotal]) || unitPrice * (qty || 1),
+          cbm,
+          images: imgs,
+          noteHe: '',
+        });
+      }
+
+      // 4. Compress all extracted images to ~20KB each
+      const compressedProducts = await Promise.all(products.map(async (pr: any) => {
+        const compressedImgs = await Promise.all(
+          (pr.images || []).slice(0, 1).map((img: string) => compressImage(img))
+        );
+        return { ...pr, images: compressedImgs };
+      }));
+
+      setCustomProjectForm((prev: any) => ({ ...prev, products: compressedProducts }));
+      alert(`✓ יובאו ${products.length} מוצרים מהקובץ!`);
+    } catch (err: any) {
+      console.error(err);
+      alert('שגיאה בקריאת הקובץ: ' + err.message);
+    }
+    setIsParsingExcel(false);
+  };
+
+  const calcProjectTotals = (form: any) => {
+    const p = form.params || {};
+    const products = form.products || [];
+    const totalCBM = products.reduce((s: number, pr: any) => s + (Number(pr.cbm) * Number(pr.qty)), 0);
+    const totalQty = products.reduce((s: number, pr: any) => s + Number(pr.qty), 0);
+    const totalFactoryUSD = products.reduce((s: number, pr: any) => s + (Number(pr.unitPriceUSD) * Number(pr.qty)), 0);
+    const rate = Number(p.exchangeRate) || 3.7;
+    const totalFactoryILS = totalFactoryUSD * rate;
+    const containerShippingILS = Number(p.containerShippingUSD) * rate;
+    const customsILS = (totalFactoryILS + containerShippingILS) * (Number(p.customsPercent) / 100);
+    const portFeesILS = Number(p.portFeesILS) || 0;
+    const localTransportILS = Number(p.localTransportILS) || 0;
+    const installationILS = Number(p.installationILS) || 0;
+    const fixedOverheadILS = portFeesILS + localTransportILS + installationILS;
+    const totalCostILS = totalFactoryILS + containerShippingILS + customsILS + fixedOverheadILS;
+    const suggestedPrice = totalCostILS * (1 + Number(form.marginPercent || 30) / 100);
+    const shippingPerCBM = totalCBM > 0 ? containerShippingILS / totalCBM : 0;
+    const overheadPerUnit = totalQty > 0 ? fixedOverheadILS / totalQty : 0;
+    return { totalCBM, totalQty, totalFactoryUSD, totalFactoryILS, containerShippingILS, customsILS, portFeesILS, localTransportILS, installationILS, fixedOverheadILS, totalCostILS, suggestedPrice, shippingPerCBM, overheadPerUnit };
+  };
+
+  const saveCustomProject = async (e?: any) => {
+    if (e) e.preventDefault();
+    setIsSaving(true);
+    try {
+      const totals = calcProjectTotals(customProjectForm);
+
+      // Compress any images that are still large base64 before saving to Firestore
+      const safeProducts = await Promise.all(
+        (customProjectForm.products || []).map(async (pr: any) => {
+          const safeImgs = await Promise.all(
+            (pr.images || []).map(async (img: string) => {
+              if (img && img.startsWith('data:') && img.length > 60000) {
+                return compressImage(img); // re-compress if too large
+              }
+              return img; // already URL or already compressed
+            })
+          );
+          return { ...pr, images: safeImgs };
+        })
+      );
+
+      const data: any = {
+        ...customProjectForm,
+        products: safeProducts,
+        ...totals,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (data.id) {
+        await updateDoc(doc(db, 'crm_custom_projects', data.id), data);
+      } else {
+        data.createdAt = new Date().toISOString();
+        await addDoc(collection(db, 'crm_custom_projects'), data);
+      }
+      setIsCustomProjectModalOpen(false);
+      setCustomProjectView(null);
+    } catch (err: any) { alert('שגיאה בשמירת פרויקט: ' + err.message); }
+    setIsSaving(false);
+  };
+
+  const updateProjectField = async (projId: string, fields: Record<string, any>) => {
+    try {
+      await updateDoc(doc(db, 'crm_custom_projects', projId), { ...fields, updatedAt: new Date().toISOString() });
+    } catch (err) { console.error(err); }
+  };
+
+  const deleteCustomProject = async (id: string) => {
+    if (!window.confirm('למחוק את הפרויקט? הפעולה אינה ניתנת לביטול.')) return;
+    await deleteDoc(doc(db, 'crm_custom_projects', id));
+    if (customProjectView?.id === id) setCustomProjectView(null);
+  };
+
   const saveLocalPurchase = async (e: any) => {
     e.preventDefault();
     setIsSaving(true);
@@ -1786,6 +2055,7 @@ export default function App() {
           <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
             {[
               { id: 'dashboard', icon: Activity, label: 'דשבורד' },
+              { id: 'custom_projects', icon: Layers, label: 'פרויקטים קסטום' },
               { id: 'customers', icon: Users, label: 'לידים ולקוחות' },
               { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
               { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
@@ -2998,6 +3268,318 @@ export default function App() {
           </div>
         )}
 
+        {/* --- TAB: CUSTOM PROJECTS --- */}
+        {activeTab === 'custom_projects' && (
+          <div>
+            {/* Header + filters */}
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-5">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-800">פרויקטים קסטום</h2>
+                <p className="text-sm text-slate-400 mt-0.5">חישוב עלויות פנימי לפרויקטים מיוחדים</p>
+              </div>
+              <button onClick={() => { setCustomProjectForm({ name: '', clientName: '', customerId: '', date: new Date().toISOString().split('T')[0], status: 'preparation', products: [], params: { exchangeRate: 3.7, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 }, marginPercent: 30, notes: '' }); setIsCustomProjectModalOpen(true); }}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-2 shadow-sm">
+                <Plus className="w-4 h-4"/> פרויקט חדש
+              </button>
+            </div>
+
+            {/* Status filter */}
+            <div className="flex gap-2 mb-5 flex-wrap">
+              {[
+                { val: 'all', label: `הכל (${customProjects.length})` },
+                { val: 'preparation', label: `הכנה (${customProjects.filter(p=>p.status==='preparation').length})` },
+                { val: 'submitted', label: `הוגש (${customProjects.filter(p=>p.status==='submitted').length})` },
+                { val: 'approved', label: `אושר (${customProjects.filter(p=>p.status==='approved').length})` },
+              ].map(f => (
+                <button key={f.val} onClick={() => setCustomProjectStatusFilter(f.val)}
+                  className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${customProjectStatusFilter === f.val ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'}`}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {customProjects.length === 0 ? (
+              <div className="bg-white border border-slate-200 rounded-xl p-12 text-center">
+                <Layers className="w-14 h-14 mx-auto text-slate-200 mb-4"/>
+                <p className="text-lg font-medium text-slate-500">אין פרויקטים קסטום עדיין</p>
+                <p className="text-sm text-slate-400 mt-1">צור פרויקט חדש כדי להתחיל</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {customProjects
+                  .filter(p => customProjectStatusFilter === 'all' || p.status === customProjectStatusFilter)
+                  .map((proj: any) => {
+                  const statusColors: any = { preparation: 'bg-blue-100 text-blue-700', submitted: 'bg-amber-100 text-amber-700', approved: 'bg-green-100 text-green-700' };
+                  const statusLabels: any = { preparation: 'הכנה', submitted: 'הוגש', approved: 'אושר' };
+                  const statusOrder = ['preparation', 'submitted', 'approved'];
+                  const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
+                  return (
+                    <div key={proj.id} className="bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => { setCustomProjectLiveParams(null); setCustomProjectView(proj); }}>
+                      <div className={`h-1.5 rounded-t-xl ${proj.status === 'approved' ? 'bg-green-400' : proj.status === 'submitted' ? 'bg-amber-400' : 'bg-purple-400'}`}/>
+                      <div className="p-5">
+                        <div className="flex justify-between items-start mb-3">
+                          <div className="flex-1 min-w-0 ml-2">
+                            <h3 className="font-bold text-slate-800 truncate">{proj.name}</h3>
+                            {proj.clientName && <p className="text-xs text-slate-500 mt-0.5">{proj.clientName}</p>}
+                            {linkedCustomer && <p className="text-[10px] text-indigo-500 mt-0.5 flex items-center gap-1"><User className="w-2.5 h-2.5"/>{linkedCustomer.businessName || linkedCustomer.contactName}</p>}
+                          </div>
+                          {/* Clickable status badge */}
+                          <button
+                            className={`text-[10px] px-2.5 py-1 rounded-full font-bold border transition-colors shrink-0 ${statusColors[proj.status] || 'bg-slate-100 text-slate-600'}`}
+                            onClick={e => {
+                              e.stopPropagation();
+                              const idx = statusOrder.indexOf(proj.status);
+                              const next = statusOrder[(idx + 1) % statusOrder.length];
+                              updateProjectField(proj.id, { status: next });
+                            }}
+                            title="לחץ לשינוי סטטוס"
+                          >
+                            {statusLabels[proj.status] || proj.status} ↻
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-sm mt-3">
+                          <div className="bg-slate-50 rounded-lg p-2.5 text-center">
+                            <p className="text-[10px] text-slate-500 mb-0.5">מוצרים</p>
+                            <p className="font-black text-slate-800 text-base">{(proj.products || []).length}</p>
+                          </div>
+                          <div className="bg-slate-50 rounded-lg p-2.5 text-center">
+                            <p className="text-[10px] text-slate-500 mb-0.5">CBM סה"כ</p>
+                            <p className="font-black text-slate-700 text-base">{(proj.totalCBM || 0).toFixed(1)}</p>
+                          </div>
+                          <div className="bg-purple-50 rounded-lg p-2.5 text-center">
+                            <p className="text-[10px] text-slate-500 mb-0.5">עלות כוללת</p>
+                            <p className="font-black text-purple-700 text-sm">₪{Math.round(proj.totalCostILS || 0).toLocaleString()}</p>
+                          </div>
+                        </div>
+                        {proj.notes && <p className="text-xs text-slate-400 mt-3 italic truncate">"{proj.notes}"</p>}
+                        <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
+                          <p className="text-xs text-slate-400">{proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</p>
+                          <div className="flex gap-1">
+                            <button onClick={e => { e.stopPropagation(); setCustomProjectForm(proj); setIsCustomProjectModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="ערוך"><Edit className="w-3.5 h-3.5"/></button>
+                            <button onClick={e => { e.stopPropagation(); deleteCustomProject(proj.id); }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded" title="מחק"><Trash2 className="w-3.5 h-3.5"/></button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* PROJECT DETAIL VIEW MODAL */}
+            {customProjectView && (() => {
+              const proj = customProjects.find((p: any) => p.id === customProjectView.id) || customProjectView;
+              const liveParams = customProjectLiveParams || proj.params || {};
+              const liveForm = { ...proj, params: liveParams };
+              const totals = calcProjectTotals(liveForm);
+              const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
+
+              const handleParamChange = (key: string, val: number) => {
+                const updated = { ...liveParams, [key]: val };
+                setCustomProjectLiveParams(updated);
+              };
+              const saveInlineParams = async () => {
+                await updateProjectField(proj.id, { params: liveParams, ...calcProjectTotals({ ...proj, params: liveParams }) });
+                setCustomProjectLiveParams(null);
+              };
+
+              return (
+                <div className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm flex items-start justify-center overflow-y-auto p-4">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl my-4">
+                    {/* Gradient header */}
+                    <div className="bg-gradient-to-l from-purple-700 to-indigo-600 p-6 rounded-t-2xl text-white">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="text-sm text-purple-200 mb-1">דוח עלויות פנימי</p>
+                          <h2 className="text-2xl font-black">{proj.name}</h2>
+                          <div className="flex items-center gap-3 mt-1 flex-wrap">
+                            {proj.clientName && <span className="text-purple-200 text-sm">{proj.clientName}</span>}
+                            {linkedCustomer && <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full flex items-center gap-1"><User className="w-2.5 h-2.5"/> {linkedCustomer.businessName || linkedCustomer.contactName}</span>}
+                            {proj.notes && <span className="text-[10px] text-purple-300 italic">"{proj.notes}"</span>}
+                          </div>
+                        </div>
+                        <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="text-white/60 hover:text-white"><X className="w-6 h-6"/></button>
+                      </div>
+                      {/* KPI bar */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
+                        {[
+                          { label: 'עלות מפעל', value: `$${Math.round(totals.totalFactoryUSD).toLocaleString()}` },
+                          { label: 'סה"כ CBM', value: `${totals.totalCBM.toFixed(2)} מ"ק` },
+                          { label: 'עלות כוללת', value: `₪${Math.round(totals.totalCostILS).toLocaleString()}` },
+                          { label: `מחיר מינימלי (${proj.marginPercent}%)`, value: `₪${Math.round(totals.suggestedPrice).toLocaleString()}` },
+                        ].map(s => (
+                          <div key={s.label} className="bg-white/10 rounded-xl p-3 text-center">
+                            <p className="text-[10px] text-purple-200">{s.label}</p>
+                            <p className="font-black text-lg mt-0.5">{s.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-6 space-y-6">
+                      {/* INLINE PARAMS EDITOR */}
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-bold text-slate-600 flex items-center gap-2"><DollarSign className="w-4 h-4 text-purple-500"/> פרמטרי עלות — ניתן לעריכה ישירה</h3>
+                          {customProjectLiveParams && (
+                            <button onClick={saveInlineParams} className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 flex items-center gap-1"><CheckCircle className="w-3 h-3"/> שמור שינויים</button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+                          {[
+                            { label: 'שער $ (₪)', key: 'exchangeRate', step: '0.01' },
+                            { label: 'שילוח ($)', key: 'containerShippingUSD', step: '50' },
+                            { label: 'מכס (%)', key: 'customsPercent', step: '0.5' },
+                            { label: 'נמל (₪)', key: 'portFeesILS', step: '100' },
+                            { label: 'הובלה (₪)', key: 'localTransportILS', step: '100' },
+                            { label: 'התקנה (₪)', key: 'installationILS', step: '100' },
+                          ].map(f => (
+                            <div key={f.key} className="bg-slate-50 rounded-lg p-2">
+                              <p className="text-[10px] text-slate-500 mb-1">{f.label}</p>
+                              <input type="number" step={f.step} min="0"
+                                className="w-full text-sm font-bold text-slate-800 bg-transparent outline-none focus:bg-white focus:border focus:border-purple-300 rounded px-1"
+                                value={liveParams[f.key] ?? (proj.params?.[f.key] || 0)}
+                                onChange={e => handleParamChange(f.key, Number(e.target.value))} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Cost breakdown */}
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        {[
+                          { label: 'עלות מפעל (₪)', val: totals.totalFactoryILS, color: 'text-slate-700', pct: totals.totalCostILS > 0 ? totals.totalFactoryILS/totals.totalCostILS : 0 },
+                          { label: 'שילוח מכולה (₪)', val: totals.containerShippingILS, color: 'text-indigo-600', pct: totals.totalCostILS > 0 ? totals.containerShippingILS/totals.totalCostILS : 0 },
+                          { label: 'מכס ומיסים (₪)', val: totals.customsILS, color: 'text-amber-600', pct: totals.totalCostILS > 0 ? totals.customsILS/totals.totalCostILS : 0 },
+                          { label: 'אגרות נמל (₪)', val: totals.portFeesILS, color: 'text-slate-600', pct: totals.totalCostILS > 0 ? totals.portFeesILS/totals.totalCostILS : 0 },
+                          { label: 'הובלה בארץ (₪)', val: totals.localTransportILS, color: 'text-slate-600', pct: totals.totalCostILS > 0 ? totals.localTransportILS/totals.totalCostILS : 0 },
+                          { label: 'התקנה (₪)', val: totals.installationILS, color: 'text-slate-600', pct: totals.totalCostILS > 0 ? totals.installationILS/totals.totalCostILS : 0 },
+                        ].map(c => (
+                          <div key={c.label} className="bg-slate-50 rounded-lg p-3">
+                            <div className="flex justify-between items-center mb-1.5">
+                              <span className="text-xs text-slate-500">{c.label}</span>
+                              <span className={`font-bold text-sm ${c.color}`}>₪{Math.round(c.val).toLocaleString()}</span>
+                            </div>
+                            <div className="h-1 bg-slate-200 rounded-full overflow-hidden">
+                              <div className="h-full bg-purple-400 rounded-full" style={{ width: `${Math.round(c.pct * 100)}%` }}/>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1">{Math.round(c.pct * 100)}% מהעלות</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Products table */}
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({(proj.products || []).length})</h3>
+                        <div className="border border-slate-200 rounded-xl overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-slate-50">
+                                <tr>
+                                  {['תמונה', 'ID', 'מוצר', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪ (כוללת)'].map(h => (
+                                    <th key={h} className="px-3 py-2.5 text-right font-medium text-slate-500 text-xs whitespace-nowrap">{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(proj.products || []).map((pr: any, i: number) => {
+                                  const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
+                                  const customs = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
+                                  const factoryCostILS = Number(pr.unitPriceUSD) * rate;
+                                  const shippingForItemILS = totals.shippingPerCBM * Number(pr.cbm);
+                                  const customsForItem = (factoryCostILS + shippingForItemILS) * customs;
+                                  const fullLandedILS = (factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit) * Number(pr.qty);
+                                  const sizeMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
+                                  const size = sizeMatch ? sizeMatch[1].trim() : '';
+                                  return (
+                                    <tr key={i} className="hover:bg-slate-50">
+                                      <td className="px-3 py-2">
+                                        {pr.images && pr.images.length > 0
+                                          ? <img src={pr.images[0]} alt={pr.itemHe} className="w-14 h-14 object-cover rounded-lg border border-slate-200"/>
+                                          : <div className="w-14 h-14 bg-slate-100 rounded-lg flex items-center justify-center"><ImageIcon className="w-5 h-5 text-slate-300"/></div>}
+                                      </td>
+                                      <td className="px-3 py-2 font-mono text-xs text-slate-500 whitespace-nowrap">{pr.id}</td>
+                                      <td className="px-3 py-2">
+                                        <p className="font-bold text-slate-800 text-xs">{pr.itemHe}</p>
+                                        <p className="text-[10px] text-slate-400">{pr.itemEn}</p>
+                                      </td>
+                                      <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{size}</td>
+                                      <td className="px-3 py-2 text-center font-bold">{pr.qty}</td>
+                                      <td className="px-3 py-2 text-center text-slate-700">${Number(pr.unitPriceUSD).toLocaleString()}</td>
+                                      <td className="px-3 py-2 text-center text-slate-500 text-xs">{Number(pr.cbm).toFixed(3)}</td>
+                                      <td className="px-3 py-2 text-center font-bold text-purple-700">₪{Math.round(fullLandedILS).toLocaleString()}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1.5 text-left">* עלות Landed כוללת: מפעל + שילוח + מכס + חלק יחסי מנמל/הובלה/התקנה לפי יחידה</p>
+                      </div>
+
+                      {/* Bottom: suggested price + PDF + actions */}
+                      <div className="flex flex-wrap justify-between items-center gap-3 pt-4 border-t">
+                        <div className="bg-purple-50 border border-purple-200 rounded-xl px-5 py-3">
+                          <p className="text-xs text-purple-400">מחיר מכירה מינימלי ({proj.marginPercent}% מרווח)</p>
+                          <p className="text-2xl font-black text-purple-700">₪{Math.round(totals.suggestedPrice).toLocaleString()}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">רווח צפוי: ₪{Math.round(totals.suggestedPrice - totals.totalCostILS).toLocaleString()}</p>
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          <button
+                            onClick={async () => {
+                              const el = document.getElementById('custom-project-report');
+                              if (!el) return;
+                              const canvas = await html2canvas(el, { scale: 1.5, useCORS: true });
+                              const pdf = new jsPDF('p', 'mm', 'a4');
+                              const imgData = canvas.toDataURL('image/jpeg', 0.85);
+                              const pdfWidth = pdf.internal.pageSize.getWidth();
+                              const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+                              pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+                              pdf.save(`${proj.name || 'project'}-cost-report.pdf`);
+                            }}
+                            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                          >
+                            <Download className="w-4 h-4"/> ייצא PDF
+                          </button>
+                          <button onClick={() => { setCustomProjectForm(proj); setIsCustomProjectModalOpen(true); setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-2"><Edit className="w-4 h-4"/> ערוך</button>
+                          <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200">סגור</button>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Hidden printable area */}
+                    <div id="custom-project-report" style={{position:'absolute',left:'-9999px',top:0,width:'800px',background:'white',padding:'32px',direction:'rtl'}}>
+                      <h1 style={{fontSize:'20px',fontWeight:'bold',marginBottom:'4px'}}>{proj.name}</h1>
+                      {proj.clientName && <p style={{fontSize:'13px',color:'#666',marginBottom:'16px'}}>{proj.clientName}</p>}
+                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11px',marginBottom:'16px'}}>
+                        <thead><tr style={{background:'#f1f5f9'}}>{['ID','מוצר','גודל','כמות','מחיר $','CBM','עלות Landed ₪'].map(h=><th key={h} style={{padding:'6px 8px',textAlign:'right',border:'1px solid #e2e8f0'}}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {(proj.products||[]).map((pr:any,i:number)=>{
+                            const rate2=Number(proj.params?.exchangeRate||3.7);const customs2=Number(proj.params?.customsPercent||12)/100;
+                            const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
+                            const full2=(f2+s2+(f2+s2)*customs2+totals.overheadPerUnit)*Number(pr.qty);
+                            const sz2=pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'';
+                            return <tr key={i} style={{borderBottom:'1px solid #e2e8f0'}}><td style={{padding:'5px 8px'}}>{pr.id}</td><td style={{padding:'5px 8px',fontWeight:'bold'}}>{pr.itemHe}</td><td style={{padding:'5px 8px',fontSize:'10px'}}>{sz2}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{pr.qty}</td><td style={{padding:'5px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{Number(pr.cbm).toFixed(3)}</td><td style={{padding:'5px 8px',textAlign:'center',fontWeight:'bold',color:'#7c3aed'}}>₪{Math.round(full2).toLocaleString()}</td></tr>;
+                          })}
+                        </tbody>
+                      </table>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px',fontSize:'11px'}}>
+                        {[['עלות מפעל',`₪${Math.round(totals.totalFactoryILS).toLocaleString()}`],['שילוח',`₪${Math.round(totals.containerShippingILS).toLocaleString()}`],['מכס',`₪${Math.round(totals.customsILS).toLocaleString()}`],['נמל',`₪${Math.round(totals.portFeesILS).toLocaleString()}`],['הובלה',`₪${Math.round(totals.localTransportILS).toLocaleString()}`],['התקנה',`₪${Math.round(totals.installationILS).toLocaleString()}`]].map(([l,v])=><div key={l} style={{background:'#f8fafc',padding:'6px 10px',borderRadius:'6px',display:'flex',justifyContent:'space-between'}}><span style={{color:'#64748b'}}>{l}</span><span style={{fontWeight:'bold'}}>{v}</span></div>)}
+                      </div>
+                      <div style={{marginTop:'16px',padding:'12px 16px',background:'#f5f3ff',borderRadius:'8px',border:'1px solid #ddd6fe'}}>
+                        <p style={{fontSize:'11px',color:'#7c3aed',margin:'0 0 4px'}}>עלות כוללת</p>
+                        <p style={{fontSize:'22px',fontWeight:'900',color:'#6d28d9',margin:'0 0 4px'}}>₪{Math.round(totals.totalCostILS).toLocaleString()}</p>
+                        <p style={{fontSize:'11px',color:'#999'}}>מחיר מינימלי ({proj.marginPercent}% מרווח): ₪{Math.round(totals.suggestedPrice).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* --- TAB: MARKETING --- */}
         {/* --- TAB: MARKETING --- */}
         {activeTab === 'marketing' && (
           <div>
@@ -4514,6 +5096,172 @@ export default function App() {
             <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button onClick={() => setIsStockBreakdownModalOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-md font-medium hover:bg-slate-300 transition-colors w-full">סגור</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM PROJECT MODAL */}
+      {isCustomProjectModalOpen && (
+        <div className="fixed inset-0 z-[115] flex items-start justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-4">
+            <div className="p-5 border-b flex justify-between items-center bg-purple-600 rounded-t-2xl">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2"><Layers className="w-5 h-5"/> {customProjectForm.id ? 'עריכת פרויקט' : 'פרויקט קסטום חדש'}</h3>
+              <button onClick={() => setIsCustomProjectModalOpen(false)} className="text-white/70 hover:text-white"><X className="w-5 h-5"/></button>
+            </div>
+            <form onSubmit={saveCustomProject} className="p-6 space-y-5 overflow-y-auto">
+
+              {/* Basic info */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שם הפרויקט <span className="text-red-500">*</span></label>
+                  <input required type="text" className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 focus:bg-white focus:ring-2 focus:ring-purple-400 outline-none" value={customProjectForm.name} onChange={e => setCustomProjectForm({...customProjectForm, name: e.target.value})} placeholder='לדוגמה: נחלת בנימין 70-72' />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">שם לקוח</label>
+                  <input type="text" className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.clientName} onChange={e => setCustomProjectForm({...customProjectForm, clientName: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">קישור ללקוח ב-CRM</label>
+                  <select className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.customerId || ''} onChange={e => setCustomProjectForm({...customProjectForm, customerId: e.target.value})}>
+                    <option value="">-- ללא שיוך --</option>
+                    {customers.filter((c: any) => c.status === 'lead' || c.status === 'active').map((c: any) => (
+                      <option key={c.id} value={c.id}>{c.businessName || c.contactName}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">תאריך</label>
+                  <input type="date" className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.date} onChange={e => setCustomProjectForm({...customProjectForm, date: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס</label>
+                  <select className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.status} onChange={e => setCustomProjectForm({...customProjectForm, status: e.target.value})}>
+                    <option value="preparation">הכנה</option>
+                    <option value="submitted">הוגש</option>
+                    <option value="approved">אושר</option>
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">הערות</label>
+                  <input type="text" className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.notes || ''} onChange={e => setCustomProjectForm({...customProjectForm, notes: e.target.value})} placeholder="הערות פנימיות לפרויקט..." />
+                </div>
+              </div>
+
+              {/* Excel Upload */}
+              <div className="border-2 border-dashed border-purple-200 rounded-xl p-5 text-center bg-purple-50">
+                <Layers className="w-8 h-8 text-purple-400 mx-auto mb-2"/>
+                <p className="text-sm font-medium text-purple-700 mb-1">העלה קובץ Excel מהספקית</p>
+                <p className="text-xs text-slate-400 mb-3">הקובץ ייובא אוטומטית עם תמונות ותרגום עברי</p>
+                <label className="cursor-pointer">
+                  <span className={`inline-block px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${isParsingExcel ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-purple-600 text-white border-purple-600 hover:bg-purple-700'}`}>
+                    {isParsingExcel ? '⏳ מעבד קובץ...' : '📂 בחר קובץ Excel'}
+                  </span>
+                  <input type="file" accept=".xlsx,.xls" className="hidden" disabled={isParsingExcel} onChange={e => { if (e.target.files?.[0]) parseCustomProjectExcel(e.target.files[0]); }} />
+                </label>
+                {customProjectForm.products.length > 0 && (
+                  <p className="text-xs text-green-600 font-bold mt-2">✓ {customProjectForm.products.length} מוצרים יובאו</p>
+                )}
+                <button type="button"
+                  className="mt-2 text-xs text-purple-600 hover:text-purple-800 font-medium flex items-center gap-1"
+                  onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}>
+                  <Plus className="w-3 h-3"/> הוסף פריט ידני (ללא Excel)
+                </button>
+              </div>
+
+              {/* Products preview */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <h4 className="text-sm font-bold text-slate-700">מוצרים ({customProjectForm.products.length})</h4>
+                  <button type="button"
+                    onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}
+                    className="text-xs bg-purple-100 text-purple-700 px-2.5 py-1 rounded-lg font-bold hover:bg-purple-200 flex items-center gap-1"><Plus className="w-3 h-3"/> הוסף ידני</button>
+                </div>
+                <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                  {customProjectForm.products.map((pr: any, i: number) => (
+                    <div key={i} className="flex items-center gap-2 p-2">
+                      {pr.images?.[0]
+                        ? <div className="relative shrink-0 group">
+                            <img src={pr.images[0]} alt="" className="w-9 h-9 object-cover rounded-md border border-slate-200"/>
+                            <label className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 rounded-md cursor-pointer flex items-center justify-center transition-opacity">
+                              <ImageIcon className="w-3 h-3 text-white"/>
+                              <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                                if (!e.target.files?.[0]) return;
+                                const compressed = await compressFileToBase64(e.target.files[0]);
+                                const p=[...customProjectForm.products]; p[i]={...p[i],images:[compressed]}; setCustomProjectForm({...customProjectForm,products:p});
+                              }}/>
+                            </label>
+                          </div>
+                        : <label className="w-9 h-9 bg-slate-100 rounded-md shrink-0 flex items-center justify-center cursor-pointer hover:bg-purple-50 border border-dashed border-slate-300 hover:border-purple-400 transition-colors">
+                            <ImageIcon className="w-3.5 h-3.5 text-slate-400 hover:text-purple-500"/>
+                            <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                              if (!e.target.files?.[0]) return;
+                              const compressed = await compressFileToBase64(e.target.files[0]);
+                              const p=[...customProjectForm.products]; p[i]={...p[i],images:[compressed]}; setCustomProjectForm({...customProjectForm,products:p});
+                            }}/>
+                          </label>
+                      }
+                      <div className="flex-1 min-w-0">
+                        <input type="text" className="w-full text-xs font-bold text-slate-800 bg-transparent outline-none border-b border-transparent hover:border-slate-300 focus:border-purple-400" value={pr.itemHe} onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],itemHe:e.target.value}; setCustomProjectForm({...customProjectForm,products:p}); }} />
+                        <div className="flex gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-400">{pr.id}</span>
+                          <input type="number" step="0.01" min="0" className="text-[10px] text-slate-500 bg-transparent w-16 outline-none border-b border-transparent hover:border-slate-300 focus:border-purple-300" value={pr.unitPriceUSD} placeholder="$ מחיר" onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],unitPriceUSD:Number(e.target.value)}; setCustomProjectForm({...customProjectForm,products:p}); }} />
+                          <input type="number" step="0.001" min="0" className="text-[10px] text-slate-500 bg-transparent w-14 outline-none border-b border-transparent hover:border-slate-300 focus:border-purple-300" value={pr.cbm} placeholder="CBM" onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],cbm:Number(e.target.value)}; setCustomProjectForm({...customProjectForm,products:p}); }} />
+                        </div>
+                      </div>
+                      <input type="number" min="1" className="w-12 text-xs border border-slate-300 rounded p-1 text-center" value={pr.qty} onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],qty:Number(e.target.value)}; setCustomProjectForm({...customProjectForm,products:p}); }} />
+                      <button type="button" onClick={() => setCustomProjectForm({...customProjectForm, products: customProjectForm.products.filter((_:any,j:number)=>j!==i)})} className="text-slate-300 hover:text-red-400"><X className="w-3.5 h-3.5"/></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Cost parameters */}
+              <div>
+                <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><DollarSign className="w-4 h-4 text-purple-600"/> פרמטרי עלות</h4>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {[
+                    { label: 'שער דולר (₪/$)', key: 'exchangeRate', step: '0.01' },
+                    { label: 'שילוח מכולה ($)', key: 'containerShippingUSD', step: '1' },
+                    { label: 'מכס (%)', key: 'customsPercent', step: '0.5' },
+                    { label: 'אגרות נמל (₪)', key: 'portFeesILS', step: '100' },
+                    { label: 'הובלה בארץ (₪)', key: 'localTransportILS', step: '100' },
+                    { label: 'עלות התקנה (₪)', key: 'installationILS', step: '100' },
+                  ].map(f => (
+                    <div key={f.key}>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">{f.label}</label>
+                      <input type="number" step={f.step} min="0" className="w-full border-slate-300 rounded-lg p-2 border text-sm bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400"
+                        value={(customProjectForm.params || {})[f.key] || 0}
+                        onChange={e => setCustomProjectForm({...customProjectForm, params: {...(customProjectForm.params || {}), [f.key]: Number(e.target.value)}})} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Margin + preview */}
+              <div className="flex items-center gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">מרווח רצוי לייעוץ פנימי (%)</label>
+                  <input type="number" step="1" min="0" className="w-full border-slate-300 rounded-lg p-2 border text-sm bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400"
+                    value={customProjectForm.marginPercent || 30}
+                    onChange={e => setCustomProjectForm({...customProjectForm, marginPercent: Number(e.target.value)})} />
+                </div>
+                {customProjectForm.products.length > 0 && (() => {
+                  const t = calcProjectTotals(customProjectForm);
+                  return (
+                    <div className="flex-1 bg-purple-50 border border-purple-200 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-purple-400">עלות כוללת משוערת</p>
+                      <p className="font-black text-purple-700 text-lg">₪{Math.round(t.totalCostILS).toLocaleString()}</p>
+                      <p className="text-[10px] text-purple-400 mt-0.5">מחיר מינימלי: ₪{Math.round(t.suggestedPrice).toLocaleString()}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t">
+                <button type="submit" disabled={isSaving} className="flex-1 bg-purple-600 text-white py-2.5 rounded-lg font-bold hover:bg-purple-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור פרויקט'}</button>
+                <button type="button" onClick={() => setIsCustomProjectModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
