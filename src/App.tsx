@@ -455,7 +455,25 @@ export default function App() {
     document.title = 'D.S Logistics CRM';
   }, [settings?.companyLogoUrl]);
 
-  // --- Login Handler ---
+  // Migration: update old agent emails to new ones
+  useEffect(() => {
+    if (!user) return;
+    const EMAIL_MIGRATION: Record<string, string> = {
+      'shachaf@dslogistics.com': 'shachafshalom@gmail.com',
+      'daniel@dslogistics.com': 'danielyos205@gmail.com',
+    };
+    const runMigration = async () => {
+      const snap = await getDocs(collection(db, 'crm_customers'));
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data();
+        const updates: Record<string, string> = {};
+        if (data.assignedTo && EMAIL_MIGRATION[data.assignedTo]) updates.assignedTo = EMAIL_MIGRATION[data.assignedTo];
+        if (data.createdBy && EMAIL_MIGRATION[data.createdBy]) updates.createdBy = EMAIL_MIGRATION[data.createdBy];
+        if (Object.keys(updates).length > 0) await updateDoc(doc(db, 'crm_customers', docSnap.id), updates);
+      }
+    };
+    runMigration().catch(console.error);
+  }, [user]);
   const handleLogin = async (e: any) => {
     e.preventDefault();
     setAuthError('');
@@ -2866,20 +2884,6 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-
-                  {/* DEBUG PANEL — לאבחון */}
-                  {leadsFilter === 'mine' && (
-                    <div className="mb-4 p-3 bg-yellow-50 border border-yellow-300 rounded-lg text-xs font-mono space-y-1">
-                      <p className="font-bold text-yellow-800">🔍 DEBUG (להסרה אחרי תיקון)</p>
-                      <p>user.email: <span className="text-blue-700">{user?.email || 'NULL'}</span></p>
-                      <p>סה"כ לידים: {allLeads.length} | אחרי פילטר: {filteredLeads.length}</p>
-                      {allLeads.map((c: any) => (
-                        <p key={c.id} className={c.assignedTo === user?.email || c.createdBy === user?.email ? 'text-green-700' : 'text-red-600'}>
-                          {c.businessName || c.contactName} → assignedTo: "{c.assignedTo || '(ריק)'}" | createdBy: "{c.createdBy || '(ריק)'}" | match: {String(c.assignedTo === user?.email || c.createdBy === user?.email)}
-                        </p>
-                      ))}
-                    </div>
-                  )}
 
                   {/* Unassigned section */}
                   {unassigned.length > 0 && leadsFilter !== 'mine' && (
