@@ -1363,14 +1363,16 @@ export default function App() {
       }
       if (headerRow === -1) { alert('לא נמצאה שורת כותרות בקובץ'); setIsParsingExcel(false); return; }
 
-      const headers = raw[headerRow].map((h: any) => String(h).trim().toUpperCase());
-      const idxId = headers.findIndex((h: string) => h === 'ID');
-      const idxItem = headers.findIndex((h: string) => h.includes('ITEM'));
-      const idxInfo = headers.findIndex((h: string) => h.includes('INFORMATION') || h.includes('PRODUCT'));
-      const idxQty = headers.findIndex((h: string) => h === 'QTY');
-      const idxUnit = headers.findIndex((h: string) => h.includes('UNIT') && h.includes('PRICE'));
+      const headers = raw[headerRow].map((h: any) =>
+        String(h).replace(/\s+/g, ' ').trim().toUpperCase()
+      );
+      const idxId    = headers.findIndex((h: string) => h === 'ID');
+      const idxItem  = headers.findIndex((h: string) => h.includes('ITEM'));
+      const idxInfo  = headers.findIndex((h: string) => h.includes('INFORMATION') || (h.includes('PRODUCT') && !h.includes('PRICE')));
+      const idxQty   = headers.findIndex((h: string) => h === 'QTY');
+      const idxUnit  = headers.findIndex((h: string) => h.includes('UNIT') && h.includes('PRICE'));
       const idxTotal = headers.findIndex((h: string) => h.includes('TOTAL') && h.includes('PRICE'));
-      const idxCbm = headers.findIndex((h: string) => h === 'CBM');
+      const idxCbm   = headers.findIndex((h: string) => h.replace(/\s+/g,'') === 'CBM' || h === 'CBM');
 
       // 2. Extract images via JSZip
       const zip = await JSZip.loadAsync(arrayBuffer);
@@ -1433,7 +1435,7 @@ export default function App() {
           info: String(row[idxInfo] || '').replace(/\n/g, ' ').trim(),
           qty: qty || 1,
           unitPriceUSD: unitPrice,
-          totalPriceUSD: Number(row[idxTotal]) || unitPrice * (qty || 1),
+          totalPriceUSD: unitPrice * (qty || 1), // always compute from qty × unit
           cbm,
           images: imgs,
           noteHe: '',
@@ -1466,7 +1468,8 @@ export default function App() {
     const rate = Number(p.exchangeRate) || 3.7;
     const totalFactoryILS = totalFactoryUSD * rate;
     const containerShippingILS = Number(p.containerShippingUSD) * rate;
-    const customsILS = (totalFactoryILS + containerShippingILS) * (Number(p.customsPercent) / 100);
+    // מכס: על עלות המפעל בלבד (לא על שילוח)
+    const customsILS = totalFactoryILS * (Number(p.customsPercent) / 100);
     const portFeesILS = Number(p.portFeesILS) || 0;
     const localTransportILS = Number(p.localTransportILS) || 0;
     const installationILS = Number(p.installationILS) || 0;
@@ -3476,19 +3479,24 @@ export default function App() {
                             <table className="w-full text-sm">
                               <thead className="bg-slate-50">
                                 <tr>
-                                  {['תמונה', 'ID', 'מוצר', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪ (כוללת)'].map(h => (
-                                    <th key={h} className="px-3 py-2.5 text-right font-medium text-slate-500 text-xs whitespace-nowrap">{h}</th>
+                                  {['תמונה', 'ID', 'מוצר', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ (+${proj.marginPercent}%)`].map(h => (
+                                    <th key={h} className={`px-3 py-2.5 text-right font-medium text-xs whitespace-nowrap ${h.includes('מחיר מכירה') ? 'text-green-600 bg-green-50' : 'text-slate-500'}`}>{h}</th>
                                   ))}
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {(proj.products || []).map((pr: any, i: number) => {
                                   const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
-                                  const customs = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
+                                  const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
+                                  const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
                                   const factoryCostILS = Number(pr.unitPriceUSD) * rate;
                                   const shippingForItemILS = totals.shippingPerCBM * Number(pr.cbm);
-                                  const customsForItem = (factoryCostILS + shippingForItemILS) * customs;
-                                  const fullLandedILS = (factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit) * Number(pr.qty);
+                                  // מכס על עלות מפעל בלבד
+                                  const customsForItem = factoryCostILS * customsPct;
+                                  const landedPerUnit = factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit;
+                                  const fullLandedILS = landedPerUnit * Number(pr.qty);
+                                  const salePricePerUnit = landedPerUnit * marginMult;
+                                  const salePriceTotal = salePricePerUnit * Number(pr.qty);
                                   const sizeMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
                                   const size = sizeMatch ? sizeMatch[1].trim() : '';
                                   return (
@@ -3507,11 +3515,28 @@ export default function App() {
                                       <td className="px-3 py-2 text-center font-bold">{pr.qty}</td>
                                       <td className="px-3 py-2 text-center text-slate-700">${Number(pr.unitPriceUSD).toLocaleString()}</td>
                                       <td className="px-3 py-2 text-center text-slate-500 text-xs">{Number(pr.cbm).toFixed(3)}</td>
-                                      <td className="px-3 py-2 text-center font-bold text-purple-700">₪{Math.round(fullLandedILS).toLocaleString()}</td>
+                                      <td className="px-3 py-2 text-center font-bold text-purple-700">
+                                        <div>₪{Math.round(fullLandedILS).toLocaleString()}</div>
+                                        <div className="text-[10px] text-slate-400 font-normal">{pr.qty > 1 ? `₪${Math.round(landedPerUnit).toLocaleString()} ליח'` : ''}</div>
+                                      </td>
+                                      <td className="px-3 py-2 text-center bg-green-50">
+                                        <div className="font-black text-green-700">₪{Math.round(salePriceTotal).toLocaleString()}</div>
+                                        <div className="text-[10px] text-green-500 font-medium">₪{Math.round(salePricePerUnit).toLocaleString()} ליח'</div>
+                                      </td>
                                     </tr>
                                   );
                                 })}
                               </tbody>
+                              <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                                <tr>
+                                  <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600">סה"כ</td>
+                                  <td className="px-3 py-2.5 text-center font-black text-slate-800">{totals.totalQty}</td>
+                                  <td className="px-3 py-2.5 text-center font-black text-slate-800">${Math.round(totals.totalFactoryUSD).toLocaleString()}</td>
+                                  <td className="px-3 py-2.5 text-center font-bold text-slate-600">{totals.totalCBM.toFixed(3)}</td>
+                                  <td className="px-3 py-2.5 text-center font-black text-purple-800">₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
+                                  <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">₪{Math.round(totals.suggestedPrice).toLocaleString()}</td>
+                                </tr>
+                              </tfoot>
                             </table>
                           </div>
                         </div>
@@ -3557,7 +3582,8 @@ export default function App() {
                           {(proj.products||[]).map((pr:any,i:number)=>{
                             const rate2=Number(proj.params?.exchangeRate||3.7);const customs2=Number(proj.params?.customsPercent||12)/100;
                             const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
-                            const full2=(f2+s2+(f2+s2)*customs2+totals.overheadPerUnit)*Number(pr.qty);
+                            // מכס על מפעל בלבד
+                            const full2=(f2+s2+(f2*customs2)+totals.overheadPerUnit)*Number(pr.qty);
                             const sz2=pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'';
                             return <tr key={i} style={{borderBottom:'1px solid #e2e8f0'}}><td style={{padding:'5px 8px'}}>{pr.id}</td><td style={{padding:'5px 8px',fontWeight:'bold'}}>{pr.itemHe}</td><td style={{padding:'5px 8px',fontSize:'10px'}}>{sz2}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{pr.qty}</td><td style={{padding:'5px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{Number(pr.cbm).toFixed(3)}</td><td style={{padding:'5px 8px',textAlign:'center',fontWeight:'bold',color:'#7c3aed'}}>₪{Math.round(full2).toLocaleString()}</td></tr>;
                           })}
