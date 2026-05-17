@@ -3555,17 +3555,106 @@ export default function App() {
                             onClick={async () => {
                               const el = document.getElementById('custom-project-report');
                               if (!el) return;
-                              const canvas = await html2canvas(el, { scale: 1.5, useCORS: true });
+                              const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, backgroundColor: '#ffffff' });
+                              const imgData = canvas.toDataURL('image/jpeg', 0.90);
                               const pdf = new jsPDF('p', 'mm', 'a4');
-                              const imgData = canvas.toDataURL('image/jpeg', 0.85);
-                              const pdfWidth = pdf.internal.pageSize.getWidth();
-                              const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-                              pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+                              const pageW = pdf.internal.pageSize.getWidth();
+                              const pageH = pdf.internal.pageSize.getHeight();
+                              const imgW = pageW;
+                              const imgH = (canvas.height * imgW) / canvas.width;
+                              // Split into pages if taller than one page
+                              let yPos = 0;
+                              while (yPos < imgH) {
+                                if (yPos > 0) pdf.addPage();
+                                // Render the slice of the image for this page
+                                const srcY = (yPos / imgH) * canvas.height;
+                                const sliceH = Math.min(pageH, imgH - yPos);
+                                const srcSliceH = (sliceH / imgH) * canvas.height;
+                                // Create a slice canvas
+                                const sliceCanvas = document.createElement('canvas');
+                                sliceCanvas.width = canvas.width;
+                                sliceCanvas.height = srcSliceH;
+                                const ctx = sliceCanvas.getContext('2d')!;
+                                ctx.drawImage(canvas, 0, srcY, canvas.width, srcSliceH, 0, 0, canvas.width, srcSliceH);
+                                const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.90);
+                                pdf.addImage(sliceData, 'JPEG', 0, 0, imgW, sliceH);
+                                yPos += pageH;
+                              }
                               pdf.save(`${proj.name || 'project'}-cost-report.pdf`);
                             }}
                             className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
                           >
                             <Download className="w-4 h-4"/> ייצא PDF
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const XLSX = await new Promise<any>((resolve) => {
+                                if ((window as any).XLSX) { resolve((window as any).XLSX); return; }
+                                const s = document.createElement('script');
+                                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+                                s.onload = () => resolve((window as any).XLSX);
+                                document.head.appendChild(s);
+                              });
+                              const rate2 = Number(proj.params?.exchangeRate || 3.7);
+                              const customs2 = Number(proj.params?.customsPercent || 12) / 100;
+                              const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
+                              // Products sheet
+                              const productRows = (proj.products || []).map((pr: any) => {
+                                const f2 = Number(pr.unitPriceUSD) * rate2;
+                                const s2 = totals.shippingPerCBM * Number(pr.cbm);
+                                const c2 = f2 * customs2;
+                                const landedUnit = f2 + s2 + c2 + totals.overheadPerUnit;
+                                const landedTotal = landedUnit * Number(pr.qty);
+                                const saleUnit = landedUnit * margin2;
+                                const saleTotal = saleUnit * Number(pr.qty);
+                                const sz2 = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim() || '';
+                                return {
+                                  'ID': pr.id,
+                                  'מוצר (עברית)': pr.itemHe,
+                                  'Product (EN)': pr.itemEn,
+                                  'גודל': sz2,
+                                  'כמות': Number(pr.qty),
+                                  'מחיר יחידה $': Number(pr.unitPriceUSD),
+                                  'CBM': Number(pr.cbm),
+                                  'עלות Landed ₪ (יחידה)': Math.round(landedUnit),
+                                  'עלות Landed ₪ (סה"כ)': Math.round(landedTotal),
+                                  [`מחיר מכירה ₪ (יחידה) +${proj.marginPercent}%`]: Math.round(saleUnit),
+                                  [`מחיר מכירה ₪ (סה"כ) +${proj.marginPercent}%`]: Math.round(saleTotal),
+                                };
+                              });
+                              // Summary sheet
+                              const summaryRows = [
+                                { 'פרמטר': 'שם פרויקט', 'ערך': proj.name },
+                                { 'פרמטר': 'לקוח', 'ערך': proj.clientName || '' },
+                                { 'פרמטר': 'תאריך', 'ערך': proj.date },
+                                { 'פרמטר': 'שע"ח (₪/$)', 'ערך': rate2 },
+                                { 'פרמטר': 'עלות מפעל ($)', 'ערך': Math.round(totals.totalFactoryUSD) },
+                                { 'פרמטר': 'עלות מפעל (₪)', 'ערך': Math.round(totals.totalFactoryILS) },
+                                { 'פרמטר': 'שילוח מכולה (₪)', 'ערך': Math.round(totals.containerShippingILS) },
+                                { 'פרמטר': `מכס ${proj.params?.customsPercent || 12}% (₪)`, 'ערך': Math.round(totals.customsILS) },
+                                { 'פרמטר': 'אגרות נמל (₪)', 'ערך': Math.round(totals.portFeesILS) },
+                                { 'פרמטר': 'הובלה בארץ (₪)', 'ערך': Math.round(totals.localTransportILS) },
+                                { 'פרמטר': 'התקנה (₪)', 'ערך': Math.round(totals.installationILS) },
+                                { 'פרמטר': '---', 'ערך': '---' },
+                                { 'פרמטר': 'עלות כוללת (₪)', 'ערך': Math.round(totals.totalCostILS) },
+                                { 'פרמטר': `מחיר מכירה מינימלי ${proj.marginPercent}% (₪)`, 'ערך': Math.round(totals.suggestedPrice) },
+                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(totals.suggestedPrice - totals.totalCostILS) },
+                                { 'פרמטר': 'סה"כ CBM', 'ערך': Number(totals.totalCBM.toFixed(3)) },
+                                { 'פרמטר': 'סה"כ יחידות', 'ערך': totals.totalQty },
+                              ];
+                              const wb = XLSX.utils.book_new();
+                              const ws1 = XLSX.utils.json_to_sheet(productRows);
+                              const ws2 = XLSX.utils.json_to_sheet(summaryRows);
+                              // Column widths
+                              ws1['!cols'] = [8,22,22,14,8,14,8,20,20,22,22].map(w => ({ wch: w }));
+                              ws2['!cols'] = [{ wch: 30 }, { wch: 20 }];
+                              XLSX.utils.book_append_sheet(wb, ws1, 'מוצרים');
+                              XLSX.utils.book_append_sheet(wb, ws2, 'סיכום עלויות');
+                              XLSX.writeFile(wb, `${proj.name || 'project'}-cost-report.xlsx`);
+                            }}
+                            className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-2"
+                          >
+                            <Download className="w-4 h-4"/> ייצא Excel
                           </button>
                           <button onClick={() => { setCustomProjectForm(proj); setIsCustomProjectModalOpen(true); setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-2"><Edit className="w-4 h-4"/> ערוך</button>
                           <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200">סגור</button>
