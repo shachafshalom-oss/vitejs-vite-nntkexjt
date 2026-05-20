@@ -306,6 +306,7 @@ export default function App() {
   const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>} | null>(null);
   const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
   const [isSavingProducts, setIsSavingProducts] = useState(false);
+  const [inlineSalePrices, setInlineSalePrices] = useState<Record<string, Record<string, number>>>({}); // projId -> {idx: price}
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
@@ -3511,7 +3512,7 @@ export default function App() {
                           <table className="w-full text-sm">
                             <thead className="bg-slate-50">
                               <tr>
-                                {['תמונה', 'ID', 'מוצר (לחץ לעריכה)', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ (+${proj.marginPercent}%)`, ''].map(h => (
+                                {['תמונה', 'ID', 'מוצר (לחץ לעריכה)', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ ✏️ (+${proj.marginPercent}%) — ניתן לעריכה`, ''].map(h => (
                                   <th key={h} className={`px-3 py-2.5 text-right font-medium text-xs whitespace-nowrap ${h.includes('מחיר מכירה') ? 'text-green-600 bg-green-50' : h === '' ? '' : 'text-slate-500'}`}>{h}</th>
                                 ))}
                               </tr>
@@ -3574,9 +3575,22 @@ export default function App() {
                                       <div>₪{Math.round(fullLandedILS).toLocaleString()}</div>
                                       <div className="text-[10px] text-slate-400 font-normal">{pr.qty > 1 ? `₪${Math.round(landedPerUnit).toLocaleString()} ליח'` : ''}</div>
                                     </td>
-                                    <td className="px-3 py-2 text-center bg-green-50">
-                                      <div className="font-black text-green-700">₪{Math.round(salePriceTotal).toLocaleString()}</div>
-                                      <div className="text-[10px] text-green-500 font-medium">₪{Math.round(salePricePerUnit).toLocaleString()} ליח'</div>
+                                    <td className="px-3 py-2 text-center bg-green-50 min-w-[120px]">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="10"
+                                        className="w-24 text-xs font-black text-center text-green-700 bg-green-50 border border-transparent hover:border-green-300 focus:border-green-500 focus:bg-white rounded-lg px-1 py-0.5 outline-none transition-colors"
+                                        value={inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : Math.round(salePricePerUnit)}
+                                        onChange={e => setInlineSalePrices(prev => ({
+                                          ...prev,
+                                          [proj.id]: { ...(prev[proj.id] || {}), [`${i}`]: Number(e.target.value) }
+                                        }))}
+                                        title="לחץ לעריכת מחיר מכירה — ישמר ב-PDF"
+                                      />
+                                      <div className="text-[10px] text-green-500 mt-0.5">
+                                        ₪{Math.round((inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
+                                      </div>
                                     </td>
                                     <td className="px-3 py-2 text-center">
                                       <button onClick={deletePr} className="text-slate-300 hover:text-red-500 transition-colors" title="מחק מוצר"><Trash2 className="w-4 h-4"/></button>
@@ -3592,7 +3606,24 @@ export default function App() {
                                 <td className="px-3 py-2.5 text-center font-black text-slate-800">${Math.round(totals.totalFactoryUSD).toLocaleString()}</td>
                                 <td className="px-3 py-2.5 text-center font-bold text-slate-600">{totals.totalCBM.toFixed(3)}</td>
                                 <td className="px-3 py-2.5 text-center font-black text-purple-800">₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
-                                <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">₪{Math.round(totals.suggestedPrice).toLocaleString()}</td>
+                                <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">
+                                  {(() => {
+                                    const products = inlineProductEdits[proj.id] || proj.products || [];
+                                    const rate3 = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
+                                    const customsPct3 = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
+                                    const marginMult3 = 1 + Number(proj.marginPercent || 30) / 100;
+                                    const totalSale = products.reduce((sum: number, pr: any, i: number) => {
+                                      const f3 = Number(pr.unitPriceUSD) * rate3;
+                                      const s3 = totals.shippingPerCBM * Number(pr.cbm);
+                                      const landed3 = f3 + s3 + (f3 * customsPct3) + totals.overheadPerUnit;
+                                      const unitPrice = inlineSalePrices[proj.id]?.[`${i}`] !== undefined
+                                        ? inlineSalePrices[proj.id][`${i}`]
+                                        : Math.round(landed3 * marginMult3);
+                                      return sum + unitPrice * Number(pr.qty);
+                                    }, 0);
+                                    return `₪${Math.round(totalSale).toLocaleString()}`;
+                                  })()}
+                                </td>
                                 <td/>
                               </tr>
                             </tfoot>
@@ -3620,14 +3651,20 @@ export default function App() {
                               const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
                               const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3.7);
                               const customs2 = Number((customProjectLiveParams || proj.params)?.customsPercent || 12) / 100;
+                              const products = inlineProductEdits[proj.id] || proj.products || [];
                               const initPrices: Record<string, number> = {};
-                              (proj.products || []).forEach((pr: any, i: number) => {
-                                const f2 = Number(pr.unitPriceUSD) * rate2;
-                                const s2 = totals.shippingPerCBM * Number(pr.cbm);
-                                const landedUnit = f2 + s2 + (f2 * customs2) + totals.overheadPerUnit;
-                                initPrices[`${i}`] = Math.round(landedUnit * margin2);
+                              products.forEach((pr: any, i: number) => {
+                                // Use manually set sale price if exists, else calc from margin
+                                if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
+                                  initPrices[`${i}`] = inlineSalePrices[proj.id][`${i}`];
+                                } else {
+                                  const f2 = Number(pr.unitPriceUSD) * rate2;
+                                  const s2 = totals.shippingPerCBM * Number(pr.cbm);
+                                  const landedUnit = f2 + s2 + (f2 * customs2) + totals.overheadPerUnit;
+                                  initPrices[`${i}`] = Math.round(landedUnit * margin2);
+                                }
                               });
-                              setPdfExportModal({ proj, totals, type: 'internal', editablePrices: initPrices });
+                              setPdfExportModal({ proj: {...proj, products}, totals, type: 'internal', editablePrices: initPrices });
                             }}
                             className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
                           >
@@ -5384,10 +5421,18 @@ export default function App() {
                                   step="10"
                                   className="w-24 text-xs border border-green-300 rounded-lg px-2 py-1 text-center font-bold text-green-700 bg-green-50 outline-none focus:border-green-500 focus:ring-1 focus:ring-green-300"
                                   value={saleUnit}
-                                  onChange={e => setPdfExportModal({
-                                    ...pdfExportModal,
-                                    editablePrices: { ...editablePrices, [`${i}`]: Number(e.target.value) }
-                                  })}
+                                  onChange={e => {
+                                    const newVal = Number(e.target.value);
+                                    setPdfExportModal({
+                                      ...pdfExportModal,
+                                      editablePrices: { ...editablePrices, [`${i}`]: newVal }
+                                    });
+                                    // Sync back to main view sale prices
+                                    setInlineSalePrices(prev => ({
+                                      ...prev,
+                                      [proj.id]: { ...(prev[proj.id] || {}), [`${i}`]: newVal }
+                                    }));
+                                  }}
                                 />
                               </td>
                               <td className="px-3 py-2 text-center text-xs font-black text-green-700">₪{Math.round(saleTotal).toLocaleString()}</td>
