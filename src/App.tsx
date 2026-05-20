@@ -304,6 +304,8 @@ export default function App() {
   const [customProjectLiveParams, setCustomProjectLiveParams] = useState<any>(null); // inline editing in detail view
   const [customProjectStatusFilter, setCustomProjectStatusFilter] = useState<string>('all');
   const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>} | null>(null);
+  const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
+  const [isSavingProducts, setIsSavingProducts] = useState(false);
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
@@ -3472,76 +3474,137 @@ export default function App() {
                         ))}
                       </div>
 
-                      {/* Products table */}
+                      {/* Products table — inline editable */}
                       <div>
-                        <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({(proj.products || []).length})</h3>
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({(inlineProductEdits[proj.id] || proj.products || []).length})</h3>
+                          <div className="flex items-center gap-2">
+                            {inlineProductEdits[proj.id] && (
+                              <button
+                                onClick={async () => {
+                                  setIsSavingProducts(true);
+                                  const newProducts = inlineProductEdits[proj.id];
+                                  const newTotals = calcProjectTotals({ ...proj, products: newProducts });
+                                  await updateProjectField(proj.id, { products: newProducts, ...newTotals });
+                                  setInlineProductEdits(prev => { const n = {...prev}; delete n[proj.id]; return n; });
+                                  setIsSavingProducts(false);
+                                }}
+                                disabled={isSavingProducts}
+                                className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1"
+                              >
+                                <CheckCircle className="w-3 h-3"/> {isSavingProducts ? 'שומר...' : 'שמור שינויים'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                const current = inlineProductEdits[proj.id] || proj.products || [];
+                                setInlineProductEdits(prev => ({...prev, [proj.id]: [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]}));
+                              }}
+                              className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1.5 rounded-lg font-medium hover:bg-purple-100 hover:text-purple-700 flex items-center gap-1"
+                            >
+                              <Plus className="w-3 h-3"/> הוסף פריט
+                            </button>
+                          </div>
+                        </div>
                         <div className="border border-slate-200 rounded-xl overflow-hidden">
                           <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-slate-50">
-                                <tr>
-                                  {['תמונה', 'ID', 'מוצר', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ (+${proj.marginPercent}%)`].map(h => (
-                                    <th key={h} className={`px-3 py-2.5 text-right font-medium text-xs whitespace-nowrap ${h.includes('מחיר מכירה') ? 'text-green-600 bg-green-50' : 'text-slate-500'}`}>{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {(proj.products || []).map((pr: any, i: number) => {
-                                  const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
-                                  const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
-                                  const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
-                                  const factoryCostILS = Number(pr.unitPriceUSD) * rate;
-                                  const shippingForItemILS = totals.shippingPerCBM * Number(pr.cbm);
-                                  // מכס על עלות מפעל בלבד
-                                  const customsForItem = factoryCostILS * customsPct;
-                                  const landedPerUnit = factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit;
-                                  const fullLandedILS = landedPerUnit * Number(pr.qty);
-                                  const salePricePerUnit = landedPerUnit * marginMult;
-                                  const salePriceTotal = salePricePerUnit * Number(pr.qty);
-                                  const sizeMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
-                                  const size = sizeMatch ? sizeMatch[1].trim() : '';
-                                  return (
-                                    <tr key={i} className="hover:bg-slate-50">
-                                      <td className="px-3 py-2">
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-50">
+                              <tr>
+                                {['תמונה', 'ID', 'מוצר (לחץ לעריכה)', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ (+${proj.marginPercent}%)`, ''].map(h => (
+                                  <th key={h} className={`px-3 py-2.5 text-right font-medium text-xs whitespace-nowrap ${h.includes('מחיר מכירה') ? 'text-green-600 bg-green-50' : h === '' ? '' : 'text-slate-500'}`}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {((inlineProductEdits[proj.id] || proj.products || []) as any[]).map((pr: any, i: number) => {
+                                const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
+                                const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
+                                const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
+                                const factoryCostILS = Number(pr.unitPriceUSD) * rate;
+                                const shippingForItemILS = totals.shippingPerCBM * Number(pr.cbm);
+                                const customsForItem = factoryCostILS * customsPct;
+                                const landedPerUnit = factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit;
+                                const fullLandedILS = landedPerUnit * Number(pr.qty);
+                                const salePricePerUnit = landedPerUnit * marginMult;
+                                const salePriceTotal = salePricePerUnit * Number(pr.qty);
+                                const sizeMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
+                                const size = sizeMatch ? sizeMatch[1].trim() : '';
+                                const updatePr = (fields: any) => {
+                                  const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
+                                  const updated = base.map((p: any, idx: number) => idx === i ? {...p, ...fields} : p);
+                                  setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
+                                };
+                                const deletePr = () => {
+                                  if (!window.confirm(`למחוק את "${pr.itemHe}"?`)) return;
+                                  const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
+                                  setInlineProductEdits(prev => ({...prev, [proj.id]: base.filter((_: any, idx: number) => idx !== i)}));
+                                };
+                                return (
+                                  <tr key={i} className={`hover:bg-slate-50 ${inlineProductEdits[proj.id] ? 'bg-amber-50/20' : ''}`}>
+                                    <td className="px-3 py-2">
+                                      <div className="relative group w-14 h-14">
                                         {pr.images && pr.images.length > 0
                                           ? <img src={pr.images[0]} alt={pr.itemHe} className="w-14 h-14 object-cover rounded-lg border border-slate-200"/>
                                           : <div className="w-14 h-14 bg-slate-100 rounded-lg flex items-center justify-center"><ImageIcon className="w-5 h-5 text-slate-300"/></div>}
-                                      </td>
-                                      <td className="px-3 py-2 font-mono text-xs text-slate-500 whitespace-nowrap">{pr.id}</td>
-                                      <td className="px-3 py-2">
-                                        <p className="font-bold text-slate-800 text-xs">{pr.itemHe}</p>
-                                        <p className="text-[10px] text-slate-400">{pr.itemEn}</p>
-                                      </td>
-                                      <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{size}</td>
-                                      <td className="px-3 py-2 text-center font-bold">{pr.qty}</td>
-                                      <td className="px-3 py-2 text-center text-slate-700">${Number(pr.unitPriceUSD).toLocaleString()}</td>
-                                      <td className="px-3 py-2 text-center text-slate-500 text-xs">{Number(pr.cbm).toFixed(3)}</td>
-                                      <td className="px-3 py-2 text-center font-bold text-purple-700">
-                                        <div>₪{Math.round(fullLandedILS).toLocaleString()}</div>
-                                        <div className="text-[10px] text-slate-400 font-normal">{pr.qty > 1 ? `₪${Math.round(landedPerUnit).toLocaleString()} ליח'` : ''}</div>
-                                      </td>
-                                      <td className="px-3 py-2 text-center bg-green-50">
-                                        <div className="font-black text-green-700">₪{Math.round(salePriceTotal).toLocaleString()}</div>
-                                        <div className="text-[10px] text-green-500 font-medium">₪{Math.round(salePricePerUnit).toLocaleString()} ליח'</div>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                              <tfoot className="bg-slate-100 border-t-2 border-slate-300">
-                                <tr>
-                                  <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600">סה"כ</td>
-                                  <td className="px-3 py-2.5 text-center font-black text-slate-800">{totals.totalQty}</td>
-                                  <td className="px-3 py-2.5 text-center font-black text-slate-800">${Math.round(totals.totalFactoryUSD).toLocaleString()}</td>
-                                  <td className="px-3 py-2.5 text-center font-bold text-slate-600">{totals.totalCBM.toFixed(3)}</td>
-                                  <td className="px-3 py-2.5 text-center font-black text-purple-800">₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
-                                  <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">₪{Math.round(totals.suggestedPrice).toLocaleString()}</td>
-                                </tr>
-                              </tfoot>
-                            </table>
+                                        <label className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 rounded-lg cursor-pointer flex items-center justify-center transition-opacity">
+                                          <ImageIcon className="w-4 h-4 text-white"/>
+                                          <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                                            if (!e.target.files?.[0]) return;
+                                            const compressed = await compressFileToBase64(e.target.files[0]);
+                                            updatePr({ images: [compressed] });
+                                          }}/>
+                                        </label>
+                                      </div>
+                                    </td>
+                                    <td className="px-3 py-2 font-mono text-xs text-slate-500 whitespace-nowrap">{pr.id}</td>
+                                    <td className="px-3 py-2 min-w-[160px]">
+                                      <input className="w-full font-bold text-slate-800 text-xs bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors" value={pr.itemHe} onChange={e => updatePr({ itemHe: e.target.value })} title="שם עברי"/>
+                                      <input className="w-full text-[10px] text-slate-400 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-slate-300 outline-none py-0.5 transition-colors" value={pr.itemEn} onChange={e => updatePr({ itemEn: e.target.value })} title="שם אנגלי"/>
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{size}</td>
+                                    <td className="px-3 py-2 text-center">
+                                      <input type="number" min="1" step="1" className="w-14 text-xs font-bold text-center border border-transparent hover:border-slate-300 focus:border-purple-400 rounded px-1 py-0.5 outline-none bg-transparent" value={pr.qty} onChange={e => updatePr({ qty: Number(e.target.value) })}/>
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      <input type="number" min="0" step="0.01" className="w-20 text-xs text-center border border-transparent hover:border-slate-300 focus:border-purple-400 rounded px-1 py-0.5 outline-none bg-transparent text-slate-700" value={pr.unitPriceUSD} onChange={e => updatePr({ unitPriceUSD: Number(e.target.value) })}/>
+                                    </td>
+                                    <td className="px-3 py-2 text-center text-slate-500 text-xs">{Number(pr.cbm).toFixed(3)}</td>
+                                    <td className="px-3 py-2 text-center font-bold text-purple-700">
+                                      <div>₪{Math.round(fullLandedILS).toLocaleString()}</div>
+                                      <div className="text-[10px] text-slate-400 font-normal">{pr.qty > 1 ? `₪${Math.round(landedPerUnit).toLocaleString()} ליח'` : ''}</div>
+                                    </td>
+                                    <td className="px-3 py-2 text-center bg-green-50">
+                                      <div className="font-black text-green-700">₪{Math.round(salePriceTotal).toLocaleString()}</div>
+                                      <div className="text-[10px] text-green-500 font-medium">₪{Math.round(salePricePerUnit).toLocaleString()} ליח'</div>
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      <button onClick={deletePr} className="text-slate-300 hover:text-red-500 transition-colors" title="מחק מוצר"><Trash2 className="w-4 h-4"/></button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                              <tr>
+                                <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600">סה"כ</td>
+                                <td className="px-3 py-2.5 text-center font-black text-slate-800">{totals.totalQty}</td>
+                                <td className="px-3 py-2.5 text-center font-black text-slate-800">${Math.round(totals.totalFactoryUSD).toLocaleString()}</td>
+                                <td className="px-3 py-2.5 text-center font-bold text-slate-600">{totals.totalCBM.toFixed(3)}</td>
+                                <td className="px-3 py-2.5 text-center font-black text-purple-800">₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
+                                <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">₪{Math.round(totals.suggestedPrice).toLocaleString()}</td>
+                                <td/>
+                              </tr>
+                            </tfoot>
+                          </table>
                           </div>
                         </div>
-                        <p className="text-[10px] text-slate-400 mt-1.5 text-left">* עלות Landed כוללת: מפעל + שילוח + מכס + חלק יחסי מנמל/הובלה/התקנה לפי יחידה</p>
+                        {inlineProductEdits[proj.id] && (
+                          <p className="text-[10px] text-amber-600 mt-1.5 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3"/> שינויים לא שמורים — לחץ "שמור שינויים" כדי לשמור
+                          </p>
+                        )}
+                        <p className="text-[10px] text-slate-400 mt-1">* עלות Landed: מפעל + שילוח + מכס + חלק יחסי מנמל/הובלה/התקנה לפי יחידה</p>
                       </div>
 
                       {/* Bottom: suggested price + PDF + actions */}
