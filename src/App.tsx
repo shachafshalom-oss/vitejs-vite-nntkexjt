@@ -5307,7 +5307,11 @@ export default function App() {
       {pdfExportModal && (() => {
         const { proj, totals, type, editablePrices } = pdfExportModal;
         const isCustomer = type === 'customer';
-        const totalSalePrice = Object.values(editablePrices).reduce((s, v) => s + Number(v), 0);
+        // CRITICAL: editablePrices stores price PER UNIT — must multiply by qty
+        const totalSalePrice = (proj.products || []).reduce((s: number, pr: any, i: number) => {
+          const unitPrice = Number(editablePrices[`${i}`] || 0);
+          return s + unitPrice * Number(pr.qty);
+        }, 0);
 
         const generatePDF = async () => {
           const elId = isCustomer ? 'pdf-customer-doc' : 'pdf-internal-doc';
