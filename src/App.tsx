@@ -3377,7 +3377,9 @@ export default function App() {
             {customProjectView && (() => {
               const proj = customProjects.find((p: any) => p.id === customProjectView.id) || customProjectView;
               const liveParams = customProjectLiveParams || proj.params || {};
-              const liveForm = { ...proj, params: liveParams };
+              // *** CRITICAL: use edited products if available — not stale Firestore products ***
+              const effectiveProducts = inlineProductEdits[proj.id] || proj.products || [];
+              const liveForm = { ...proj, products: effectiveProducts, params: liveParams };
               const totals = calcProjectTotals(liveForm);
               const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
 
@@ -3478,7 +3480,7 @@ export default function App() {
                       {/* Products table — inline editable */}
                       <div>
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({(inlineProductEdits[proj.id] || proj.products || []).length})</h3>
+                          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({effectiveProducts.length})</h3>
                           <div className="flex items-center gap-2">
                             {inlineProductEdits[proj.id] && (
                               <button
@@ -3518,7 +3520,7 @@ export default function App() {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                              {((inlineProductEdits[proj.id] || proj.products || []) as any[]).map((pr: any, i: number) => {
+                              {(effectiveProducts as any[]).map((pr: any, i: number) => {
                                 const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
                                 const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
                                 const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
@@ -3608,7 +3610,7 @@ export default function App() {
                                 <td className="px-3 py-2.5 text-center font-black text-purple-800">₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
                                 <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">
                                   {(() => {
-                                    const products = inlineProductEdits[proj.id] || proj.products || [];
+                                    const products = effectiveProducts;
                                     const rate3 = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
                                     const customsPct3 = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
                                     const marginMult3 = 1 + Number(proj.marginPercent || 30) / 100;
@@ -3651,7 +3653,7 @@ export default function App() {
                               const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
                               const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3.7);
                               const customs2 = Number((customProjectLiveParams || proj.params)?.customsPercent || 12) / 100;
-                              const products = inlineProductEdits[proj.id] || proj.products || [];
+                              const products = effectiveProducts;
                               const initPrices: Record<string, number> = {};
                               products.forEach((pr: any, i: number) => {
                                 // Priority: 1) saved in Firestore, 2) in-memory override, 3) calc from margin
