@@ -3565,14 +3565,32 @@ export default function App() {
                                       <input className="w-full font-bold text-slate-800 text-xs bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors" value={pr.itemHe} onChange={e => updatePr({ itemHe: e.target.value })} title="שם עברי"/>
                                       <input className="w-full text-[10px] text-slate-400 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-slate-300 outline-none py-0.5 transition-colors" value={pr.itemEn} onChange={e => updatePr({ itemEn: e.target.value })} title="שם אנגלי"/>
                                     </td>
-                                    <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{size}</td>
+                                    <td className="px-3 py-2 text-xs text-slate-500 min-w-[100px]">
+                                      <input
+                                        className="w-full text-xs text-slate-600 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors"
+                                        value={pr.sizeOverride !== undefined ? pr.sizeOverride : size}
+                                        onChange={e => updatePr({ sizeOverride: e.target.value })}
+                                        placeholder="גודל..."
+                                        title="לחץ לעריכת גודל"
+                                      />
+                                    </td>
                                     <td className="px-3 py-2 text-center">
                                       <input type="number" min="1" step="1" className="w-14 text-xs font-bold text-center border border-transparent hover:border-slate-300 focus:border-purple-400 rounded px-1 py-0.5 outline-none bg-transparent" value={pr.qty} onChange={e => updatePr({ qty: Number(e.target.value) })}/>
                                     </td>
                                     <td className="px-3 py-2 text-center">
                                       <input type="number" min="0" step="0.01" className="w-20 text-xs text-center border border-transparent hover:border-slate-300 focus:border-purple-400 rounded px-1 py-0.5 outline-none bg-transparent text-slate-700" value={pr.unitPriceUSD} onChange={e => updatePr({ unitPriceUSD: Number(e.target.value) })}/>
                                     </td>
-                                    <td className="px-3 py-2 text-center text-slate-500 text-xs">{Number(pr.cbm).toFixed(3)}</td>
+                                    <td className="px-3 py-2 text-center text-slate-500 text-xs min-w-[70px]">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="0.001"
+                                        className="w-16 text-xs text-center text-slate-600 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors"
+                                        value={Number(pr.cbm).toFixed(3)}
+                                        onChange={e => updatePr({ cbm: Number(e.target.value) })}
+                                        title="לחץ לעריכת CBM"
+                                      />
+                                    </td>
                                     <td className="px-3 py-2 text-center font-bold text-purple-700">
                                       <div>₪{Math.round(fullLandedILS).toLocaleString()}</div>
                                       <div className="text-[10px] text-slate-400 font-normal">{pr.qty > 1 ? `₪${Math.round(landedPerUnit).toLocaleString()} ליח'` : ''}</div>
@@ -3683,19 +3701,25 @@ export default function App() {
                                 s.onload = () => resolve((window as any).XLSX);
                                 document.head.appendChild(s);
                               });
-                              const rate2 = Number(proj.params?.exchangeRate || 3.7);
-                              const customs2 = Number(proj.params?.customsPercent || 12) / 100;
+                              const rate2 = Number(liveParams?.exchangeRate || proj.params?.exchangeRate || 3.7);
+                              const customs2 = Number(liveParams?.customsPercent || proj.params?.customsPercent || 12) / 100;
                               const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
-                              // Products sheet
-                              const productRows = (proj.products || []).map((pr: any) => {
+                              // Products sheet — use effectiveProducts + inlineSalePrices (same as screen)
+                              const productRows = effectiveProducts.map((pr: any, i: number) => {
                                 const f2 = Number(pr.unitPriceUSD) * rate2;
                                 const s2 = totals.shippingPerCBM * Number(pr.cbm);
                                 const c2 = f2 * customs2;
                                 const landedUnit = f2 + s2 + c2 + totals.overheadPerUnit;
                                 const landedTotal = landedUnit * Number(pr.qty);
-                                const saleUnit = landedUnit * margin2;
+                                // Use manually set sale price if exists (same priority as screen/PDF)
+                                const saleUnit = proj.salePriceOverrides?.[`${i}`] !== undefined
+                                  ? proj.salePriceOverrides[`${i}`]
+                                  : inlineSalePrices[proj.id]?.[`${i}`] !== undefined
+                                    ? inlineSalePrices[proj.id][`${i}`]
+                                    : Math.round(landedUnit * margin2);
                                 const saleTotal = saleUnit * Number(pr.qty);
-                                const sz2 = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim() || '';
+                                // Size: use pr.sizeOverride if edited, else parse from info
+                                const sz2 = pr.sizeOverride !== undefined ? pr.sizeOverride : (pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim() || '');
                                 return {
                                   'ID': pr.id,
                                   'מוצר (עברית)': pr.itemHe,
@@ -3710,7 +3734,7 @@ export default function App() {
                                   [`מחיר מכירה ₪ (סה"כ) +${proj.marginPercent}%`]: Math.round(saleTotal),
                                 };
                               });
-                              // Summary sheet
+                              // Summary sheet — use totals (already computed from effectiveProducts + liveParams)
                               const summaryRows = [
                                 { 'פרמטר': 'שם פרויקט', 'ערך': proj.name },
                                 { 'פרמטר': 'לקוח', 'ערך': proj.clientName || '' },
@@ -3719,14 +3743,14 @@ export default function App() {
                                 { 'פרמטר': 'עלות מפעל ($)', 'ערך': Math.round(totals.totalFactoryUSD) },
                                 { 'פרמטר': 'עלות מפעל (₪)', 'ערך': Math.round(totals.totalFactoryILS) },
                                 { 'פרמטר': 'שילוח מכולה (₪)', 'ערך': Math.round(totals.containerShippingILS) },
-                                { 'פרמטר': `מכס ${proj.params?.customsPercent || 12}% (₪)`, 'ערך': Math.round(totals.customsILS) },
+                                { 'פרמטר': `מכס ${liveParams?.customsPercent || proj.params?.customsPercent || 12}% (₪)`, 'ערך': Math.round(totals.customsILS) },
                                 { 'פרמטר': 'אגרות נמל (₪)', 'ערך': Math.round(totals.portFeesILS) },
                                 { 'פרמטר': 'הובלה בארץ (₪)', 'ערך': Math.round(totals.localTransportILS) },
                                 { 'פרמטר': 'התקנה (₪)', 'ערך': Math.round(totals.installationILS) },
                                 { 'פרמטר': '---', 'ערך': '---' },
                                 { 'פרמטר': 'עלות כוללת (₪)', 'ערך': Math.round(totals.totalCostILS) },
-                                { 'פרמטר': `מחיר מכירה מינימלי ${proj.marginPercent}% (₪)`, 'ערך': Math.round(totals.suggestedPrice) },
-                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(totals.suggestedPrice - totals.totalCostILS) },
+                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const f3=Number(pr.unitPriceUSD)*rate2; const s3=totals.shippingPerCBM*Number(pr.cbm); const lu=f3+s3+(f3*customs2)+totals.overheadPerUnit; const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:Math.round(lu*margin2); return s+su*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const f3=Number(pr.unitPriceUSD)*rate2; const s3=totals.shippingPerCBM*Number(pr.cbm); const lu=f3+s3+(f3*customs2)+totals.overheadPerUnit; const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:Math.round(lu*margin2); return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
                                 { 'פרמטר': 'סה"כ CBM', 'ערך': Number(totals.totalCBM.toFixed(3)) },
                                 { 'פרמטר': 'סה"כ יחידות', 'ערך': totals.totalQty },
                               ];
@@ -3761,7 +3785,7 @@ export default function App() {
                             const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
                             // מכס על מפעל בלבד
                             const full2=(f2+s2+(f2*customs2)+totals.overheadPerUnit)*Number(pr.qty);
-                            const sz2=pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'';
+                            const sz2=pr.sizeOverride!==undefined?pr.sizeOverride:(pr.info?.match(/size[：:]((?:(?!\n)[^,\uFF0C\u3001])+)/i)?.[1]?.trim()||'');
                             return <tr key={i} style={{borderBottom:'1px solid #e2e8f0'}}><td style={{padding:'5px 8px'}}>{pr.id}</td><td style={{padding:'5px 8px',fontWeight:'bold'}}>{pr.itemHe}</td><td style={{padding:'5px 8px',fontSize:'10px'}}>{sz2}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{pr.qty}</td><td style={{padding:'5px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{Number(pr.cbm).toFixed(3)}</td><td style={{padding:'5px 8px',textAlign:'center',fontWeight:'bold',color:'#7c3aed'}}>₪{Math.round(full2).toLocaleString()}</td></tr>;
                           })}
                         </tbody>
@@ -5640,7 +5664,7 @@ export default function App() {
                   {(proj.products||[]).map((pr:any,i:number)=>{
                     const saleU=Number(editablePrices[`${i}`]||0);
                     const saleT=Math.round(saleU*Number(pr.qty));
-                    const sz2=pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'';
+                    const sz2=pr.sizeOverride!==undefined?pr.sizeOverride:(pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'');
                     return (
                       <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#f9fafb',pageBreakInside:'avoid'}}>
                         <td style={{padding:'9px 10px',color:'#94a3b8',fontSize:'11px'}}>{i+1}</td>
