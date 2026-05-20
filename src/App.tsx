@@ -303,6 +303,7 @@ export default function App() {
   const [isParsingExcel, setIsParsingExcel] = useState(false);
   const [customProjectLiveParams, setCustomProjectLiveParams] = useState<any>(null); // inline editing in detail view
   const [customProjectStatusFilter, setCustomProjectStatusFilter] = useState<string>('all');
+  const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>} | null>(null);
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
@@ -3552,35 +3553,18 @@ export default function App() {
                         </div>
                         <div className="flex gap-2 flex-wrap">
                           <button
-                            onClick={async () => {
-                              const el = document.getElementById('custom-project-report');
-                              if (!el) return;
-                              const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, backgroundColor: '#ffffff' });
-                              const imgData = canvas.toDataURL('image/jpeg', 0.90);
-                              const pdf = new jsPDF('p', 'mm', 'a4');
-                              const pageW = pdf.internal.pageSize.getWidth();
-                              const pageH = pdf.internal.pageSize.getHeight();
-                              const imgW = pageW;
-                              const imgH = (canvas.height * imgW) / canvas.width;
-                              // Split into pages if taller than one page
-                              let yPos = 0;
-                              while (yPos < imgH) {
-                                if (yPos > 0) pdf.addPage();
-                                // Render the slice of the image for this page
-                                const srcY = (yPos / imgH) * canvas.height;
-                                const sliceH = Math.min(pageH, imgH - yPos);
-                                const srcSliceH = (sliceH / imgH) * canvas.height;
-                                // Create a slice canvas
-                                const sliceCanvas = document.createElement('canvas');
-                                sliceCanvas.width = canvas.width;
-                                sliceCanvas.height = srcSliceH;
-                                const ctx = sliceCanvas.getContext('2d')!;
-                                ctx.drawImage(canvas, 0, srcY, canvas.width, srcSliceH, 0, 0, canvas.width, srcSliceH);
-                                const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.90);
-                                pdf.addImage(sliceData, 'JPEG', 0, 0, imgW, sliceH);
-                                yPos += pageH;
-                              }
-                              pdf.save(`${proj.name || 'project'}-cost-report.pdf`);
+                            onClick={() => {
+                              const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
+                              const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3.7);
+                              const customs2 = Number((customProjectLiveParams || proj.params)?.customsPercent || 12) / 100;
+                              const initPrices: Record<string, number> = {};
+                              (proj.products || []).forEach((pr: any, i: number) => {
+                                const f2 = Number(pr.unitPriceUSD) * rate2;
+                                const s2 = totals.shippingPerCBM * Number(pr.cbm);
+                                const landedUnit = f2 + s2 + (f2 * customs2) + totals.overheadPerUnit;
+                                initPrices[`${i}`] = Math.round(landedUnit * margin2);
+                              });
+                              setPdfExportModal({ proj, totals, type: 'internal', editablePrices: initPrices });
                             }}
                             className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
                           >
@@ -5214,6 +5198,277 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* PDF EXPORT MODAL */}
+      {pdfExportModal && (() => {
+        const { proj, totals, type, editablePrices } = pdfExportModal;
+        const isCustomer = type === 'customer';
+        const totalSalePrice = Object.values(editablePrices).reduce((s, v) => s + Number(v), 0);
+
+        const generatePDF = async () => {
+          const elId = isCustomer ? 'pdf-customer-doc' : 'pdf-internal-doc';
+          const el = document.getElementById(elId);
+          if (!el) return;
+          const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+          const pdf = new jsPDF('p', 'mm', 'a4');
+          const pageW = pdf.internal.pageSize.getWidth();
+          const pageH = pdf.internal.pageSize.getHeight();
+          const imgW = pageW;
+          const imgH = (canvas.height * imgW) / canvas.width;
+          let yPos = 0;
+          while (yPos < imgH) {
+            if (yPos > 0) pdf.addPage();
+            const srcY = (yPos / imgH) * canvas.height;
+            const sliceH = Math.min(pageH, imgH - yPos);
+            const srcSliceH = (sliceH / imgH) * canvas.height;
+            const sliceCanvas = document.createElement('canvas');
+            sliceCanvas.width = canvas.width;
+            sliceCanvas.height = Math.max(1, Math.round(srcSliceH));
+            const ctx = sliceCanvas.getContext('2d')!;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+            ctx.drawImage(canvas, 0, Math.round(srcY), canvas.width, Math.round(srcSliceH), 0, 0, canvas.width, Math.round(srcSliceH));
+            pdf.addImage(sliceCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, imgW, sliceH);
+            yPos += pageH;
+          }
+          const suffix = isCustomer ? 'quote' : 'internal';
+          pdf.save(`${proj.name || 'project'}-${suffix}.pdf`);
+          setPdfExportModal(null);
+        };
+
+        const rate2 = Number(proj.params?.exchangeRate || 3.7);
+        const customs2 = Number(proj.params?.customsPercent || 12) / 100;
+
+        return (
+          <div className="fixed inset-0 z-[125] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl my-4">
+              {/* Header */}
+              <div className="p-5 border-b flex justify-between items-center rounded-t-2xl bg-slate-800">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Download className="w-5 h-5 text-indigo-300"/> הכנת PDF — {proj.name}
+                </h3>
+                <button onClick={() => setPdfExportModal(null)} className="text-slate-400 hover:text-white"><X className="w-5 h-5"/></button>
+              </div>
+
+              <div className="p-6 space-y-5">
+                {/* Type toggle */}
+                <div>
+                  <p className="text-sm font-bold text-slate-700 mb-2">סוג מסמך</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => setPdfExportModal({...pdfExportModal, type: 'internal'})}
+                      className={`p-4 rounded-xl border-2 text-right transition-all ${!isCustomer ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${!isCustomer ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300'}`}>
+                          {!isCustomer && <div className="w-2 h-2 bg-white rounded-full"/>}
+                        </div>
+                        <span className="font-bold text-sm text-slate-800">🔒 מסמך פנימי</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mr-6">עלויות מלאות + מחיר מכירה</p>
+                    </button>
+                    <button
+                      onClick={() => setPdfExportModal({...pdfExportModal, type: 'customer'})}
+                      className={`p-4 rounded-xl border-2 text-right transition-all ${isCustomer ? 'border-green-500 bg-green-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${isCustomer ? 'border-green-500 bg-green-500' : 'border-slate-300'}`}>
+                          {isCustomer && <div className="w-2 h-2 bg-white rounded-full"/>}
+                        </div>
+                        <span className="font-bold text-sm text-slate-800">📋 הצעת מחיר ללקוח</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mr-6">מוצרים + מחיר מכירה בלבד</p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Editable prices table */}
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <p className="text-sm font-bold text-slate-700">עריכת מחיר מכירה לפריט</p>
+                    <p className="text-xs text-slate-500">סה"כ: <span className="font-bold text-green-700">₪{Math.round(totalSalePrice).toLocaleString()}</span></p>
+                  </div>
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-right text-xs font-medium text-slate-500">מוצר</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-slate-500">כמות</th>
+                          {!isCustomer && <th className="px-3 py-2 text-center text-xs font-medium text-slate-500">Landed ₪ ליח'</th>}
+                          <th className="px-3 py-2 text-center text-xs font-medium text-green-600">מחיר מכירה ₪ ליח'</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-green-600">סה"כ ₪</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(proj.products || []).map((pr: any, i: number) => {
+                          const f2 = Number(pr.unitPriceUSD) * rate2;
+                          const s2 = totals.shippingPerCBM * Number(pr.cbm);
+                          const landedUnit = Math.round(f2 + s2 + (f2 * customs2) + totals.overheadPerUnit);
+                          const saleUnit = Number(editablePrices[`${i}`] || 0);
+                          const saleTotal = saleUnit * Number(pr.qty);
+                          return (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="px-3 py-2">
+                                <p className="font-medium text-slate-800 text-xs">{pr.itemHe}</p>
+                                <p className="text-[10px] text-slate-400">{pr.id}</p>
+                              </td>
+                              <td className="px-3 py-2 text-center text-xs font-bold text-slate-700">{pr.qty}</td>
+                              {!isCustomer && <td className="px-3 py-2 text-center text-xs text-purple-600 font-medium">₪{landedUnit.toLocaleString()}</td>}
+                              <td className="px-3 py-2 text-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="10"
+                                  className="w-24 text-xs border border-green-300 rounded-lg px-2 py-1 text-center font-bold text-green-700 bg-green-50 outline-none focus:border-green-500 focus:ring-1 focus:ring-green-300"
+                                  value={saleUnit}
+                                  onChange={e => setPdfExportModal({
+                                    ...pdfExportModal,
+                                    editablePrices: { ...editablePrices, [`${i}`]: Number(e.target.value) }
+                                  })}
+                                />
+                              </td>
+                              <td className="px-3 py-2 text-center text-xs font-black text-green-700">₪{Math.round(saleTotal).toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-2 border-t">
+                  <button onClick={generatePDF} className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-md">
+                    <Download className="w-4 h-4"/>
+                    {isCustomer ? 'הפק הצעת מחיר ללקוח' : 'הפק מסמך פנימי'}
+                  </button>
+                  <button onClick={() => setPdfExportModal(null)} className="px-6 py-3 bg-white border border-slate-300 text-slate-700 rounded-xl font-medium hover:bg-slate-50">ביטול</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Hidden internal PDF */}
+            <div id="pdf-internal-doc" style={{position:'absolute',left:'-9999px',top:0,width:'820px',background:'white',padding:'36px',direction:'rtl',fontFamily:'Arial,sans-serif'}}>
+              <div style={{borderBottom:'3px solid #4f46e5',paddingBottom:'12px',marginBottom:'20px'}}>
+                <h1 style={{fontSize:'22px',fontWeight:'900',color:'#1e1b4b',margin:'0 0 4px'}}>{proj.name}</h1>
+                <div style={{display:'flex',gap:'24px',fontSize:'12px',color:'#64748b'}}>
+                  {proj.clientName && <span>לקוח: {proj.clientName}</span>}
+                  <span>תאריך: {proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</span>
+                  <span style={{color:'#7c3aed',fontWeight:'bold'}}>מסמך פנימי</span>
+                </div>
+              </div>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'11px',marginBottom:'20px'}}>
+                <thead>
+                  <tr style={{background:'#f8fafc'}}>
+                    {['ID','מוצר','כמות','מחיר $','CBM','Landed ₪ ליח\'','Landed ₪ סה"כ','מכירה ₪ ליח\'','מכירה ₪ סה"כ'].map(h=>(
+                      <th key={h} style={{padding:'7px 8px',textAlign:'right',border:'1px solid #e2e8f0',color:'#475569',fontWeight:'600'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(proj.products||[]).map((pr:any,i:number)=>{
+                    const f2=Number(pr.unitPriceUSD)*rate2; const s2=totals.shippingPerCBM*Number(pr.cbm);
+                    const landedU=Math.round(f2+s2+(f2*customs2)+totals.overheadPerUnit);
+                    const landedT=landedU*Number(pr.qty);
+                    const saleU=Number(editablePrices[`${i}`]||0);
+                    const saleT=Math.round(saleU*Number(pr.qty));
+                    return (
+                      <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#fafafa'}}>
+                        <td style={{padding:'6px 8px',color:'#94a3b8',fontSize:'10px'}}>{pr.id}</td>
+                        <td style={{padding:'6px 8px',fontWeight:'bold',color:'#1e293b'}}>{pr.itemHe}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center'}}>{pr.qty}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',color:'#64748b'}}>{Number(pr.cbm).toFixed(3)}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',color:'#7c3aed'}}>₪{landedU.toLocaleString()}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',color:'#7c3aed',fontWeight:'bold'}}>₪{landedT.toLocaleString()}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',color:'#16a34a'}}>₪{saleU.toLocaleString()}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',color:'#16a34a',fontWeight:'bold'}}>₪{saleT.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{background:'#f1f5f9',fontWeight:'bold'}}>
+                    <td colSpan={2} style={{padding:'8px',fontSize:'12px'}}>סה"כ</td>
+                    <td style={{padding:'8px',textAlign:'center'}}>{totals.totalQty}</td>
+                    <td style={{padding:'8px',textAlign:'center'}}>${Math.round(totals.totalFactoryUSD).toLocaleString()}</td>
+                    <td style={{padding:'8px',textAlign:'center'}}>{totals.totalCBM.toFixed(3)}</td>
+                    <td colSpan={2} style={{padding:'8px',textAlign:'center',color:'#7c3aed'}}>₪{Math.round(totals.totalCostILS).toLocaleString()}</td>
+                    <td colSpan={2} style={{padding:'8px',textAlign:'center',color:'#16a34a'}}>₪{Math.round(totalSalePrice).toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              </table>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'16px',fontSize:'11px'}}>
+                {[['עלות מפעל',`₪${Math.round(totals.totalFactoryILS).toLocaleString()}`],['שילוח',`₪${Math.round(totals.containerShippingILS).toLocaleString()}`],['מכס',`₪${Math.round(totals.customsILS).toLocaleString()}`],['נמל',`₪${Math.round(totals.portFeesILS).toLocaleString()}`],['הובלה',`₪${Math.round(totals.localTransportILS).toLocaleString()}`],['התקנה',`₪${Math.round(totals.installationILS).toLocaleString()}`]].map(([l,v])=>(
+                  <div key={l} style={{background:'#f8fafc',padding:'8px 12px',borderRadius:'8px',display:'flex',justifyContent:'space-between',border:'1px solid #e2e8f0'}}><span style={{color:'#64748b'}}>{l}</span><span style={{fontWeight:'bold'}}>{v}</span></div>
+                ))}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',fontSize:'13px'}}>
+                <div style={{padding:'14px 16px',background:'#f5f3ff',borderRadius:'10px',border:'1px solid #ddd6fe'}}>
+                  <p style={{color:'#7c3aed',fontSize:'11px',margin:'0 0 4px'}}>עלות כוללת</p>
+                  <p style={{fontSize:'24px',fontWeight:'900',color:'#6d28d9',margin:0}}>₪{Math.round(totals.totalCostILS).toLocaleString()}</p>
+                </div>
+                <div style={{padding:'14px 16px',background:'#f0fdf4',borderRadius:'10px',border:'1px solid #bbf7d0'}}>
+                  <p style={{color:'#16a34a',fontSize:'11px',margin:'0 0 4px'}}>מחיר מכירה / רווח</p>
+                  <p style={{fontSize:'24px',fontWeight:'900',color:'#15803d',margin:'0 0 4px'}}>₪{Math.round(totalSalePrice).toLocaleString()}</p>
+                  <p style={{fontSize:'11px',color:'#64748b',margin:0}}>רווח: ₪{Math.round(totalSalePrice - totals.totalCostILS).toLocaleString()}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Hidden customer PDF */}
+            <div id="pdf-customer-doc" style={{position:'absolute',left:'-9999px',top:0,width:'820px',background:'white',padding:'36px',direction:'rtl',fontFamily:'Arial,sans-serif'}}>
+              <div style={{borderBottom:'3px solid #16a34a',paddingBottom:'12px',marginBottom:'20px',display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
+                <div>
+                  <h1 style={{fontSize:'22px',fontWeight:'900',color:'#1e293b',margin:'0 0 4px'}}>הצעת מחיר</h1>
+                  <p style={{fontSize:'16px',color:'#475569',margin:'0 0 6px'}}>{proj.name}</p>
+                  <div style={{display:'flex',gap:'20px',fontSize:'12px',color:'#94a3b8'}}>
+                    {proj.clientName && <span>לכבוד: <strong style={{color:'#1e293b'}}>{proj.clientName}</strong></span>}
+                    <span>תאריך: {proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</span>
+                  </div>
+                </div>
+                <div style={{textAlign:'left',fontSize:'12px',color:'#94a3b8'}}>
+                  <p style={{margin:'0 0 2px',fontWeight:'bold',color:'#1e293b'}}>DS Logistics</p>
+                  <p style={{margin:0}}>DSLogistics69@gmail.com</p>
+                </div>
+              </div>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',marginBottom:'24px'}}>
+                <thead>
+                  <tr style={{background:'#f0fdf4'}}>
+                    {['#','מוצר','גודל','כמות','מחיר ליחידה ₪','סה"כ ₪'].map(h=>(
+                      <th key={h} style={{padding:'10px 10px',textAlign:'right',border:'1px solid #d1fae5',color:'#166534',fontWeight:'700'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(proj.products||[]).map((pr:any,i:number)=>{
+                    const saleU=Number(editablePrices[`${i}`]||0);
+                    const saleT=Math.round(saleU*Number(pr.qty));
+                    const sz2=pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'';
+                    return (
+                      <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#f9fafb'}}>
+                        <td style={{padding:'9px 10px',color:'#94a3b8',fontSize:'11px'}}>{i+1}</td>
+                        <td style={{padding:'9px 10px',fontWeight:'bold',color:'#1e293b'}}>{pr.itemHe}</td>
+                        <td style={{padding:'9px 10px',color:'#64748b',fontSize:'11px'}}>{sz2}</td>
+                        <td style={{padding:'9px 10px',textAlign:'center',fontWeight:'bold'}}>{pr.qty}</td>
+                        <td style={{padding:'9px 10px',textAlign:'center',color:'#15803d',fontWeight:'bold'}}>₪{saleU.toLocaleString()}</td>
+                        <td style={{padding:'9px 10px',textAlign:'center',color:'#15803d',fontWeight:'900',fontSize:'13px'}}>₪{saleT.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{background:'#f0fdf4',fontWeight:'bold'}}>
+                    <td colSpan={4} style={{padding:'12px 10px',fontSize:'13px',fontWeight:'bold',color:'#166534'}}>סה"כ לתשלום</td>
+                    <td colSpan={2} style={{padding:'12px 10px',textAlign:'center',fontSize:'18px',fontWeight:'900',color:'#15803d'}}>₪{Math.round(totalSalePrice).toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              </table>
+              <p style={{fontSize:'11px',color:'#94a3b8',textAlign:'center',borderTop:'1px solid #e2e8f0',paddingTop:'12px',margin:0}}>הצעת מחיר זו תקפה ל-30 יום ממועד הנפקתה · DS Logistics · DSLogistics69@gmail.com</p>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* CUSTOM PROJECT MODAL */}
       {isCustomProjectModalOpen && (
