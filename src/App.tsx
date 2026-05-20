@@ -5306,33 +5306,193 @@ export default function App() {
         const totalSalePrice = Object.values(editablePrices).reduce((s, v) => s + Number(v), 0);
 
         const generatePDF = async () => {
-          const elId = isCustomer ? 'pdf-customer-doc' : 'pdf-internal-doc';
-          const el = document.getElementById(elId);
-          if (!el) return;
-          const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
-          const pdf = new jsPDF('p', 'mm', 'a4');
-          const pageW = pdf.internal.pageSize.getWidth();
-          const pageH = pdf.internal.pageSize.getHeight();
-          const imgW = pageW;
-          const imgH = (canvas.height * imgW) / canvas.width;
-          let yPos = 0;
-          while (yPos < imgH) {
-            if (yPos > 0) pdf.addPage();
-            const srcY = (yPos / imgH) * canvas.height;
-            const sliceH = Math.min(pageH, imgH - yPos);
-            const srcSliceH = (sliceH / imgH) * canvas.height;
-            const sliceCanvas = document.createElement('canvas');
-            sliceCanvas.width = canvas.width;
-            sliceCanvas.height = Math.max(1, Math.round(srcSliceH));
-            const ctx = sliceCanvas.getContext('2d')!;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
-            ctx.drawImage(canvas, 0, Math.round(srcY), canvas.width, Math.round(srcSliceH), 0, 0, canvas.width, Math.round(srcSliceH));
-            pdf.addImage(sliceCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, imgW, sliceH);
-            yPos += pageH;
+          if (isCustomer) {
+            // ============================================================
+            // הצעת מחיר ללקוח — jsPDF native (ללא html2canvas → ללא חיתוך)
+            // ============================================================
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const PW = pdf.internal.pageSize.getWidth();   // 210
+            const PH = pdf.internal.pageSize.getHeight();  // 297
+            const ML = 14; // margin left
+            const MR = 14; // margin right
+            const CW = PW - ML - MR; // content width
+            let Y = 0;
+
+            const addPage = () => {
+              pdf.addPage();
+              Y = 20;
+              // Footer on every page
+              pdf.setFontSize(8); pdf.setTextColor(180,180,180);
+              pdf.text('DS Logistics · DSLogistics69@gmail.com · הצעת מחיר זו תקפה ל-30 יום', PW/2, PH-8, {align:'center'});
+            };
+            const checkY = (needed: number) => { if (Y + needed > PH - 20) addPage(); };
+
+            // ── Header ──
+            // Green bar at top
+            pdf.setFillColor(22, 163, 74);
+            pdf.rect(0, 0, PW, 22, 'F');
+
+            // Logo
+            const logoUrl = settings?.companyLogoUrl;
+            if (logoUrl) {
+              try {
+                const imgType = logoUrl.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+                pdf.addImage(logoUrl, imgType, ML, 2, 18, 18);
+              } catch {}
+            }
+
+            // Title in header
+            pdf.setFontSize(14); pdf.setFont('helvetica','bold'); pdf.setTextColor(255,255,255);
+            pdf.text('הצעת מחיר', PW - ML, 10, {align:'right'});
+            pdf.setFontSize(9); pdf.setFont('helvetica','normal');
+            pdf.text('PRICE QUOTATION', PW - ML, 16, {align:'right'});
+
+            Y = 30;
+
+            // Project info block
+            pdf.setTextColor(30,41,59); pdf.setFontSize(13); pdf.setFont('helvetica','bold');
+            pdf.text(proj.name || '', PW - ML, Y, {align:'right'});
+            Y += 7;
+
+            if (proj.clientName) {
+              pdf.setFontSize(10); pdf.setFont('helvetica','normal'); pdf.setTextColor(71,85,105);
+              pdf.text(`לכבוד: ${proj.clientName}`, PW - ML, Y, {align:'right'});
+              Y += 5;
+            }
+
+            const dateStr = proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : new Date().toLocaleDateString('he-IL');
+            pdf.setFontSize(9); pdf.setTextColor(148,163,184);
+            pdf.text(`תאריך: ${dateStr}`, PW - ML, Y, {align:'right'});
+            Y += 10;
+
+            // Divider
+            pdf.setDrawColor(22,163,74); pdf.setLineWidth(0.5);
+            pdf.line(ML, Y, PW - MR, Y);
+            Y += 8;
+
+            // ── Table ──
+            const products = proj.products || [];
+            // Columns: # | ID | מוצר | גודל | כמות | מחיר ליח' ₪ | סה"כ ₪
+            const colWidths = [8, 18, 68, 28, 14, 28, 28]; // total = 192 ≈ CW
+            const colLabels = ['#', 'ID', 'מוצר', 'גודל', 'כמות', 'מחיר ליח\' ₪', 'סה"כ ₪'];
+            const colX: number[] = [];
+            let cx = ML;
+            for (const w of colWidths) { colX.push(cx); cx += w; }
+            const ROW_H = 10;
+            const HEAD_H = 8;
+
+            // Table header
+            pdf.setFillColor(240, 253, 244);
+            pdf.rect(ML, Y, CW, HEAD_H, 'F');
+            pdf.setDrawColor(209,250,229); pdf.setLineWidth(0.3);
+            pdf.rect(ML, Y, CW, HEAD_H, 'S');
+            pdf.setFontSize(8); pdf.setFont('helvetica','bold'); pdf.setTextColor(22,101,52);
+            colLabels.forEach((label, ci) => {
+              const xPos = ci === 0 ? colX[ci] + 2 : colX[ci] + colWidths[ci] - 2;
+              const align = ci === 0 ? 'left' : 'right';
+              pdf.text(label, xPos, Y + 5.5, {align});
+            });
+            Y += HEAD_H;
+
+            // Rows
+            let grandTotal = 0;
+            products.forEach((pr: any, i: number) => {
+              checkY(ROW_H + 2);
+              const saleU = Number(editablePrices[`${i}`] || 0);
+              const saleT = Math.round(saleU * Number(pr.qty));
+              grandTotal += saleT;
+              const sz = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim() || '';
+
+              const bg = i % 2 === 0 ? [255,255,255] : [249,250,251];
+              pdf.setFillColor(bg[0], bg[1], bg[2]);
+              pdf.rect(ML, Y, CW, ROW_H, 'F');
+              pdf.setDrawColor(226,232,240); pdf.setLineWidth(0.2);
+              pdf.line(ML, Y + ROW_H, ML + CW, Y + ROW_H);
+
+              pdf.setFontSize(8); pdf.setFont('helvetica','normal'); pdf.setTextColor(30,41,59);
+              const rowData = [
+                String(i+1),
+                String(pr.id || ''),
+                pr.itemHe || '',
+                sz,
+                String(pr.qty),
+                `₪${saleU.toLocaleString()}`,
+                `₪${saleT.toLocaleString()}`,
+              ];
+              rowData.forEach((val, ci) => {
+                // Truncate long text
+                const maxW = colWidths[ci] - 4;
+                let displayVal = val;
+                if (ci === 2) { // Product name - might be long
+                  while (pdf.getTextWidth(displayVal) > maxW && displayVal.length > 3) {
+                    displayVal = displayVal.slice(0, -1);
+                  }
+                  if (displayVal !== val) displayVal += '…';
+                }
+                if (ci === 5 || ci === 6) { pdf.setFont('helvetica','bold'); pdf.setTextColor(21,128,61); }
+                else { pdf.setFont('helvetica','normal'); pdf.setTextColor(30,41,59); }
+                const xPos = ci === 0 ? colX[ci] + 2 : colX[ci] + colWidths[ci] - 2;
+                const align = ci === 0 ? 'left' : 'right';
+                pdf.text(displayVal, xPos, Y + 6.5, {align});
+              });
+              Y += ROW_H;
+            });
+
+            // Grand total row
+            checkY(12);
+            pdf.setFillColor(240,253,244);
+            pdf.rect(ML, Y, CW, 12, 'F');
+            pdf.setDrawColor(22,163,74); pdf.setLineWidth(0.5);
+            pdf.rect(ML, Y, CW, 12, 'S');
+            pdf.setFontSize(10); pdf.setFont('helvetica','bold'); pdf.setTextColor(22,101,52);
+            pdf.text('סה"כ לתשלום:', PW - ML - 30, Y + 8, {align:'right'});
+            pdf.setFontSize(12);
+            pdf.text(`₪${grandTotal.toLocaleString()}`, PW - ML, Y + 8, {align:'right'});
+            Y += 20;
+
+            // ── Footer notes ──
+            checkY(20);
+            pdf.setFontSize(8); pdf.setTextColor(148,163,184);
+            pdf.text('* מחירים כוללים מע"מ בהתאם לדין · התשלום בהתאם לתנאים המוסכמים', PW - ML, Y, {align:'right'});
+            Y += 5;
+
+            // Footer
+            pdf.setFontSize(8); pdf.setTextColor(180,180,180);
+            pdf.text('DS Logistics · DSLogistics69@gmail.com · הצעת מחיר זו תקפה ל-30 יום', PW/2, PH-8, {align:'center'});
+
+            pdf.save(`${proj.name || 'project'}-quote.pdf`);
+
+          } else {
+            // ============================================================
+            // מסמך פנימי — html2canvas (מציג כל העלויות)
+            // ============================================================
+            const el = document.getElementById('pdf-internal-doc');
+            if (!el) return;
+            const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+            const pdf2 = new jsPDF('p', 'mm', 'a4');
+            const pageW2 = pdf2.internal.pageSize.getWidth();
+            const pageH2 = pdf2.internal.pageSize.getHeight();
+            const imgW2 = pageW2;
+            const imgH2 = (canvas.height * imgW2) / canvas.width;
+            let yPos2 = 0;
+            while (yPos2 < imgH2) {
+              if (yPos2 > 0) pdf2.addPage();
+              const srcY2 = (yPos2 / imgH2) * canvas.height;
+              const sliceH2 = Math.min(pageH2, imgH2 - yPos2);
+              const srcSliceH2 = (sliceH2 / imgH2) * canvas.height;
+              const sliceCanvas2 = document.createElement('canvas');
+              sliceCanvas2.width = canvas.width;
+              sliceCanvas2.height = Math.max(1, Math.round(srcSliceH2));
+              const ctx2 = sliceCanvas2.getContext('2d')!;
+              ctx2.fillStyle = '#ffffff';
+              ctx2.fillRect(0, 0, sliceCanvas2.width, sliceCanvas2.height);
+              ctx2.drawImage(canvas, 0, Math.round(srcY2), canvas.width, Math.round(srcSliceH2), 0, 0, canvas.width, Math.round(srcSliceH2));
+              pdf2.addImage(sliceCanvas2.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, imgW2, sliceH2);
+              yPos2 += pageH2;
+            }
+            pdf2.save(`${proj.name || 'project'}-internal.pdf`);
           }
-          const suffix = isCustomer ? 'quote' : 'internal';
-          pdf.save(`${proj.name || 'project'}-${suffix}.pdf`);
+
           setPdfExportModal(null);
         };
 
