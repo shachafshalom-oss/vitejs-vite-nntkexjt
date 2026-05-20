@@ -5318,6 +5318,26 @@ export default function App() {
           const pageH = pdf.internal.pageSize.getHeight();
           const mmPerPx = pageW / canvas.width;
 
+          // Capture table header row as a separate canvas slice (for repeating on page 2+)
+          let headerCanvas: HTMLCanvasElement | null = null;
+          let headerHeightPx = 0;
+          if (isCustomer) {
+            const theadEl = el.querySelector('thead tr') as HTMLElement | null;
+            if (theadEl) {
+              const elRect = el.getBoundingClientRect();
+              const thRect = theadEl.getBoundingClientRect();
+              const topPx = Math.round((thRect.top - elRect.top) * (canvas.height / el.scrollHeight));
+              headerHeightPx = Math.round(thRect.height * (canvas.height / el.scrollHeight));
+              headerCanvas = document.createElement('canvas');
+              headerCanvas.width = canvas.width;
+              headerCanvas.height = headerHeightPx;
+              const hCtx = headerCanvas.getContext('2d')!;
+              hCtx.fillStyle = '#f0fdf4';
+              hCtx.fillRect(0, 0, headerCanvas.width, headerCanvas.height);
+              hCtx.drawImage(canvas, 0, topPx, canvas.width, headerHeightPx, 0, 0, canvas.width, headerHeightPx);
+            }
+          }
+
           // Build safe-break positions from actual DOM row positions
           const elRect = el.getBoundingClientRect();
           const domRows = Array.from(el.querySelectorAll('tr, h1, h2, tfoot'));
@@ -5331,11 +5351,16 @@ export default function App() {
 
           const pageHeightPx = Math.round(pageH / mmPerPx);
           let pageStartPx = 0;
+          let pageNum = 0;
 
           while (pageStartPx < canvas.height) {
-            if (pageStartPx > 0) pdf.addPage();
-            const maxEndPx = pageStartPx + pageHeightPx;
-            // Last safe break that fits within this page
+            if (pageNum > 0) pdf.addPage();
+            const isFirstPage = pageNum === 0;
+            // On page 2+, reserve space at top for repeated header
+            const reservedForHeader = (!isFirstPage && headerCanvas) ? headerHeightPx : 0;
+            const availableHeightPx = pageHeightPx - reservedForHeader;
+
+            const maxEndPx = pageStartPx + availableHeightPx;
             let endPx = maxEndPx;
             for (let j = safeBreaks.length - 1; j >= 0; j--) {
               if (safeBreaks[j] > pageStartPx && safeBreaks[j] <= maxEndPx) {
@@ -5343,8 +5368,15 @@ export default function App() {
                 break;
               }
             }
-            if (endPx <= pageStartPx) endPx = maxEndPx; // fallback
+            if (endPx <= pageStartPx) endPx = maxEndPx;
 
+            // Draw header on page 2+
+            if (!isFirstPage && headerCanvas) {
+              const headerMm = headerHeightPx * mmPerPx;
+              pdf.addImage(headerCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageW, headerMm);
+            }
+
+            const yOffsetMm = (!isFirstPage && headerCanvas) ? (headerHeightPx * mmPerPx) : 0;
             const sliceHPx = endPx - pageStartPx;
             const sliceHMm = sliceHPx * mmPerPx;
             const slice = document.createElement('canvas');
@@ -5354,8 +5386,10 @@ export default function App() {
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, slice.width, slice.height);
             ctx.drawImage(canvas, 0, pageStartPx, canvas.width, sliceHPx, 0, 0, canvas.width, sliceHPx);
-            pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, pageW, sliceHMm);
+            pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', 0, yOffsetMm, pageW, sliceHMm);
+
             pageStartPx = endPx;
+            pageNum++;
           }
 
           const suffix = isCustomer ? 'quote' : 'internal';
@@ -5564,27 +5598,32 @@ export default function App() {
 
             {/* Hidden customer PDF */}
             <div id="pdf-customer-doc" style={{position:'absolute',left:'-9999px',top:0,width:'820px',background:'white',padding:'36px',direction:'rtl',fontFamily:'Arial,sans-serif'}}>
-              <div style={{borderBottom:'3px solid #16a34a',paddingBottom:'12px',marginBottom:'20px',display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
-                <div style={{display:'flex',alignItems:'center',gap:'14px'}}>
-                  {settings?.companyLogoUrl && (
-                    <img src={settings.companyLogoUrl} alt="לוגו" style={{height:'56px',width:'auto',objectFit:'contain'}} crossOrigin="anonymous"/>
-                  )}
-                  <div>
-                    <h1 style={{fontSize:'22px',fontWeight:'900',color:'#1e293b',margin:'0 0 4px'}}>הצעת מחיר</h1>
-                    <p style={{fontSize:'16px',color:'#475569',margin:'0 0 6px'}}>{proj.name}</p>
-                    <div style={{display:'flex',gap:'20px',fontSize:'12px',color:'#94a3b8'}}>
-                      {proj.clientName && <span>לכבוד: <strong style={{color:'#1e293b'}}>{proj.clientName}</strong></span>}
-                      <span>תאריך: {proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</span>
-                    </div>
+              {/* Header: logo right, title+project centered, company info left */}
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',borderBottom:'3px solid #16a34a',paddingBottom:'16px',marginBottom:'22px'}}>
+                {/* RIGHT: logo */}
+                <div style={{flexShrink:0,minWidth:'80px'}}>
+                  {settings?.companyLogoUrl ? (
+                    <img src={settings.companyLogoUrl} alt="לוגו" style={{height:'72px',width:'auto',objectFit:'contain'}} crossOrigin="anonymous"/>
+                  ) : <div style={{width:'72px'}}/>}
+                </div>
+                {/* CENTER: title + project name */}
+                <div style={{flex:1,textAlign:'center',padding:'0 24px'}}>
+                  <h1 style={{fontSize:'28px',fontWeight:'900',color:'#166534',margin:'0 0 6px',letterSpacing:'-0.5px'}}>הצעת מחיר</h1>
+                  <p style={{fontSize:'18px',fontWeight:'700',color:'#1e293b',margin:'0 0 6px'}}>{proj.name}</p>
+                  <div style={{display:'flex',justifyContent:'center',gap:'20px',fontSize:'12px',color:'#94a3b8'}}>
+                    {proj.clientName && <span>לכבוד: <strong style={{color:'#475569'}}>{proj.clientName}</strong></span>}
+                    <span>תאריך: {proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</span>
                   </div>
                 </div>
-                <div style={{textAlign:'left',fontSize:'12px',color:'#94a3b8'}}>
+                {/* LEFT: company info */}
+                <div style={{flexShrink:0,minWidth:'120px',textAlign:'left',fontSize:'11px',color:'#94a3b8'}}>
                   <p style={{margin:'0 0 2px',fontWeight:'bold',color:'#1e293b'}}>DS Logistics</p>
                   <p style={{margin:0}}>DSLogistics69@gmail.com</p>
                 </div>
               </div>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px',marginBottom:'24px'}}>
-                <thead>
+                {/* thead with display:table-header-group causes browser to repeat on each printed page */}
+                <thead style={{display:'table-header-group'}}>
                   <tr style={{background:'#f0fdf4'}}>
                     {['#','ID','מוצר','גודל','כמות','מחיר ליחידה ₪','סה"כ ₪'].map(h=>(
                       <th key={h} style={{padding:'10px 10px',textAlign:'right',border:'1px solid #d1fae5',color:'#166534',fontWeight:'700'}}>{h}</th>
