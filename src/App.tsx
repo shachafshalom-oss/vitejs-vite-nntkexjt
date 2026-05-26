@@ -303,7 +303,7 @@ export default function App() {
   const [isParsingExcel, setIsParsingExcel] = useState(false);
   const [customProjectLiveParams, setCustomProjectLiveParams] = useState<any>(null); // inline editing in detail view
   const [customProjectStatusFilter, setCustomProjectStatusFilter] = useState<string>('all');
-  const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>} | null>(null);
+  const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>, shippingInstallationCost: number} | null>(null);
   const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
   const [isSavingProducts, setIsSavingProducts] = useState(false);
   const [inlineSalePrices, setInlineSalePrices] = useState<Record<string, Record<string, number>>>({}); // projId -> {idx: price}
@@ -3686,7 +3686,7 @@ export default function App() {
                                   initPrices[`${i}`] = Math.round(landedUnit * margin2);
                                 }
                               });
-                              setPdfExportModal({ proj: {...proj, products}, totals, type: 'internal', editablePrices: initPrices });
+                              setPdfExportModal({ proj: {...proj, products}, totals, type: 'internal', editablePrices: initPrices, shippingInstallationCost: Number(proj.deliveryCost || 0) });
                             }}
                             className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
                           >
@@ -5329,7 +5329,7 @@ export default function App() {
 
       {/* PDF EXPORT MODAL */}
       {pdfExportModal && (() => {
-        const { proj, totals, type, editablePrices } = pdfExportModal;
+        const { proj, totals, type, editablePrices, shippingInstallationCost } = pdfExportModal;
         const isCustomer = type === 'customer';
         // CRITICAL: editablePrices stores price PER UNIT — must multiply by qty
         const totalSalePrice = (proj.products || []).reduce((s: number, pr: any, i: number) => {
@@ -5535,6 +5535,34 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Shipping & Installation cost */}
+                {isCustomer && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                    <p className="text-sm font-bold text-blue-800 mb-2">עלות הובלה והתקנה</p>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-slate-600 whitespace-nowrap">סכום לחיוב הלקוח:</span>
+                      <div className="relative flex-1">
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">₪</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="50"
+                          className="w-full border border-blue-300 rounded-lg pr-8 pl-3 py-2 text-sm font-bold text-blue-700 bg-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-300"
+                          value={shippingInstallationCost}
+                          onChange={e => setPdfExportModal({...pdfExportModal, shippingInstallationCost: Number(e.target.value)})}
+                          placeholder="0"
+                        />
+                      </div>
+                      {shippingInstallationCost > 0 && (
+                        <span className="text-xs text-blue-600 font-medium whitespace-nowrap">
+                          סה"כ כולל: ₪{Math.round(totalSalePrice + shippingInstallationCost).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1.5">תופיע כשורה נפרדת בהצעת המחיר ללקוח</p>
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex gap-3 pt-2 border-t">
                   <button onClick={generatePDF} className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-md">
@@ -5543,9 +5571,9 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
-                      await updateProjectField(proj.id, { salePriceOverrides: editablePrices });
+                      await updateProjectField(proj.id, { salePriceOverrides: editablePrices, deliveryCost: shippingInstallationCost });
                       setInlineSalePrices(prev => ({...prev, [proj.id]: editablePrices}));
-                      alert('✓ מחירי מכירה נשמרו לפרויקט');
+                      alert('✓ מחירי מכירה ועלות הובלה/התקנה נשמרו לפרויקט');
                     }}
                     className="px-4 py-3 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700 flex items-center gap-2 whitespace-nowrap"
                     title="שמור מחירי מכירה לצמיתות ב-Firestore"
@@ -5642,7 +5670,7 @@ export default function App() {
                   <p style={{fontSize:'18px',fontWeight:'700',color:'#1e293b',margin:'0 0 6px'}}>{proj.name}</p>
                   <div style={{display:'flex',justifyContent:'center',gap:'20px',fontSize:'12px',color:'#94a3b8'}}>
                     {proj.clientName && <span>לכבוד: <strong style={{color:'#475569'}}>{proj.clientName}</strong></span>}
-                    <span>תאריך: {proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</span>
+                    <span>תאריך: {new Date().toLocaleDateString('he-IL')}</span>
                   </div>
                 </div>
                 {/* LEFT: company info */}
@@ -5679,12 +5707,23 @@ export default function App() {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{background:'#f0fdf4',fontWeight:'bold',pageBreakInside:'avoid'}}>
-                    <td colSpan={5} style={{padding:'12px 10px',fontSize:'13px',fontWeight:'bold',color:'#166534'}}>סה"כ לתשלום</td>
-                    <td colSpan={2} style={{padding:'12px 10px',textAlign:'center',fontSize:'18px',fontWeight:'900',color:'#15803d'}}>₪{Math.round(totalSalePrice).toLocaleString()}</td>
+                  <tr style={{background:'#f8fafc',fontWeight:'bold',pageBreakInside:'avoid'}}>
+                    <td colSpan={5} style={{padding:'10px 10px',fontSize:'12px',fontWeight:'bold',color:'#475569'}}>סה"כ מוצרים לפני מע"מ</td>
+                    <td colSpan={2} style={{padding:'10px 10px',textAlign:'center',fontSize:'15px',fontWeight:'900',color:'#15803d'}}>₪{Math.round(totalSalePrice).toLocaleString()}</td>
+                  </tr>
+                  {Number(shippingInstallationCost) > 0 && (
+                    <tr style={{background:'#eff6ff',pageBreakInside:'avoid'}}>
+                      <td colSpan={5} style={{padding:'10px 10px',fontSize:'12px',fontWeight:'bold',color:'#1d4ed8'}}>הובלה והתקנה</td>
+                      <td colSpan={2} style={{padding:'10px 10px',textAlign:'center',fontSize:'15px',fontWeight:'900',color:'#1d4ed8'}}>₪{Math.round(Number(shippingInstallationCost)).toLocaleString()}</td>
+                    </tr>
+                  )}
+                  <tr style={{background:'#f0fdf4',fontWeight:'bold',pageBreakInside:'avoid',borderTop:'2px solid #16a34a'}}>
+                    <td colSpan={5} style={{padding:'12px 10px',fontSize:'14px',fontWeight:'bold',color:'#166534'}}>סה"כ לתשלום לפני מע"מ</td>
+                    <td colSpan={2} style={{padding:'12px 10px',textAlign:'center',fontSize:'20px',fontWeight:'900',color:'#15803d'}}>₪{Math.round(totalSalePrice + Number(shippingInstallationCost || 0)).toLocaleString()}</td>
                   </tr>
                 </tfoot>
               </table>
+              <p style={{fontSize:'11px',color:'#64748b',textAlign:'center',marginBottom:'4px',margin:'0 0 4px'}}>* המחירים אינם כוללים מע"מ</p>
               <p style={{fontSize:'11px',color:'#94a3b8',textAlign:'center',borderTop:'1px solid #e2e8f0',paddingTop:'12px',margin:0}}>הצעת מחיר זו תקפה ל-30 יום ממועד הנפקתה · DS Logistics · DSLogistics69@gmail.com</p>
             </div>
           </div>
