@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -328,6 +328,10 @@ export default function App() {
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importCampaignId, setImportCampaignId] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ created: number; skipped: number; errors: string[] } | null>(null);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isCustomerOverviewOpen, setIsCustomerOverviewOpen] = useState(false);
@@ -1238,6 +1242,87 @@ export default function App() {
       setIsCampaignModalOpen(false);
     } catch (err) { alert("שגיאה בשמירה"); }
     setIsSaving(false);
+  };
+
+  // ── ייבוא לידים מפייסבוק (XLS/XML) ──────────────────────────────────────
+  const handleFbLeadsImport = async (file: File, campaignId: string) => {
+    setIsImporting(true);
+    setImportResult(null);
+    const result = { created: 0, skipped: 0, errors: [] as string[] };
+
+    try {
+      // 1. קריאת הקובץ
+      const text = await file.text();
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(text, 'text/xml');
+      const ns = 'urn:schemas-microsoft-com:office:spreadsheet';
+      const rows = Array.from(xmlDoc.getElementsByTagNameNS(ns, 'Row'));
+      if (rows.length < 2) throw new Error('הקובץ ריק או לא תקין');
+
+      // 2. כותרות
+      const getCell = (row: Element) =>
+        Array.from(row.getElementsByTagNameNS(ns, 'Data')).map(d => d.textContent || '');
+      const headers = getCell(rows[0]);
+      const idx = (name: string) => headers.indexOf(name);
+
+      // 3. שליפת טלפונים קיימים
+      const existingSnap = await getDocs(collection(db, 'crm_customers'));
+      const existingPhones = new Set(existingSnap.docs.map(d => (d.data().phone || '').replace(/^\+972/, '0').replace(/\s/g, '')));
+
+      // 4. ייבוא
+      const dataRows = rows.slice(1);
+      let agentIndex = 0;
+
+      for (const row of dataRows) {
+        const cells = getCell(row);
+        const rawPhone  = (cells[idx('phone')] || '').trim();
+        const fullName  = (cells[idx('full_name')] || '').trim();
+        const email     = (cells[idx('email')] || '').trim();
+        const createdAt = (cells[idx('created_time')] || new Date().toISOString()).trim();
+
+        if (!rawPhone && !fullName) continue; // שורה ריקה
+
+        // נרמול טלפון: +972X → 0X
+        const phone = rawPhone.replace(/^\+972/, '0').replace(/\s/g, '');
+
+        // בדיקת כפילות
+        if (existingPhones.has(phone)) {
+          result.skipped++;
+          continue;
+        }
+        existingPhones.add(phone); // מניעת כפל בתוך הייבוא עצמו
+
+        // שיוך נציג round-robin מ-AGENTS
+        const assignedTo = AGENTS[agentIndex % AGENTS.length].email;
+        agentIndex++;
+
+        try {
+          await addDoc(collection(db, 'crm_customers'), {
+            contactName:   fullName,
+            businessName:  fullName,
+            phone,
+            email,
+            status:        'lead',
+            leadStage:     'new',
+            businessType:  'bar',
+            source:        'facebook',
+            campaignId:    campaignId || '',
+            assignedTo,
+            createdAt,
+            updatedAt:     new Date().toISOString(),
+            interactionLogs: [],
+          });
+          result.created++;
+        } catch (err: any) {
+          result.errors.push(`${fullName}: ${err.message}`);
+        }
+      }
+    } catch (err: any) {
+      result.errors.push(err.message || 'שגיאה לא ידועה');
+    }
+
+    setImportResult(result);
+    setIsImporting(false);
   };
 
   const saveCustomer = async (e: any) => {
@@ -3841,6 +3926,12 @@ export default function App() {
                       <div className="flex justify-between"><span className="text-slate-500">ברים שנמכרו:</span> <span className="font-medium">{stat ? stat.itemCount : 0} יח'</span></div>
                       <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center"><span className="text-slate-500 font-medium">עלות לבר:</span> <span className="font-bold text-indigo-700 text-lg">₪{Math.round(costPerItem).toLocaleString()}</span></div>
                       <button onClick={() => handleGenerateAd(c.name)} className="mt-4 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> צור מודעת שיווק AI ✨</button>
+                      <button
+                        onClick={() => { setImportCampaignId(c.id); setImportResult(null); setIsImportModalOpen(true); }}
+                        className="mt-2 w-full border border-green-200 bg-green-50 text-green-700 hover:bg-green-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"
+                      >
+                        <Upload className="w-3.5 h-3.5" /> ייבוא לידים מפייסבוק
+                      </button>
                     </div>
                   </div>
                 )
@@ -4183,6 +4274,69 @@ export default function App() {
       )}
 
       {/* CAMPAIGN ADD/EDIT MODAL */}
+      {/* ── מודל ייבוא לידים מפייסבוק ── */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4 border-b pb-3">
+              <h3 className="text-lg font-bold flex items-center gap-2">
+                <Upload className="w-5 h-5 text-green-600"/> ייבוא לידים מפייסבוק
+              </h3>
+              <button onClick={() => { setIsImportModalOpen(false); setImportResult(null); }} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+
+            {!importResult ? (
+              <div className="space-y-4">
+                <p className="text-sm text-slate-500">
+                  בחר קובץ XLS שיוצא מפייסבוק. הלידים ייווצרו עם סטטוס <strong>חדש</strong>, הטלפון יומר מ-+972 ל-05, והלידים יחולקו בין שחף ודניאל.
+                </p>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">קובץ XLS מפייסבוק</label>
+                  <input
+                    type="file"
+                    accept=".xls,.xlsx,.xml"
+                    disabled={isImporting}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) await handleFbLeadsImport(file, importCampaignId);
+                    }}
+                    className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-green-50 file:text-green-700 hover:file:bg-green-100 cursor-pointer border border-slate-200 rounded-md p-1"
+                  />
+                </div>
+                {isImporting && (
+                  <div className="flex items-center justify-center gap-3 py-4 text-slate-500 text-sm">
+                    <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin"/>
+                    מייבא לידים, אנא המתן...
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <CheckCircle className="w-5 h-5 text-green-600 shrink-0"/>
+                  <div>
+                    <p className="text-sm font-bold text-green-800">ייבוא הושלם</p>
+                    <p className="text-xs text-green-700">נוצרו {importResult.created} לידים · דולגו {importResult.skipped} כפילויות</p>
+                  </div>
+                </div>
+                {importResult.errors.length > 0 && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-xs font-bold text-red-700 mb-1">שגיאות ({importResult.errors.length}):</p>
+                    {importResult.errors.map((e, i) => <p key={i} className="text-xs text-red-600">{e}</p>)}
+                  </div>
+                )}
+                <button
+                  onClick={() => { setIsImportModalOpen(false); setImportResult(null); }}
+                  className="w-full bg-slate-800 text-white py-2.5 rounded-md text-sm font-bold hover:bg-slate-700"
+                >
+                  סגור
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {isCampaignModalOpen && editingData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
