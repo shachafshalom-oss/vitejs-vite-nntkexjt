@@ -85,6 +85,7 @@ const AGENTS = [
 const LEAD_STAGE_MAP: Record<string, string> = {
   'new': 'חדש',
   'contacted': 'יצירת קשר',
+  'callback': 'חזרה ללקוח',
   'quote_sent': 'הצעה נשלחה',
   'waiting': 'ממתין לתשובה',
   'not_relevant': 'לא רלוונטי',
@@ -92,6 +93,7 @@ const LEAD_STAGE_MAP: Record<string, string> = {
 const LEAD_STAGE_COLORS: Record<string, string> = {
   'new': 'bg-blue-100 text-blue-700',
   'contacted': 'bg-orange-100 text-orange-700',
+  'callback': 'bg-teal-100 text-teal-700',
   'quote_sent': 'bg-purple-100 text-purple-700',
   'waiting': 'bg-green-100 text-green-700',
   'not_relevant': 'bg-slate-100 text-slate-500',
@@ -151,7 +153,28 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
         <p style={{ margin: '3px 0' }}><strong>תאריך:</strong> {quote?.date ? new Date(quote.date).toLocaleDateString('he-IL') : '---'}</p>
       </div>
 
-      <div style={{ textAlign: 'center', fontSize: '22px', fontWeight: 'bold', textDecoration: 'underline', margin: '30px 0' }}>הסכם הזמנה – ד.ש. לוגיסטיקה</div>
+      <div style={{ textAlign: 'center', fontSize: '22px', fontWeight: 'bold', textDecoration: 'underline', margin: '30px 0 16px' }}>הסכם הזמנה – ד.ש. לוגיסטיקה</div>
+
+      {/* תוקף הצעה + זמינות מלאי */}
+      {(() => {
+        const validUntil = quote?.date ? (() => {
+          const d = new Date(quote.date);
+          d.setDate(d.getDate() + 10);
+          return d.toLocaleDateString('he-IL');
+        })() : null;
+        return (
+          <div style={{ background: 'rgba(201,16,40,0.07)', border: '1px solid #c91028', borderRadius: '6px', padding: '12px 16px', marginBottom: '20px', fontSize: '12.5px', lineHeight: '1.7' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px' }}>
+              <span style={{ fontWeight: 'bold', color: '#c91028', whiteSpace: 'nowrap' }}>⏱ תוקף ההצעה:</span>
+              <span>הצעת מחיר זו תקפה ל-<strong>10 ימים בלבד</strong> ממועד הפקתה{validUntil ? `, עד לתאריך: ${validUntil}` : ''}. לאחר מועד זה תידרש הצעת מחיר מעודכנת.</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+              <span style={{ fontWeight: 'bold', color: '#c91028', whiteSpace: 'nowrap' }}>📦 זמינות מלאי:</span>
+              <span>הצעת מחיר זו אינה מהווה הזמנה מחייבת ואינה משריינת את המוצרים המפורטים עבור הלקוח — המוצרים עומדים למכירה לכל דורש. לאחר קבלת הסכמה מפורשת מצד הלקוח לסגירת העסקה, יישמרו המוצרים לטובתו לתקופה של <strong>יום עסקים אחד (1) בלבד</strong> ממועד ההסכמה, בכפוף לתשלום מלא. בהיעדר תשלום בפרק הזמן האמור, שומרת ד.ש. לוגיסטיקה לעצמה את הזכות למכור את המוצר לגורם אחר ללא כל התחייבות. תנאי תשלום שונים יחולו רק אם הוסכם עליהם במפורש בכתב.</span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Sections */}
       <div style={{ fontSize: '13.5px', lineHeight: '1.4', textAlign: 'justify' }}>
@@ -190,6 +213,28 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
         <div style={{ marginTop: '15px', fontWeight: 'bold', fontSize: '15px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
             סה"כ לתשלום לפני מע"מ: {grandTotal.toLocaleString()} ש"ח<br/>
             סה"כ לתשלום כולל מע"מ (18%): {(grandTotal * 1.18).toLocaleString()} ש"ח
+        </div>
+        {/* פרטי תשלום */}
+        <div style={{ marginTop: '14px', background: 'rgba(255,255,255,0.85)', border: '1px solid #c91028', borderRadius: '6px', padding: '12px 14px', fontSize: '12.5px' }}>
+          <div style={{ fontWeight: 'bold', color: '#c91028', marginBottom: '8px', fontSize: '13px' }}>אמצעי תשלום</div>
+          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: '180px' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '12px' }}>🏦 העברה בנקאית:</div>
+              <div style={{ lineHeight: '1.8', color: '#222' }}>
+                <span style={{ display: 'block' }}>בנק: בנק הבינלאומי</span>
+                <span style={{ display: 'block' }}>סניף: 065</span>
+                <span style={{ display: 'block' }}>מס' חשבון: 372264</span>
+                <span style={{ display: 'block' }}>שם בעל החשבון: ד.ש לוגיסטיקה</span>
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: '140px', borderRight: '1px solid #ddd', paddingRight: '20px' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '12px' }}>💳 אשראי:</div>
+              <div style={{ lineHeight: '1.8', color: '#222' }}>
+                <span style={{ display: 'block' }}>עד 3 תשלומים</span>
+                <span style={{ display: 'block', fontSize: '11px', color: '#666' }}>(ניתן לסיום בתיאום מול נציג)</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -273,6 +318,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('leads');
   const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
+  const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
+  const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   // Leads UI States
   const [assignDropdownId, setAssignDropdownId] = useState<string | null>(null);
   const [quickAssignInput, setQuickAssignInput] = useState('');
@@ -2265,7 +2312,7 @@ export default function App() {
                                 <span className="font-bold text-slate-700">{count}</span>
                               </div>
                               <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${k === 'new' ? 'bg-blue-400' : k === 'contacted' ? 'bg-orange-400' : k === 'quote_sent' ? 'bg-purple-400' : k === 'waiting' ? 'bg-green-400' : 'bg-slate-300'}`} style={{ width: pct + '%' }}/>
+                                <div className={`h-full rounded-full transition-all ${k === 'new' ? 'bg-blue-400' : k === 'contacted' ? 'bg-orange-400' : k === 'callback' ? 'bg-teal-400' : k === 'quote_sent' ? 'bg-purple-400' : k === 'waiting' ? 'bg-green-400' : 'bg-slate-300'}`} style={{ width: pct + '%' }}/>
                               </div>
                             </div>
                           );
@@ -3098,12 +3145,17 @@ export default function App() {
             {/* ===== LEADS TAB ===== */}
             {activeCustomerTab === 'leads' && (() => {
               const todayStr3 = getLocalYYYYMMDD(new Date());
-              const allLeads = customers.filter(c => c.status === 'lead');
+              const allLeads = customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant');
+              const archivedLeads = customers.filter(c => c.status === 'lead' && c.leadStage === 'not_relevant');
               const filteredLeads = allLeads
                 .filter(c => {
                   if (leadsFilter === 'mine') return c.assignedTo === user?.email || c.createdBy === user?.email;
                   if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
                   return true;
+                })
+                .filter(c => {
+                  if (leadStageFilter === 'all') return true;
+                  return (c.leadStage || 'new') === leadStageFilter;
                 })
                 .filter(c => {
                   if (!customerSearch.trim()) return true;
@@ -3113,6 +3165,10 @@ export default function App() {
               const unassigned = filteredLeads.filter(c => !c.assignedTo && !c.createdBy);
               const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
               const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
+
+              // ספירות לפי שלב (לפילטר)
+              const stageCounts: Record<string, number> = {};
+              allLeads.forEach(c => { const s = c.leadStage || 'new'; stageCounts[s] = (stageCounts[s] || 0) + 1; });
 
               const renderLeadCard = (c: any) => {
                 const stat = calculatedData.customerStats[c.id];
@@ -3130,7 +3186,7 @@ export default function App() {
                     onClick={e => { if ((e.target as HTMLElement).closest('.lead-actions')) return; setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}>
 
                     {/* top colored stripe based on stage */}
-                    <div className={`h-1 rounded-t-lg ${c.leadStage === 'not_relevant' ? 'bg-slate-300' : c.leadStage === 'quote_sent' ? 'bg-purple-400' : c.leadStage === 'waiting' ? 'bg-green-400' : c.leadStage === 'contacted' ? 'bg-orange-400' : 'bg-blue-400'}`}/>
+                    <div className={`h-1 rounded-t-lg ${c.leadStage === 'not_relevant' ? 'bg-slate-300' : c.leadStage === 'callback' ? 'bg-teal-400' : c.leadStage === 'quote_sent' ? 'bg-purple-400' : c.leadStage === 'waiting' ? 'bg-green-400' : c.leadStage === 'contacted' ? 'bg-orange-400' : 'bg-blue-400'}`}/>
 
                     <div className="p-4 flex-1">
                       {/* Header */}
@@ -3245,6 +3301,17 @@ export default function App() {
                         {f.label}
                       </button>
                     ))}
+                    {/* Picklist — סינון לפי שלב */}
+                    <select
+                      value={leadStageFilter}
+                      onChange={e => setLeadStageFilter(e.target.value)}
+                      className="text-xs px-3 py-1.5 rounded-full font-medium border border-slate-300 bg-white text-slate-600 hover:border-indigo-400 outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="all">כל השלבים</option>
+                      {Object.entries(LEAD_STAGE_MAP).filter(([k]) => k !== 'not_relevant').map(([k, v]) => (
+                        <option key={k} value={k}>{v}{stageCounts[k] ? ` (${stageCounts[k]})` : ' (0)'}</option>
+                      ))}
+                    </select>
                   </div>
 
                   {/* Unassigned section */}
@@ -3276,7 +3343,30 @@ export default function App() {
                   {filteredLeads.length === 0 && (
                     <div className="bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500 col-span-full">
                       <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
-                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : 'אין לידים להצגה'}</p>
+                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : leadStageFilter !== 'all' ? `אין לידים בשלב "${LEAD_STAGE_MAP[leadStageFilter]}"` : 'אין לידים להצגה'}</p>
+                    </div>
+                  )}
+
+                  {/* ארכיון — לא רלוונטי */}
+                  {archivedLeads.length > 0 && (
+                    <div className="mt-8 border-t border-slate-200 pt-4">
+                      <button
+                        onClick={() => setIsArchiveOpen(p => !p)}
+                        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 font-medium transition-colors w-full text-right"
+                      >
+                        <span className={`transition-transform ${isArchiveOpen ? 'rotate-90' : ''}`} style={{ display: 'inline-block' }}>▶</span>
+                        🗂 ארכיון — לא רלוונטי
+                        <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold">{archivedLeads.length}</span>
+                        <span className="text-xs text-slate-400 mr-1">{isArchiveOpen ? '(לחץ לסגירה)' : '(לחץ לפתיחה)'}</span>
+                      </button>
+                      {isArchiveOpen && (
+                        <div className="mt-4">
+                          <p className="text-xs text-slate-400 mb-3">לחץ על כרטיס ליד לפתיחת חלון הסקירה — ניתן לשנות שלב ולהחזיר לרשימה הפעילה.</p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 opacity-70">
+                            {archivedLeads.map(renderLeadCard)}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -4628,7 +4718,7 @@ export default function App() {
                         {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => (
                           <button key={k}
                             className={`text-[10px] px-2 py-1 rounded-full font-medium border transition-colors ${selectedCustomer.leadStage === k ? LEAD_STAGE_COLORS[k] + ' border-current font-bold' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'}`}
-                            onClick={() => saveLeadField(selectedCustomer.id, { leadStage: k })}
+                            onClick={() => saveLeadField(selectedCustomer.id, k === 'not_relevant' ? { leadStage: k, followUpDate: null, followUpNote: '' } : { leadStage: k })}
                           >{v}</button>
                         ))}
                       </div>
