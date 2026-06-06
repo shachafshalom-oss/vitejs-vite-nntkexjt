@@ -101,10 +101,10 @@ const LEAD_STAGE_COLORS: Record<string, string> = {
 
 const defaultSettings: any = { 
   models: { 
-    'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '' }, 
-    'Night': { cbm: 1.0, blueprintUrl: '', itemImgUrl: '' }, 
-    'Urban': { cbm: 1.5, blueprintUrl: '', itemImgUrl: '' }, 
-    'Events': { cbm: 2.0, blueprintUrl: '', itemImgUrl: '' } 
+    'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
+    'Night': { cbm: 1.0, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
+    'Urban': { cbm: 1.5, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
+    'Events': { cbm: 2.0, blueprintUrl: '', itemImgUrl: '', listPrice: 0 } 
   },
   companyLogoUrl: ''
 };
@@ -124,7 +124,10 @@ const QUICK_IMPORT_KEYWORDS = [
 
 // 1. רכיב תצוגת מסמך הצעת המחיר (PDF)
 const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, customer: any, settings: any, innerRef?: React.RefObject<HTMLDivElement> }) => {
-  const itemsTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0) || 0;
+  const getItemEffectivePrice = (item: any) => Number(item.finalPrice ?? item.price ?? 0);
+  const itemsTotal = quote?.items?.reduce((sum: number, item: any) => sum + (getItemEffectivePrice(item) * Number(item.qty)), 0) || 0;
+  const totalDiscount = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.discount || 0) * Number(item.qty)), 0) || 0;
+  const listTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.listPrice ?? item.price ?? 0) * Number(item.qty)), 0) || 0;
   const grandTotal = itemsTotal + Number(quote?.shippingCost || 0);
 
   return (
@@ -201,18 +204,47 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
       <div style={{ marginTop: '25px', background: 'rgba(255,255,255,0.6)', padding: '15px', border: '1px solid #ddd', fontSize: '13.5px' }}>
         <strong style={{ fontSize: '14px' }}>18. פירוט הזמנה</strong>
         <ul style={{ margin: '10px 0', paddingRight: '20px' }}>
-            {quote?.items?.map((item: any, idx: number) => (
-               <li key={idx} style={{ marginBottom: '5px' }}>שם דגם: {item.model}, כמות: {item.qty}, מחיר יחידה: {Number(item.price).toLocaleString()} ש"ח + מע"מ
+            {quote?.items?.map((item: any, idx: number) => {
+              const effectivePrice = getItemEffectivePrice(item);
+              const hasDiscount = Number(item.discount || 0) > 0;
+              const originalPrice = Number(item.listPrice ?? item.price ?? 0);
+              return (
+               <li key={idx} style={{ marginBottom: '8px' }}>
+                 <span>שם דגם: {item.model}, כמות: {item.qty}, </span>
+                 {hasDiscount ? (
+                   <span>
+                     מחיר רשמי: <span style={{ textDecoration: 'line-through', color: '#888' }}>{originalPrice.toLocaleString()} ₪</span>
+                     {' '}הנחה: <span style={{ color: '#c91028', fontWeight: 'bold' }}>−{Number(item.discount).toLocaleString()} ₪</span>
+                     {' '}מחיר סופי: <span style={{ fontWeight: 'bold' }}>{effectivePrice.toLocaleString()} ₪ + מע"מ</span>
+                   </span>
+                 ) : (
+                   <span>מחיר יחידה: {effectivePrice.toLocaleString()} ₪ + מע"מ</span>
+                 )}
                  {item.customNotes && <div style={{ fontSize: '12px', color: '#555', marginTop: '2px' }}>הערות לדגם: {item.customNotes}</div>}
                </li>
-            ))}
+              );
+            })}
             {(Number(quote?.shippingCost) > 0) && (
-              <li style={{ marginBottom: '5px', marginTop: '10px', fontWeight: 'bold' }}>עלות משלוח: {Number(quote.shippingCost).toLocaleString()} ש"ח + מע"מ</li>
+              <li style={{ marginBottom: '5px', marginTop: '10px', fontWeight: 'bold' }}>עלות משלוח: {Number(quote.shippingCost).toLocaleString()} ₪ + מע"מ</li>
             )}
         </ul>
-        <div style={{ marginTop: '15px', fontWeight: 'bold', fontSize: '15px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
-            סה"כ לתשלום לפני מע"מ: {grandTotal.toLocaleString()} ש"ח<br/>
-            סה"כ לתשלום כולל מע"מ (18%): {(grandTotal * 1.18).toLocaleString()} ש"ח
+        <div style={{ marginTop: '15px', fontSize: '14px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
+            {totalDiscount > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#555' }}>
+                  <span>מחיר לפני הנחה:</span><span>{listTotal.toLocaleString()} ₪</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#c91028', fontWeight: 'bold' }}>
+                  <span>סה"כ הנחות:</span><span>−{totalDiscount.toLocaleString()} ₪</span>
+                </div>
+              </>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', fontWeight: 'bold', fontSize: '15px' }}>
+              <span>סה"כ לפני מע"מ:</span><span>{grandTotal.toLocaleString()} ₪</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '15px' }}>
+              <span>סה"כ כולל מע"מ (18%):</span><span>{(grandTotal * 1.18).toLocaleString()} ₪</span>
+            </div>
         </div>
         {/* פרטי תשלום */}
         <div style={{ marginTop: '14px', background: 'rgba(255,255,255,0.85)', border: '1px solid #c91028', borderRadius: '6px', padding: '12px 14px', fontSize: '12.5px' }}>
@@ -1221,6 +1253,7 @@ export default function App() {
           saleDate: data.saleDate || new Date().toISOString().split('T')[0],
           warrantyMonths: Number(data.warrantyMonths) || 0,
           salePrice: Number(data.salePrice) || 0,
+          discountAmount: Number(data.discount) || 0,
           addOnPrice: Number(data.addOnPrice) || 0,
           repairCost: Number(data.repairCost) || 0,
           addOnCost: Number(data.addOnCost) || 0,
@@ -1804,7 +1837,7 @@ export default function App() {
     if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
     try {
       const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
-        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: i.price })),
+        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: Number(i.finalPrice ?? i.price ?? 0) })),
         Number(quote.approvedShippingCost) || 0,
         customer
       );
@@ -1880,7 +1913,7 @@ export default function App() {
     const items = quoteItems.map((item: any) => ({
       name: `עמדת נירוסטה דגם ${item.model}`,
       amount: Number(item.qty),
-      price: Number(item.price),
+      price: Number(item.price ?? 0),
       save: false
     }));
     if (Number(shippingCost) > 0) {
@@ -1983,13 +2016,33 @@ export default function App() {
   };
 
   const addQuoteItem = () => {
-      if(modelsList.length > 0) setQuoteData({...quoteData, items: [...quoteData.items, { model: modelsList[0], qty: 1, price: 0, customNotes: '' }]});
+    if (modelsList.length > 0) {
+      const model = modelsList[0];
+      const lp = Number(settings?.models?.[model]?.listPrice) || 0;
+      setQuoteData({...quoteData, items: [...quoteData.items, { model, qty: 1, listPrice: lp, discount: 0, finalPrice: lp, price: lp, customNotes: '' }]});
+    }
   };
 
   const updateQuoteItem = (index: number, field: string, value: any) => {
-      const newItems = [...quoteData.items];
-      newItems[index] = { ...newItems[index], [field]: value };
-      setQuoteData({ ...quoteData, items: newItems });
+    const newItems = [...quoteData.items];
+    const item = { ...newItems[index], [field]: value };
+    // auto-fill listPrice when model changes
+    if (field === 'model') {
+      const lp = Number(settings?.models?.[value]?.listPrice) || 0;
+      item.listPrice = lp;
+      item.discount = 0;
+      item.finalPrice = lp;
+      item.price = lp;
+    }
+    // recompute finalPrice when listPrice or discount changes
+    if (field === 'listPrice' || field === 'discount') {
+      const lp = field === 'listPrice' ? Number(value) : Number(item.listPrice || 0);
+      const disc = field === 'discount' ? Number(value) : Number(item.discount || 0);
+      item.finalPrice = Math.max(0, lp - disc);
+      item.price = item.finalPrice; // keep price in sync for backward compat
+    }
+    newItems[index] = item;
+    setQuoteData({ ...quoteData, items: newItems });
   };
 
   const removeQuoteItem = (index: number) => {
@@ -2001,7 +2054,9 @@ export default function App() {
     // נתיב 1: אישור עם גריעת מלאי (מכל סטטוס שאינו approved)
     if (newStatus === 'approved') {
       const itemsToProcess = quote.items.map((item: any) => ({
-        model: item.model, qty: item.qty, salePrice: item.price,
+        model: item.model, qty: item.qty,
+        salePrice: Number(item.finalPrice ?? item.price ?? 0),
+        discountAmount: Number(item.discount || 0),
         saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
         campaignId: quote.campaignId || '', processed: 0
       }));
@@ -2075,7 +2130,9 @@ export default function App() {
                     id: availableItems[i].id,
                     data: {
                         status: 'sold', saleDate: line.saleDate, warrantyMonths: Number(line.warrantyMonths) || 0,
-                        salePrice: Number(line.salePrice) || 0, campaignId: line.campaignId || '', customerId: quoteApprovalData.customerId,
+                        salePrice: Number(line.salePrice) || 0,
+                        discountAmount: Number(line.discountAmount) || 0,
+                        campaignId: line.campaignId || '', customerId: quoteApprovalData.customerId,
                         updatedAt: new Date().toISOString()
                     }
                 });
@@ -2683,7 +2740,7 @@ export default function App() {
               <button 
                 onClick={() => { 
                   setIsFabOpen(false); 
-                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
+                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                   setIsQuoteModalOpen(true); 
                 }} 
                 className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
@@ -2727,7 +2784,7 @@ export default function App() {
                     .filter(q => quoteStatusFilter === 'all' || (quoteStatusFilter === 'pending' ? (!q.status || q.status === 'pending') : q.status === quoteStatusFilter))
                     .map(q => {
                     const customer = customers.find(c => c.id === q.customerId) || { name: 'לקוח נמחק' };
-                    const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0);
+                    const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (Number(item.finalPrice ?? item.price ?? 0) * Number(item.qty)), 0);
                     const grandTotal = itemsTotal + Number(q.shippingCost || 0);
                     
                     return (
@@ -2951,6 +3008,10 @@ export default function App() {
                             <div className="flex items-center gap-2">
                                 <label className="text-sm font-medium text-slate-600">CBM:</label>
                                 <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white" value={settings.models?.[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <label className="text-sm font-medium text-green-700">מחיר מחירון (₪):</label>
+                                <input type="number" step="1" min="0" className="w-28 p-1.5 text-center border border-green-300 rounded focus:ring-green-500 focus:border-green-500 sm:text-sm bg-green-50 font-bold text-green-800" placeholder="0" value={settings.models?.[model]?.listPrice || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], listPrice: Number(e.target.value) } } })}/>
                             </div>
                         </div>
                     </div>
@@ -3365,7 +3426,7 @@ export default function App() {
                           )}
                         </div>
                         <button className="lead-actions text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-medium hover:bg-indigo-100 flex items-center gap-1"
-                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
+                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
                           <FileText className="w-3 h-3"/> הצעה
                         </button>
                       </div>
@@ -3518,7 +3579,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1 customer-actions">
-                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -4228,7 +4289,7 @@ export default function App() {
                icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', salePrice: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
+                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
                 setIsItemModalOpen(true); 
               }} 
             />
@@ -4244,7 +4305,7 @@ export default function App() {
                icon={FileText} iconColor="text-blue-500" label="הצעת מחיר חדשה"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, price: 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
+                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                 setIsQuoteModalOpen(true); 
               }} 
             />
@@ -4292,7 +4353,10 @@ export default function App() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">בחר דגם למכירה <span className="text-red-500">*</span></label>
-                    <select required className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.model || ''} onChange={e => setEditingData({...editingData, model: e.target.value})}>
+                    <select required className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.model || ''} onChange={e => {
+                      const lp = Number(settings?.models?.[e.target.value]?.listPrice) || 0;
+                      setEditingData({...editingData, model: e.target.value, salePrice: lp - (Number(editingData.discount)||0), discount: editingData.discount || 0});
+                    }}>
                       {calculatedData.availableModelsInStock.length === 0 && <option value="">אין דגמים במלאי</option>}
                       {calculatedData.availableModelsInStock.map((m: string) => (
                         <option key={m} value={m}>{m} ({calculatedData.stockInWarehouse[m]} במלאי)</option>
@@ -4346,9 +4410,34 @@ export default function App() {
               <div className="border-t border-slate-200 pt-4 mt-2">
                 <h4 className="font-bold text-slate-700 mb-3 text-sm">פרטי מכירה ועלויות</h4>
                 <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">מחיר מכירה (₪)</label>
-                    <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border bg-green-50 text-green-700 font-bold" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} />
+                  {editingData.isGlobalSale ? (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">מחיר מחירון (₪)</label>
+                        <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 text-slate-700 font-bold" value={Number(settings?.models?.[editingData.model]?.listPrice) || 0} readOnly />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-red-600 mb-1">הנחה (₪)</label>
+                        <input type="number" min="0" step="0.01" className="w-full border-red-200 rounded-md p-2.5 border bg-red-50 text-red-700 font-bold" value={editingData.discount || 0} onChange={e => {
+                          const disc = Number(e.target.value);
+                          const lp = Number(settings?.models?.[editingData.model]?.listPrice) || 0;
+                          setEditingData({...editingData, discount: disc, salePrice: Math.max(0, lp - disc)});
+                        }} />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-sm font-medium text-green-700 mb-1">מחיר סופי (₪) — ייגרע מהמלאי ויירשם כהכנסה</label>
+                        <div className="w-full border-green-300 rounded-md p-2.5 border bg-green-50 text-green-800 font-black text-lg">
+                          ₪{(Math.max(0, (Number(settings?.models?.[editingData.model]?.listPrice) || 0) - (Number(editingData.discount) || 0))).toLocaleString()}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">מחיר מכירה (₪)</label>
+                      <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border bg-green-50 text-green-700 font-bold" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} />
+                    </div>
+                  )}
+                  <div className={editingData.isGlobalSale ? 'col-span-2 grid grid-cols-2 gap-4' : ''}>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">תוספות (₪ הכנסה)</label>
@@ -4703,7 +4792,7 @@ export default function App() {
 
       {/* QUOTE OVERVIEW MODAL */}
       {isQuoteOverviewOpen && selectedQuote && (() => {
-        const itemsTotal = selectedQuote.items.reduce((sum: number, item: any) => sum + (Number(item.price) * Number(item.qty)), 0);
+        const itemsTotal = selectedQuote.items.reduce((sum: number, item: any) => sum + (Number(item.finalPrice ?? item.price ?? 0) * Number(item.qty)), 0);
         const grandTotal = (itemsTotal + Number(selectedQuote.shippingCost || 0)) * 1.18;
         const campaign = campaigns.find(c => c.id === selectedQuote.campaignId);
 
@@ -4742,14 +4831,28 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {selectedQuote.items.map((item: any, idx: number) => (
+                      {selectedQuote.items.map((item: any, idx: number) => {
+                        const effPrice = Number(item.finalPrice ?? item.price ?? 0);
+                        const hasDisc = Number(item.discount || 0) > 0;
+                        return (
                         <tr key={idx} className="bg-white">
                           <td className="px-4 py-3 font-bold text-slate-700">{item.model}</td>
                           <td className="px-4 py-3">{item.qty} יח'</td>
-                          <td className="px-4 py-3 font-medium">₪{Number(item.price).toLocaleString()}</td>
+                          <td className="px-4 py-3 font-medium">
+                            {hasDisc ? (
+                              <span>
+                                <span className="line-through text-slate-400 text-xs ml-1">₪{Number(item.listPrice ?? item.price ?? 0).toLocaleString()}</span>
+                                <span className="text-red-500 text-xs ml-1">−₪{Number(item.discount).toLocaleString()}</span>
+                                <span className="font-bold text-green-700">₪{effPrice.toLocaleString()}</span>
+                              </span>
+                            ) : (
+                              <span>₪{effPrice.toLocaleString()}</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-xs text-slate-500 whitespace-pre-wrap">{item.customNotes || '---'}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -5563,8 +5666,20 @@ export default function App() {
                           <input type="number" min="1" className="w-full border-slate-300 rounded p-1.5 font-bold text-sm" value={item.qty} onChange={e => updateQuoteItem(index, 'qty', Number(e.target.value))} />
                         </div>
                         <div>
-                          <label className="block text-xs font-bold text-slate-700 mb-1">מחיר יחידה (₪)</label>
-                          <input type="number" className="w-full border-slate-300 rounded p-1.5 font-bold text-sm text-indigo-700" value={item.price} onChange={e => updateQuoteItem(index, 'price', Number(e.target.value))} />
+                          <label className="block text-xs font-bold text-slate-700 mb-1">מחיר מחירון (₪)</label>
+                          <input type="number" min="0" className="w-full border-slate-300 rounded p-1.5 font-bold text-sm text-slate-700" value={item.listPrice ?? item.price ?? 0} onChange={e => updateQuoteItem(index, 'listPrice', Number(e.target.value))} />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        <div>
+                          <label className="block text-xs font-bold text-red-600 mb-1">הנחה (₪)</label>
+                          <input type="number" min="0" className="w-full border-red-200 rounded p-1.5 text-sm bg-red-50 text-red-700 font-bold" value={item.discount || 0} onChange={e => updateQuoteItem(index, 'discount', Number(e.target.value))} placeholder="0" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-green-700 mb-1">מחיר סופי (₪)</label>
+                          <div className="w-full border-green-300 rounded p-1.5 text-sm bg-green-50 text-green-800 font-black">
+                            {Number(item.finalPrice ?? item.price ?? 0).toLocaleString()}
+                          </div>
                         </div>
                       </div>
                       <div>
