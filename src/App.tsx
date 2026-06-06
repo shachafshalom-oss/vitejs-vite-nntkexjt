@@ -400,6 +400,10 @@ export default function App() {
   const [supplierNoteText, setSupplierNoteText] = useState('');
   const [catalogUploadProgress, setCatalogUploadProgress] = useState<number|null>(null);
   const [isCatalogUploading, setIsCatalogUploading] = useState(false);
+  const [isCatalogSendModalOpen, setIsCatalogSendModalOpen] = useState(false);
+  const [catalogSendTarget, setCatalogSendTarget] = useState<any>(null);
+  const [catalogSelectedModels, setCatalogSelectedModels] = useState<string[]>([]);
+  const [catalogSending, setCatalogSending] = useState(false);
 
   const modelsList = useMemo(() => Object.keys(settings?.models || {}), [settings]);
 
@@ -1926,6 +1930,82 @@ export default function App() {
     setCatalogUploadProgress(null);
   };
 
+  // --- Global Catalog PDF Upload ---
+  const uploadGlobalCatalog = async (file: File) => {
+    if (!file) return;
+    if (file.type !== 'application/pdf') { alert('יש להעלות קובץ PDF בלבד.'); return; }
+    setIsCatalogUploading(true);
+    setCatalogUploadProgress(0);
+    try {
+      const fileRef = storageRef(storage, `company-catalog/catalog.pdf`);
+      const uploadTask = uploadBytesResumable(fileRef, file);
+      await new Promise<void>((resolve, reject) => {
+        uploadTask.on('state_changed',
+          (snap) => setCatalogUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+          (err) => reject(err),
+          () => resolve()
+        );
+      });
+      const url = await getDownloadURL(fileRef);
+      const updated = { ...settings, catalogPdfUrl: url };
+      setSettings(updated);
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated);
+      alert('קטלוג הועלה בהצלחה!');
+    } catch (err) { alert('שגיאה בהעלאת הקטלוג.'); }
+    setIsCatalogUploading(false);
+    setCatalogUploadProgress(null);
+  };
+
+  const logCatalogSent = async (customer: any) => {
+    try {
+      const newLog = { date: new Date().toISOString(), text: 'נשלח קטלוג מוצרים', type: 'catalog', user: user?.email || '' };
+      const currentLogs = Array.isArray(customer.interactionLogs) ? customer.interactionLogs : [];
+      const updatedLogs = [...currentLogs, newLog];
+      await updateDoc(doc(db, 'crm_customers', customer.id), { interactionLogs: updatedLogs, updatedAt: new Date().toISOString() });
+      setCustomers((prev: any[]) => prev.map(c => c.id === customer.id ? { ...c, interactionLogs: updatedLogs } : c));
+    } catch {}
+  };
+
+  const sendCatalogToLead = async () => {
+    if (!catalogSendTarget) return;
+    setCatalogSending(true);
+    try {
+      const leadName = catalogSendTarget.contactName || catalogSendTarget.businessName || '';
+      const videoLines = catalogSelectedModels
+        .map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; })
+        .filter(Boolean).join('\n');
+      const defaultTemplate = `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של D.S Logistics.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות D.S Logistics`;
+      const template = settings?.catalogMessageTemplate || defaultTemplate;
+      const msg = template.replace('{name}', leadName).replace('{videos}', videoLines || '').replace(/\n{3,}/g, '\n\n').trim();
+
+      const rawPhone = (catalogSendTarget.phone || '').replace(/\D/g, '');
+      const waPhone = rawPhone.startsWith('0') ? '972' + rawPhone.slice(1) : rawPhone;
+      let shared = false;
+
+      if (settings?.catalogPdfUrl && typeof navigator !== 'undefined' && (navigator as any).canShare) {
+        try {
+          const res = await fetch(settings.catalogPdfUrl);
+          const blob = await res.blob();
+          const pdfFile = new File([blob], 'DS-Logistics-Catalog.pdf', { type: 'application/pdf' });
+          if ((navigator as any).canShare({ files: [pdfFile] })) {
+            try { await navigator.clipboard.writeText(msg); } catch {}
+            await (navigator as any).share({ files: [pdfFile], text: msg, title: 'קטלוג D.S Logistics' });
+            shared = true;
+          }
+        } catch (e: any) {
+          if (e?.name === 'AbortError') { setCatalogSending(false); return; }
+        }
+      }
+      if (!shared) {
+        const msgWithLink = settings?.catalogPdfUrl ? msg + '\n\n📋 קטלוג: ' + settings.catalogPdfUrl : msg;
+        window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(msgWithLink)}`, '_blank');
+        shared = true;
+      }
+      if (shared) { await logCatalogSent(catalogSendTarget); setIsCatalogSendModalOpen(false); }
+    } catch { alert('שגיאה בשליחה.'); }
+    setCatalogSending(false);
+  };
+
   // --- Finbot Integration ---
   const sendToFinbot = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
     const apiKey = settings?.finbotApiKey;
@@ -3063,6 +3143,10 @@ export default function App() {
                             </div>
                         </div>
                     </div>
+                    <div className="mb-4">
+                      <label className="text-sm font-medium text-indigo-700 flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo):</label>
+                      <input type="url" className="w-full p-1.5 border border-indigo-200 rounded bg-indigo-50 text-sm text-indigo-900 focus:ring-indigo-500" placeholder="https://youtube.com/watch?v=..." value={settings.models?.[model]?.videoUrl || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], videoUrl: e.target.value } } })}/>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <ModelAssetUploader 
                           label="העלה תמונת הדמיה" 
@@ -3084,6 +3168,43 @@ export default function App() {
               </div>
               <div className="mt-6 flex justify-end">
                 <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור הגדרות (לוגו ודגמים)</button>
+              </div>
+
+              {/* --- קטלוג חברה גלובלי --- */}
+              <div className="mt-8 bg-indigo-50 border border-indigo-200 rounded-xl p-5">
+                <h3 className="font-bold text-indigo-800 text-lg mb-4 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <p className="text-sm font-medium text-slate-700 mb-2">קובץ PDF גלובלי</p>
+                    {settings?.catalogPdfUrl ? (
+                      <div className="flex items-center gap-3 mb-3">
+                        <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-sm text-indigo-600 underline flex items-center gap-1">📄 קטלוג קיים — לחץ לצפייה</a>
+                        <button onClick={() => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 mb-2">לא הועלה קטלוג עדיין</p>
+                    )}
+                    <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-100 text-indigo-400' : 'border-indigo-300 hover:border-indigo-500 hover:bg-indigo-100 text-indigo-600'}`}>
+                      {isCatalogUploading ? `מעלה... ${catalogUploadProgress}%` : '⬆️ העלה / החלף קטלוג PDF'}
+                      <input type="file" accept=".pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); e.target.value=''; }}/>
+                    </label>
+                    {catalogUploadProgress !== null && (
+                      <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-700 mb-2">תבנית הודעת WhatsApp</p>
+                    <p className="text-xs text-slate-400 mb-1">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
+                    <textarea
+                      rows={6}
+                      className="w-full border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
+                      placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`}
+                      value={settings?.catalogMessageTemplate || ''}
+                      onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
+                    />
+                    <button onClick={saveSettings} className="mt-2 bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-medium hover:bg-indigo-700">שמור תבנית</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -3476,6 +3597,10 @@ export default function App() {
                         <button className="lead-actions text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-medium hover:bg-indigo-100 flex items-center gap-1"
                           onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
                           <FileText className="w-3 h-3"/> הצעה
+                        </button>
+                        <button className="lead-actions text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded font-medium hover:bg-green-100 flex items-center gap-1"
+                          onClick={e => { e.stopPropagation(); setCatalogSendTarget(c); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
+                          📤 קטלוג
                         </button>
                       </div>
                     </div>
@@ -6560,6 +6685,93 @@ export default function App() {
             </div>
             <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button onClick={() => { if(!isGeneratingAI) { navigator.clipboard.writeText(aiInsight); alert('הטקסט הועתק בהצלחה!'); } }} disabled={isGeneratingAI} className="px-4 py-2 border border-slate-300 text-slate-700 bg-white rounded-md font-medium hover:bg-slate-50 text-sm disabled:opacity-50">העתק טקסט</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- CATALOG SEND MODAL --- */}
+      {isCatalogSendModalOpen && catalogSendTarget && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
+              <h2 className="text-lg font-bold text-slate-800">📤 שליחת קטלוג בWhatsApp</h2>
+              <button onClick={() => setIsCatalogSendModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-5 space-y-5">
+
+              {/* Lead info */}
+              <div className="bg-slate-50 rounded-lg p-3 flex items-center gap-3 border border-slate-200">
+                <div className="w-9 h-9 bg-green-100 text-green-700 rounded-full flex items-center justify-center font-black text-sm">
+                  {(catalogSendTarget.contactName || catalogSendTarget.businessName || '?')[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <p className="font-bold text-slate-800">{catalogSendTarget.businessName || catalogSendTarget.contactName}</p>
+                  {catalogSendTarget.phone && <p className="text-sm text-slate-500 flex items-center gap-1"><Phone className="w-3 h-3"/>{catalogSendTarget.phone}</p>}
+                </div>
+                {!catalogSendTarget.phone && <p className="text-xs text-red-500 mr-auto">⚠️ אין מספר טלפון</p>}
+              </div>
+
+              {/* Catalog status */}
+              <div>
+                <p className="text-sm font-bold text-slate-700 mb-2">קטלוג PDF</p>
+                {settings?.catalogPdfUrl ? (
+                  <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    <span>✓ קטלוג מוגדר — יישלח עם ההודעה</span>
+                    <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="mr-auto text-xs underline">צפה</a>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <span>⚠️ לא הועלה קטלוג — תישלח הודעה בלבד</span>
+                    <button onClick={() => { setIsCatalogSendModalOpen(false); navigateTo('sales', 'settings'); }} className="mr-auto text-xs underline">הגדר</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Model / video selection */}
+              {modelsList.some(m => settings?.models?.[m]?.videoUrl) && (
+                <div>
+                  <p className="text-sm font-bold text-slate-700 mb-2">סרטוני מוצרים לכלול</p>
+                  <div className="space-y-1.5">
+                    {modelsList.filter(m => settings?.models?.[m]?.videoUrl).map(m => (
+                      <label key={m} className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-transparent hover:border-slate-200">
+                        <input type="checkbox" className="w-4 h-4 text-indigo-600 rounded accent-indigo-600"
+                          checked={catalogSelectedModels.includes(m)}
+                          onChange={e => setCatalogSelectedModels(prev => e.target.checked ? [...prev, m] : prev.filter(x => x !== m))}/>
+                        <span className="font-medium text-slate-700 text-sm">🎥 {m}</span>
+                        <span className="text-xs text-slate-400 truncate max-w-[160px]">{settings.models[m].videoUrl}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Message preview */}
+              <div>
+                <p className="text-sm font-bold text-slate-700 mb-2">תצוגת הודעה</p>
+                <div className="bg-green-50 border border-green-200 rounded-xl p-3 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed max-h-44 overflow-y-auto">
+                  {(() => {
+                    const nm = catalogSendTarget.contactName || catalogSendTarget.businessName || '';
+                    const vids = catalogSelectedModels.map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; }).filter(Boolean).join('\n');
+                    const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של D.S Logistics.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות D.S Logistics`;
+                    return tpl.replace('{name}', nm).replace('{videos}', vids || '').replace(/\n{3,}/g, '\n\n').trim();
+                  })()}
+                  {settings?.catalogPdfUrl && <span className="block mt-2 text-green-600 text-xs font-medium">[📎 קובץ PDF יצורף]</span>}
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-400 bg-slate-50 rounded-lg px-3 py-2 border border-slate-100 leading-relaxed">
+                💡 <strong>מובייל:</strong> ה-PDF נשלח כקובץ אמיתי. ההודעה מועתקת ללוח — הדבק אחרי שליחת הקובץ אם צריך.&nbsp;
+                <strong>דסקטופ:</strong> ייפתח WhatsApp Web עם הטקסט וקישור לPDF.
+              </p>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 flex gap-3 justify-end sticky bottom-0 bg-white">
+              <button onClick={() => setIsCatalogSendModalOpen(false)} className="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50">ביטול</button>
+              <button onClick={sendCatalogToLead} disabled={catalogSending || !catalogSendTarget.phone}
+                className={`px-5 py-2 rounded-lg text-sm font-bold text-white flex items-center gap-2 ${catalogSending || !catalogSendTarget.phone ? 'bg-slate-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 shadow-md'}`}>
+                {catalogSending ? '⏳ שולח...' : '📲 שלח בWhatsApp'}
+              </button>
             </div>
           </div>
         </div>
