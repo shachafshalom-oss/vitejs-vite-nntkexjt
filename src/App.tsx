@@ -2254,21 +2254,21 @@ export default function App() {
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
           {/* ימין — שם מערכת + space toggle */}
-          <div className="flex items-center gap-3 relative z-10">
-            <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-5 w-5 text-indigo-700" /></div>
+          <div className="flex items-center gap-2 relative z-10">
+            <div className="bg-indigo-100 p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-indigo-700" /></div>
             <h1 className="text-sm font-bold text-slate-600 hidden sm:block">D.S Logistics CRM</h1>
-            <div className="hidden sm:flex bg-slate-200 rounded-lg p-0.5 gap-0.5 mr-1">
+            <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
               <button
                 onClick={() => navigateTo('sales', 'sales_dashboard')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                <Activity className="w-3.5 h-3.5"/> מכירות
+                <Activity className="w-3.5 h-3.5"/> <span>מכירות</span>
               </button>
               <button
                 onClick={() => navigateTo('operations', 'operations_dashboard')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                <Ship className="w-3.5 h-3.5"/> תפעול
+                <Ship className="w-3.5 h-3.5"/> <span>תפעול</span>
               </button>
             </div>
           </div>
