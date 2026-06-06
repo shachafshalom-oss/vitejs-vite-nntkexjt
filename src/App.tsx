@@ -2227,10 +2227,24 @@ export default function App() {
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
-          {/* שמאל - שם מערכת */}
-          <div className="flex items-center gap-3 min-w-[120px]">
+          {/* ימין — שם מערכת + space toggle */}
+          <div className="flex items-center gap-3 relative z-10">
             <div className="bg-indigo-100 p-1.5 rounded"><Package className="h-5 w-5 text-indigo-700" /></div>
             <h1 className="text-sm font-bold text-slate-600 hidden sm:block">D.S Logistics CRM</h1>
+            <div className="hidden sm:flex bg-slate-200 rounded-lg p-0.5 gap-0.5 mr-1">
+              <button
+                onClick={() => navigateTo('sales', 'sales_dashboard')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <Activity className="w-3.5 h-3.5"/> מכירות
+              </button>
+              <button
+                onClick={() => navigateTo('operations', 'operations_dashboard')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <Ship className="w-3.5 h-3.5"/> תפעול
+              </button>
+            </div>
           </div>
 
           {/* מרכז - לוגו החברה */}
@@ -2247,34 +2261,17 @@ export default function App() {
             )}
           </div>
 
-          {/* ימין - יציאה */}
-          <div className="flex items-center gap-4 relative z-10 min-w-[120px] justify-end">
+          {/* שמאל - יציאה */}
+          <div className="flex items-center gap-4 relative z-10 justify-end">
             <span className="text-sm text-slate-500 hidden md:inline">{user?.email || ''}</span>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
         </div>
 
-        {/* Space Toggle + Tab Navigation */}
+        {/* Tab Navigation */}
         <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50 relative z-10">
-          {/* Space Toggle */}
-          <div className="flex items-center gap-2 pt-2 pb-1">
-            <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
-              <button
-                onClick={() => navigateTo('sales', 'sales_dashboard')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
-              >
-                <Activity className="w-3.5 h-3.5"/> מכירות
-              </button>
-              <button
-                onClick={() => navigateTo('operations', 'operations_dashboard')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
-              >
-                <Ship className="w-3.5 h-3.5"/> תפעול
-              </button>
-            </div>
-            <div className="h-4 w-px bg-slate-300 mx-1"/>
-            <nav className="flex space-x-reverse space-x-1 overflow-x-auto">
-              {(activeSpace === 'sales' ? [
+          <nav className="flex space-x-reverse space-x-1 overflow-x-auto py-2">
+            {(activeSpace === 'sales' ? [
                 { id: 'sales_dashboard', icon: Activity, label: 'דשבורד' },
                 { id: 'leads', icon: UserPlus, label: 'לידים' },
                 { id: 'customers', icon: Users, label: 'לקוחות' },
@@ -2295,8 +2292,7 @@ export default function App() {
                   <t.icon className="w-4 h-4" /> <span>{t.label}</span>
                 </button>
               ))}
-            </nav>
-          </div>
+          </nav>
         </div>
       </header>
 
