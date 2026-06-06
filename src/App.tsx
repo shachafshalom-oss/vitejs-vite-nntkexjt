@@ -2332,9 +2332,9 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between relative">
-          {/* ימין — שם מערכת + space toggle */}
-          <div className="flex items-center gap-2 relative z-10">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center">
+          {/* ימין — טוגל + שם מערכת */}
+          <div className="flex items-center gap-2 flex-shrink-0">
             <div className="bg-indigo-100 p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-indigo-700" /></div>
             <h1 className="text-sm font-bold text-slate-600 hidden sm:block">D.S Logistics CRM</h1>
             <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
@@ -2353,24 +2353,24 @@ export default function App() {
             </div>
           </div>
 
-          {/* מרכז - לוגו החברה */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center h-12">
+          {/* מרכז - לוגו החברה — flex-1 עם justify-center, מסתתר אם אין מקום */}
+          <div className="flex-1 flex justify-center items-center min-w-0 px-2">
             {settings?.companyLogoUrl ? (
               <img
                 src={settings.companyLogoUrl}
                 alt="לוגו החברה"
-                className="h-10 max-w-[140px] object-contain"
+                className="h-9 max-w-[120px] object-contain"
                 crossOrigin="anonymous"
               />
             ) : (
-              <span className="text-lg font-bold text-slate-700 tracking-tight">D.S Logistics</span>
+              <span className="text-base font-bold text-slate-700 tracking-tight hidden sm:block">D.S Logistics</span>
             )}
           </div>
 
           {/* שמאל - יציאה */}
-          <div className="flex items-center gap-4 relative z-10 justify-end">
+          <div className="flex items-center gap-3 flex-shrink-0">
             <span className="text-sm text-slate-500 hidden md:inline">{user?.email || ''}</span>
-            <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
+            <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> <span className="hidden sm:inline">יציאה</span></button>
           </div>
         </div>
 
@@ -5315,7 +5315,7 @@ export default function App() {
                     ) : (
                       <div className="space-y-3">
                         {customerQuotes.map((q: any) => {
-                          const total = (q.items || []).reduce((s: number, i: any) => s + (Number(i.price) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
+                          const total = (q.items || []).reduce((s: number, i: any) => s + (Number(i.finalPrice ?? i.price ?? 0) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
                           const statusLabel = QUOTE_STATUS_MAP[q.status] || q.status;
                           const statusColor = q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-700' : q.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600';
                           return (
