@@ -3169,43 +3169,6 @@ export default function App() {
               <div className="mt-6 flex justify-end">
                 <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור הגדרות (לוגו ודגמים)</button>
               </div>
-
-              {/* --- קטלוג חברה גלובלי --- */}
-              <div className="mt-8 bg-indigo-50 border border-indigo-200 rounded-xl p-5">
-                <h3 className="font-bold text-indigo-800 text-lg mb-4 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <p className="text-sm font-medium text-slate-700 mb-2">קובץ PDF גלובלי</p>
-                    {settings?.catalogPdfUrl ? (
-                      <div className="flex items-center gap-3 mb-3">
-                        <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-sm text-indigo-600 underline flex items-center gap-1">📄 קטלוג קיים — לחץ לצפייה</a>
-                        <button onClick={() => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-400 mb-2">לא הועלה קטלוג עדיין</p>
-                    )}
-                    <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-100 text-indigo-400' : 'border-indigo-300 hover:border-indigo-500 hover:bg-indigo-100 text-indigo-600'}`}>
-                      {isCatalogUploading ? `מעלה... ${catalogUploadProgress}%` : '⬆️ העלה / החלף קטלוג PDF'}
-                      <input type="file" accept=".pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); e.target.value=''; }}/>
-                    </label>
-                    {catalogUploadProgress !== null && (
-                      <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-slate-700 mb-2">תבנית הודעת WhatsApp</p>
-                    <p className="text-xs text-slate-400 mb-1">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
-                    <textarea
-                      rows={6}
-                      className="w-full border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
-                      placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`}
-                      value={settings?.catalogMessageTemplate || ''}
-                      onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
-                    />
-                    <button onClick={saveSettings} className="mt-2 bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-medium hover:bg-indigo-700">שמור תבנית</button>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -4430,6 +4393,44 @@ export default function App() {
               )}
             </div>
 
+            {/* --- קטלוג חברה גלובלי --- */}
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 mt-2">
+              <h2 className="font-bold text-indigo-800 text-lg mb-4 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <p className="text-sm font-medium text-slate-700 mb-2">קובץ PDF גלובלי</p>
+                  {settings?.catalogPdfUrl ? (
+                    <div className="flex items-center gap-3 mb-3">
+                      <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-sm text-indigo-600 underline flex items-center gap-1">📄 קטלוג קיים — לחץ לצפייה</a>
+                      <button onClick={async () => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); await setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 mb-2">לא הועלה קטלוג עדיין</p>
+                  )}
+                  <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-100 text-indigo-400 pointer-events-none' : 'border-indigo-300 hover:border-indigo-500 hover:bg-indigo-100 text-indigo-600'}`}>
+                    {isCatalogUploading ? `מעלה... ${catalogUploadProgress}%` : '⬆️ העלה / החלף קטלוג PDF'}
+                    <input type="file" accept=".pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); (e.target as HTMLInputElement).value = ''; }}/>
+                  </label>
+                  {catalogUploadProgress !== null && (
+                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-2">סרטוני וידאו לכל דגם — הגדר בטאב דגמים (תפעול)</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-slate-700 mb-2">תבנית הודעת WhatsApp</p>
+                  <p className="text-xs text-slate-400 mb-1">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
+                  <textarea
+                    rows={6}
+                    className="w-full border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
+                    placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`}
+                    value={settings?.catalogMessageTemplate || ''}
+                    onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
+                  />
+                  <button onClick={saveSettings} className="mt-2 bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-medium hover:bg-indigo-700">שמור תבנית</button>
+                </div>
+              </div>
+            </div>
+
             {/* DANGER ZONE FOR RESET */}
             <div className="bg-red-50 p-6 border border-red-200 rounded-lg shadow-sm mt-8">
               <h2 className="text-xl font-bold text-red-800 mb-2 flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-red-600"/> אזור סכנה: ניקוי שולחן (איפוס נתונים)</h2>
@@ -4610,8 +4611,6 @@ export default function App() {
                       <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border bg-green-50 text-green-700 font-bold" value={editingData.salePrice || 0} onChange={e => setEditingData({...editingData, salePrice: Number(e.target.value)})} />
                     </div>
                   )}
-                  <div className={editingData.isGlobalSale ? 'col-span-2 grid grid-cols-2 gap-4' : ''}>
-                  </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">תוספות (₪ הכנסה)</label>
                     <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded-md p-2.5 border" value={editingData.addOnPrice || 0} onChange={e => setEditingData({...editingData, addOnPrice: Number(e.target.value)})} />
@@ -6723,7 +6722,7 @@ export default function App() {
                 ) : (
                   <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                     <span>⚠️ לא הועלה קטלוג — תישלח הודעה בלבד</span>
-                    <button onClick={() => { setIsCatalogSendModalOpen(false); navigateTo('sales', 'settings'); }} className="mr-auto text-xs underline">הגדר</button>
+                    <button onClick={() => { setIsCatalogSendModalOpen(false); setActiveTab('settings'); }} className="mr-auto text-xs underline">הגדר</button>
                   </div>
                 )}
               </div>
