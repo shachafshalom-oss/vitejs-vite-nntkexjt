@@ -315,8 +315,8 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [activeCustomerTab, setActiveCustomerTab] = useState<'customers' | 'leads'>('leads');
+  const [activeSpace, setActiveSpace] = useState<'sales' | 'operations'>('sales');
+  const [activeTab, setActiveTab] = useState('sales_dashboard');
   const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
   const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
@@ -424,6 +424,12 @@ export default function App() {
   const [aiInsight, setAiInsight] = useState('');
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
+
+  // --- Space + Tab Navigation Helper ---
+  const navigateTo = (space: 'sales' | 'operations', tab: string) => {
+    setActiveSpace(space);
+    setActiveTab(tab);
+  };
 
   // --- Date Calculations ---
   // פונקציית עזר לשמירה על שעון מקומי מדויק (מונעת באגים של UTC בישראל)
@@ -1770,7 +1776,7 @@ export default function App() {
         await Promise.all(deletePromises);
       }
       alert("כל הנתונים נמחקו בהצלחה! המערכת כעת נקייה.");
-      setActiveTab('dashboard'); 
+      setActiveTab('sales_dashboard'); 
     } catch (err) { alert("שגיאה במחיקת הנתונים."); }
     setIsSaving(false);
   };
@@ -2190,39 +2196,63 @@ export default function App() {
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> יציאה</button>
           </div>
         </div>
+
+        {/* Space Toggle + Tab Navigation */}
         <div className="max-w-7xl mx-auto px-4 border-t border-slate-100 bg-slate-50/50 relative z-10">
-          <nav className="flex space-x-reverse space-x-1 sm:space-x-4 overflow-x-auto py-2">
-            {[
-              { id: 'dashboard', icon: Activity, label: 'דשבורד' },
-              { id: 'custom_projects', icon: Layers, label: 'פרויקטים קסטום' },
-              { id: 'customers', icon: Users, label: 'לידים ולקוחות' },
-              { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
-              { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
-              { id: 'finance', icon: Wallet, label: 'כספים' },
-              { id: 'shipments', icon: Ship, label: 'משלוחים' },
-              { id: 'suppliers', icon: Building2, label: 'ספקים' },
-              { id: 'marketing', icon: Megaphone, label: 'קמפיינים' },
-              { id: 'models', icon: Layers, label: 'דגמים' },
-              { id: 'settings', icon: Settings, label: 'הגדרות' }
-            ].map(t => (
-              <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
-                <t.icon className="w-4 h-4" /> <span>{t.label}</span>
+          {/* Space Toggle */}
+          <div className="flex items-center gap-2 pt-2 pb-1">
+            <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
+              <button
+                onClick={() => navigateTo('sales', 'sales_dashboard')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+              >
+                <Activity className="w-3.5 h-3.5"/> מכירות
               </button>
-            ))}
-          </nav>
+              <button
+                onClick={() => navigateTo('operations', 'operations_dashboard')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+              >
+                <Ship className="w-3.5 h-3.5"/> תפעול
+              </button>
+            </div>
+            <div className="h-4 w-px bg-slate-300 mx-1"/>
+            <nav className="flex space-x-reverse space-x-1 overflow-x-auto">
+              {(activeSpace === 'sales' ? [
+                { id: 'sales_dashboard', icon: Activity, label: 'דשבורד' },
+                { id: 'leads', icon: UserPlus, label: 'לידים' },
+                { id: 'customers', icon: Users, label: 'לקוחות' },
+                { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
+                { id: 'custom_projects', icon: Layers, label: 'פרויקטים קסטום' },
+                { id: 'marketing', icon: Megaphone, label: 'קמפיינים' },
+                { id: 'settings', icon: Settings, label: 'הגדרות' },
+              ] : [
+                { id: 'operations_dashboard', icon: Activity, label: 'דשבורד' },
+                { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
+                { id: 'shipments', icon: Ship, label: 'משלוחים' },
+                { id: 'finance', icon: Wallet, label: 'כספים' },
+                { id: 'models', icon: Layers, label: 'דגמים' },
+                { id: 'suppliers', icon: Building2, label: 'ספקים' },
+                { id: 'settings', icon: Settings, label: 'הגדרות' },
+              ]).map(t => (
+                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? (activeSpace === 'sales' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-green-100 text-green-700 shadow-sm') : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
+                  <t.icon className="w-4 h-4" /> <span>{t.label}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {/* --- TAB: DASHBOARD --- */}
-        {activeTab === 'dashboard' && (
+        {/* --- TAB: SALES DASHBOARD --- */}
+        {activeTab === 'sales_dashboard' && (
           <div className="space-y-8">
 
             {/* ROW 0: Header */}
             <div className="flex justify-between items-center">
               <div>
-                <h2 className="text-2xl font-bold text-slate-800">תמונת מצב</h2>
+                <h2 className="text-2xl font-bold text-slate-800">תמונת מצב — מכירות</h2>
                 <p className="text-sm text-slate-400 mt-0.5">{new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
               </div>
               <button onClick={handleGetInsights} className="bg-gradient-to-l from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
@@ -2295,7 +2325,7 @@ export default function App() {
                       <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">לידים</h3>
                       <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">{allLeads.length} פעילים</span>
                     </div>
-                    <button onClick={() => { setActiveTab('customers'); setActiveCustomerTab('leads'); }} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">לכל הלידים ▸</button>
+                    <button onClick={() => navigateTo('sales', 'leads')} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">לכל הלידים ▸</button>
                   </div>
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                     {/* Lead stage funnel */}
@@ -2396,31 +2426,7 @@ export default function App() {
               );
             })()}
 
-            {/* ROW 3 — INVENTORY FORECAST */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-1 h-5 bg-slate-400 rounded-full"/>
-                <h3 className="text-base font-bold text-slate-500 uppercase tracking-wide">תחזית מלאי</h3>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {calculatedData.forecasts.map((f: any) => (
-                  <div key={f.model} className={`bg-white p-4 rounded-xl shadow-sm border ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}>
-                    <h4 className="font-bold text-slate-800 mb-3">{f.model}</h4>
-                    <div className="space-y-1.5 text-sm">
-                      <p className="flex justify-between"><span className="text-slate-500">במלאי:</span><span className="font-bold">{f.stock} יח'</span></p>
-                      <p className="flex justify-between"><span className="text-slate-500">בדרך:</span><span className="font-bold text-indigo-600">{f.onTheWay} יח'</span></p>
-                      <p className="flex justify-between"><span className="text-slate-500">מכירות/30י:</span><span className="font-bold">{f.sold30} יח'</span></p>
-                      <div className="pt-2 mt-2 border-t border-slate-100">
-                        <p className={`text-lg font-black ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>{f.daysLeft === 'מעל חצי שנה' ? '6+ חודשים' : f.daysLeft > 0 ? '~' + f.daysLeft + ' ימים' : 'נגמר'}</p>
-                        {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-0.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> מומלץ להזמין</p>}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ROW 4 — WARRANTY ALERTS */}
+            {/* ROW 3 — WARRANTY ALERTS */}
             {(() => {
               const todayMs = new Date().getTime();
               const warrantyAlerts = calculatedData.enrichedItems
@@ -2454,6 +2460,95 @@ export default function App() {
                 </div>
               );
             })()}
+
+          </div>
+        )}
+
+        {/* --- TAB: OPERATIONS DASHBOARD --- */}
+        {activeTab === 'operations_dashboard' && (
+          <div className="space-y-8">
+            {/* Header */}
+            <div>
+              <h2 className="text-2xl font-bold text-slate-800">תמונת מצב — תפעול</h2>
+              <p className="text-sm text-slate-400 mt-0.5">{new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+            </div>
+
+            {/* ROW 1 — מלאי + כספים */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Package className="w-3.5 h-3.5 text-green-500"/> פריטים במחסן</p>
+                <p className="text-3xl font-black text-slate-800">{calculatedData.inWarehouseCount}</p>
+                <p className="text-xs text-slate-400 mt-0.5">שווי: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Ship className="w-3.5 h-3.5 text-indigo-500"/> בדרך / בייצור</p>
+                <p className="text-3xl font-black text-indigo-700">{calculatedData.enrichedItems.filter((i: any) => i.status === 'ordered' || i.status === 'in_transit').length}</p>
+                <p className="text-xs text-slate-400 mt-0.5">פריטים בהמתנה</p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5 text-green-500"/> הכנסה חודש נוכחי</p>
+                <p className="text-2xl font-black text-green-600">₪{Math.round(calculatedData.currentMonthIncome).toLocaleString()}</p>
+                <p className="text-xs text-slate-400 mt-0.5">רווח ממוצע: ₪{calculatedData.avgProfit.toLocaleString()}/בר</p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Wallet className="w-3.5 h-3.5 text-red-500"/> הוצאות חודש נוכחי</p>
+                <p className="text-2xl font-black text-red-600">₪{Math.round(calculatedData.selectedMonthData?.expense || 0).toLocaleString()}</p>
+                <p className={`text-xs mt-0.5 font-bold ${(calculatedData.currentMonthIncome - (calculatedData.selectedMonthData?.expense||0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  רווח: ₪{Math.round(calculatedData.currentMonthIncome - (calculatedData.selectedMonthData?.expense||0)).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {/* ROW 2 — תחזית מלאי */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-1 h-5 bg-green-500 rounded-full"/>
+                <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">תחזית מלאי</h3>
+                <button onClick={() => navigateTo('operations', 'inventory')} className="text-xs text-green-600 hover:text-green-800 font-medium flex items-center gap-1 mr-auto">לניהול מלאי ▸</button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {calculatedData.forecasts.map((f: any) => (
+                  <div key={f.model} className={`bg-white p-4 rounded-xl shadow-sm border ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}>
+                    <h4 className="font-bold text-slate-800 mb-3">{f.model}</h4>
+                    <div className="space-y-1.5 text-sm">
+                      <p className="flex justify-between"><span className="text-slate-500">במלאי:</span><span className="font-bold">{f.stock} יח'</span></p>
+                      <p className="flex justify-between"><span className="text-slate-500">בדרך:</span><span className="font-bold text-indigo-600">{f.onTheWay} יח'</span></p>
+                      <p className="flex justify-between"><span className="text-slate-500">מכירות/30י:</span><span className="font-bold">{f.sold30} יח'</span></p>
+                      <div className="pt-2 mt-2 border-t border-slate-100">
+                        <p className={`text-lg font-black ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>{f.daysLeft === 'מעל חצי שנה' ? '6+ חודשים' : f.daysLeft > 0 ? '~' + f.daysLeft + ' ימים' : 'נגמר'}</p>
+                        {f.daysLeft !== 0 && f.daysLeft < 30 && <p className="text-xs text-red-500 mt-0.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> מומלץ להזמין</p>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ROW 3 — משלוחים אחרונים */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-1 h-5 bg-indigo-500 rounded-full"/>
+                <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">משלוחים פעילים</h3>
+                <button onClick={() => navigateTo('operations', 'shipments')} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 mr-auto">לכל המשלוחים ▸</button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {shipments.filter((s: any) => s.status !== 'in_warehouse').slice(0, 6).map((s: any) => (
+                  <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+                    <div className="flex justify-between items-start mb-2">
+                      <p className="font-bold text-slate-800 text-sm">{s.name}</p>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${s.status === 'in_transit' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {SHIPMENT_STATUS_MAP[s.status] || s.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">{s.date ? new Date(s.date).toLocaleDateString('he-IL') : ''}</p>
+                    {s.lines && <p className="text-xs text-slate-500 mt-1">{s.lines.reduce((acc: number, l: any) => acc + Number(l.qty), 0)} פריטים</p>}
+                  </div>
+                ))}
+                {shipments.filter((s: any) => s.status !== 'in_warehouse').length === 0 && (
+                  <div className="col-span-full bg-white p-6 rounded-xl border border-slate-200 text-center text-slate-400 text-sm">אין משלוחים פעילים כרגע.</div>
+                )}
+              </div>
+            </div>
 
           </div>
         )}
@@ -3093,24 +3188,33 @@ export default function App() {
         )}
 
         {/* --- TAB: CUSTOMERS --- */}
-        {activeTab === 'customers' && (
+        {/* --- TAB: LEADS --- */}
+        {activeTab === 'leads' && (
           <div>
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-slate-800">ניהול לקוחות ולידים</h2>
-              <button 
-                onClick={() => { 
-                  setShowQuickImport(false); 
-                  setQuickImportText(''); 
-                  setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' }); 
-                  setIsCustomerModalOpen(true); 
-                }} 
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
-              >
-                <UserPlus className="w-4 h-4"/> הוסף לקוח / ליד חדש
-              </button>
+              <h2 className="text-2xl font-bold text-slate-800">לידים מתעניינים</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setIsImportModalOpen(true)}
+                  className="bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-700 flex items-center gap-2"
+                >
+                  <Upload className="w-4 h-4"/> ייבוא מפייסבוק
+                </button>
+                <button
+                  onClick={() => {
+                    setShowQuickImport(false);
+                    setQuickImportText('');
+                    setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' });
+                    setIsCustomerModalOpen(true);
+                  }}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                >
+                  <UserPlus className="w-4 h-4"/> ליד חדש
+                </button>
+              </div>
             </div>
 
-            {/* י - שורת חיפוש */}
+            {/* חיפוש */}
             <div className="mb-4 relative">
               <input
                 type="text"
@@ -3126,24 +3230,8 @@ export default function App() {
               )}
             </div>
 
-            {/* Sub-navigation for Customers / Leads */}
-            <div className="flex gap-4 mb-4 border-b border-slate-200">
-              <button 
-                onClick={() => setActiveCustomerTab('customers')} 
-                className={`pb-2 font-medium text-sm transition-colors ${activeCustomerTab === 'customers' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                לקוחות פעילים ועבר
-              </button>
-              <button 
-                onClick={() => setActiveCustomerTab('leads')} 
-                className={`pb-2 font-medium text-sm transition-colors ${activeCustomerTab === 'leads' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                לידים מתעניינים
-              </button>
-            </div>
-
-            {/* ===== LEADS TAB ===== */}
-            {activeCustomerTab === 'leads' && (() => {
+            {/* Leads content */}
+            {(() => {
               const todayStr3 = getLocalYYYYMMDD(new Date());
               const allLeads = customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant');
               const archivedLeads = customers.filter(c => c.status === 'lead' && c.leadStage === 'not_relevant');
@@ -3166,7 +3254,6 @@ export default function App() {
               const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
               const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
 
-              // ספירות לפי שלב (לפילטר)
               const stageCounts: Record<string, number> = {};
               allLeads.forEach(c => { const s = c.leadStage || 'new'; stageCounts[s] = (stageCounts[s] || 0) + 1; });
 
@@ -3373,8 +3460,26 @@ export default function App() {
               );
             })()}
 
-            {/* ===== CUSTOMERS TAB ===== */}
-            {activeCustomerTab === 'customers' && (
+          </div>
+        )}
+
+        {/* --- TAB: CUSTOMERS --- */}
+        {activeTab === 'customers' && (
+          <div>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-slate-800">לקוחות פעילים ועבר</h2>
+              <button
+                onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }}
+                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+              >
+                <UserPlus className="w-4 h-4"/> הוסף לקוח
+              </button>
+            </div>
+            {/* חיפוש */}
+            <div className="mb-4 relative">
+              <input type="text" placeholder="חיפוש לפי שם, טלפון, אימייל..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"/>
+              {customerSearch && <button onClick={() => setCustomerSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"><X className="w-4 h-4"/></button>}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {customers
                 .filter(c => c.status !== 'lead')
@@ -3446,7 +3551,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            )}
           </div>
         )}
 
