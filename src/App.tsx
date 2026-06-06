@@ -452,6 +452,7 @@ export default function App() {
   const [quoteStatusFilter, setQuoteStatusFilter] = useState<string>('all');
 
   const [newModelName, setNewModelName] = useState('');
+  const [editingModelName, setEditingModelName] = useState<{old: string, newVal: string} | null>(null);
   const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [arrivalPrompt, setArrivalPrompt] = useState<{isOpen: boolean, shipment: any, date: string}>({ isOpen: false, shipment: null, date: '' });
@@ -1084,12 +1085,82 @@ export default function App() {
     e.preventDefault();
     if (!newModelName.trim()) return;
     try {
-      const newSettings = { ...settings, models: { ...settings.models, [newModelName.trim()]: { cbm: 0, blueprintUrl: '', itemImgUrl: '' } } };
+      const newSettings = { ...settings, models: { ...settings.models, [newModelName.trim()]: { cbm: 0, blueprintUrl: '', itemImgUrl: '', listPrice: 0, videoUrl: '' } } };
       await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setNewModelName('');
     } catch(err) { console.error(err); }
   };
   
+  const renameModel = async (oldName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    if (trimmed === oldName) { setEditingModelName(null); return; }
+    if (settings.models?.[trimmed]) { alert(`דגם בשם "${trimmed}" כבר קיים במערכת.`); return; }
+
+    const affectedItems = items.filter(i => i.model === oldName);
+    const affectedQuotes = quotes.filter(q => q.items?.some((i: any) => i.model === oldName));
+    const affectedShipments = shipments.filter(s => s.lines?.some((l: any) => l.model === oldName));
+    const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some((l: any) => l.model === oldName));
+
+    const total = affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length;
+    const confirmed = window.confirm(
+      `שינוי שם "${oldName}" ל-"${trimmed}"\n\n` +
+      `יעדכן ${total} רשומות:\n` +
+      `• ${affectedItems.length} פריטי מלאי\n` +
+      `• ${affectedQuotes.length} הצעות מחיר\n` +
+      `• ${affectedShipments.length} משלוחים\n` +
+      `• ${affectedLocalPurchases.length} רכישות מקומיות\n\n` +
+      `הפעולה אינה הפיכה. להמשיך?`
+    );
+    if (!confirmed) return;
+
+    setIsSaving(true);
+    try {
+      // 1. settings.models — מפתח חדש, מחיקת ישן
+      const newModels = { ...settings.models };
+      newModels[trimmed] = { ...newModels[oldName] };
+      delete newModels[oldName];
+      const newSettings = { ...settings, models: newModels };
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
+      setSettings(newSettings);
+
+      // 2. crm_items
+      for (const item of affectedItems) {
+        await updateDoc(doc(db, 'crm_items', item.id), { model: trimmed, updatedAt: new Date().toISOString() });
+      }
+
+      // 3. crm_quotes — עדכון items[] בתוך כל הצעה
+      for (const q of affectedQuotes) {
+        const newQItems = (q.items || []).map((i: any) =>
+          i.model === oldName ? { ...i, model: trimmed } : i
+        );
+        await updateDoc(doc(db, 'crm_quotes', q.id), { items: newQItems, updatedAt: new Date().toISOString() });
+      }
+
+      // 4. crm_shipments — עדכון lines[] בתוך כל משלוח
+      for (const s of affectedShipments) {
+        const newLines = (s.lines || []).map((l: any) =>
+          l.model === oldName ? { ...l, model: trimmed } : l
+        );
+        await updateDoc(doc(db, 'crm_shipments', s.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+
+      // 5. crm_local_purchases — עדכון lines[]
+      for (const lp of affectedLocalPurchases) {
+        const newLines = (lp.lines || []).map((l: any) =>
+          l.model === oldName ? { ...l, model: trimmed } : l
+        );
+        await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+
+      setEditingModelName(null);
+      alert(`✓ שם הדגם שונה ל-"${trimmed}" בהצלחה.`);
+    } catch (err: any) {
+      alert(`שגיאה בשינוי שם הדגם: ${err?.message || 'שגיאה לא ידועה'}`);
+    }
+    setIsSaving(false);
+  };
+
   const handleAddNewModelWithData = async (e: any) => {
       e.preventDefault();
       if (!newModelData.name.trim()) return;
@@ -1446,6 +1517,11 @@ export default function App() {
     setIsSaving(true);
     try {
       const data = { ...customerEditingData, updatedAt: new Date().toISOString() };
+      // ניקוי אוטומטי של תזכורת follow-up כשמעבירים ל"לא רלוונטי"
+      if (data.leadStage === 'not_relevant') {
+        data.followUpDate = null;
+        data.followUpNote = '';
+      }
       let newCustomerId = data.id;
       if (data.id) {
         await updateDoc(doc(db, 'crm_customers', data.id), data);
@@ -2656,9 +2732,9 @@ export default function App() {
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
                 <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Wallet className="w-3.5 h-3.5 text-red-500"/> הוצאות חודש נוכחי</p>
-                <p className="text-2xl font-black text-red-600">₪{Math.round(calculatedData.selectedMonthData?.expense || 0).toLocaleString()}</p>
-                <p className={`text-xs mt-0.5 font-bold ${(calculatedData.currentMonthIncome - (calculatedData.selectedMonthData?.expense||0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  רווח: ₪{Math.round(calculatedData.currentMonthIncome - (calculatedData.selectedMonthData?.expense||0)).toLocaleString()}
+                <p className="text-2xl font-black text-red-600">₪{Math.round(calculatedData.monthlyFinance[today.getMonth()]?.expense || 0).toLocaleString()}</p>
+                <p className={`text-xs mt-0.5 font-bold ${(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[today.getMonth()]?.expense||0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  רווח: ₪{Math.round(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[today.getMonth()]?.expense||0)).toLocaleString()}
                 </p>
               </div>
             </div>
@@ -3120,7 +3196,42 @@ export default function App() {
                   return (
                   <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
                     <div className="flex justify-between items-center mb-4">
-                        <h4 className="font-bold text-lg text-slate-800">{model}</h4>
+                        {/* שם דגם + עריכה inline */}
+                        {editingModelName?.old === model ? (
+                          <div className="flex items-center gap-2 flex-1 ml-4">
+                            <input
+                              autoFocus
+                              type="text"
+                              className="border border-indigo-400 rounded-md p-1.5 font-bold text-lg text-slate-800 bg-white focus:ring-2 focus:ring-indigo-500 outline-none w-40"
+                              value={editingModelName.newVal}
+                              onChange={e => setEditingModelName({ old: model, newVal: e.target.value })}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') renameModel(model, editingModelName.newVal);
+                                if (e.key === 'Escape') setEditingModelName(null);
+                              }}
+                            />
+                            <button
+                              onClick={() => renameModel(model, editingModelName.newVal)}
+                              disabled={isSaving}
+                              className="bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                            >שמור שם</button>
+                            <button
+                              onClick={() => setEditingModelName(null)}
+                              className="text-slate-400 hover:text-slate-600 text-xs px-2 py-1.5 rounded-md border border-slate-200 bg-white"
+                            >ביטול</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-lg text-slate-800">{model}</h4>
+                            <button
+                              onClick={() => setEditingModelName({ old: model, newVal: model })}
+                              className="text-slate-400 hover:text-indigo-600 p-1 rounded transition-colors"
+                              title="ערוך שם דגם"
+                            >
+                              <Edit className="w-3.5 h-3.5"/>
+                            </button>
+                          </div>
+                        )}
                         <div className="flex items-center gap-3 flex-wrap">
                             <div className="flex items-center gap-2">
                               <label className="text-sm font-medium text-slate-600">ספק ראשי:</label>
@@ -5801,7 +5912,7 @@ export default function App() {
                       onClick={() => { 
                         setShowQuickImport(false); 
                         setQuickImportText(''); 
-                        setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'active', hp: '', email: '', address: '', status: 'active', notes: '' }); 
+                        setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); 
                         setIsCustomerModalOpen(true); 
                       }} 
                       className="text-xs font-bold text-purple-700 hover:text-purple-900 flex items-center gap-1 bg-purple-100 px-2 py-1 rounded-md transition-colors"
