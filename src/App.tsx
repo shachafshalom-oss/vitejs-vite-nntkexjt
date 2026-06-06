@@ -965,10 +965,36 @@ export default function App() {
 
     const selectedMonthData = monthlyFinance[financeMonth - 1] || { income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } };
 
+    // --- ממוצע היסטורי חודשי (למעט החודש הנוכחי) ---
+    const pastMonthIncomeMap: Record<string, number> = {};
+    enrichedItems.forEach(item => {
+      if (item.status === 'sold' && item.saleDate) {
+        const monthKey = item.saleDate.substring(0, 7); // YYYY-MM
+        if (monthKey < currentMonthStr) {
+          pastMonthIncomeMap[monthKey] = (pastMonthIncomeMap[monthKey] || 0) + (item.totalRevenue || 0);
+        }
+      }
+    });
+    const pastMonthsWithIncome = Object.values(pastMonthIncomeMap).filter(v => v > 0);
+    const avgPastMonthsIncome = pastMonthsWithIncome.length > 0
+      ? Math.round(pastMonthsWithIncome.reduce((a, b) => a + b, 0) / pastMonthsWithIncome.length)
+      : 0;
+    const avgPastMonthsCount = pastMonthsWithIncome.length;
+
+    // --- פוטנציאל רווח מלאי (listPrice - totalLandedCost לכל פריט במחסן) ---
+    const profitPotential = enrichedItems
+      .filter(item => item.status === 'in_warehouse')
+      .reduce((sum, item) => {
+        const lp = Number(settings?.models?.[item.model]?.listPrice) || 0;
+        if (lp === 0) return sum;
+        return sum + Math.max(0, lp - (item.totalLandedCost || 0));
+      }, 0);
+
     return { 
       enrichedItems, groupedInventory: groupedArray, shipmentStats, campaignStats, customerStats, 
       inWarehouseCount, totalInventoryValueILS, avgProfit: calculatedAvgProfit, forecasts, modelsInStock, availableModelsInStock, stockInWarehouse,
       monthlyFinance, availableMonths, selectedMonthData, yearlyIncome, yearlyExpense, currentMonthIncome, lastMonthIncome,
+      avgPastMonthsIncome, avgPastMonthsCount, profitPotential,
       supplierStats: (() => {
         const stats: any = {};
         // בנה map: modelName → supplierId
@@ -2325,19 +2351,24 @@ export default function App() {
                   <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 80% 20%, white 0%, transparent 60%)'}}/>
                   <p className="text-sm font-medium text-indigo-200 mb-1">הכנסות חודש נוכחי</p>
                   <p className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
                     {(() => {
-                      const diff = calculatedData.currentMonthIncome - calculatedData.lastMonthIncome;
-                      const pct = calculatedData.lastMonthIncome > 0 ? Math.round((diff / calculatedData.lastMonthIncome) * 100) : 0;
+                      if (calculatedData.avgPastMonthsCount === 0) {
+                        return <span className="text-indigo-300 text-sm">אין נתוני עבר להשוואה עדיין</span>;
+                      }
+                      const diff = calculatedData.currentMonthIncome - calculatedData.avgPastMonthsIncome;
+                      const pct = calculatedData.avgPastMonthsIncome > 0 ? Math.round((diff / calculatedData.avgPastMonthsIncome) * 100) : 0;
                       const isUp = diff >= 0;
                       return (
-                        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${isUp ? 'bg-green-400/20 text-green-200' : 'bg-red-400/20 text-red-200'}`}>
-                          {isUp ? <ArrowUpRight className="w-4 h-4"/> : <ArrowDownRight className="w-4 h-4"/>}
-                          {isUp ? '+' : ''}{pct}% לעומת חודש שעבר
-                        </div>
+                        <>
+                          <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${isUp ? 'bg-green-400/20 text-green-200' : 'bg-red-400/20 text-red-200'}`}>
+                            {isUp ? <ArrowUpRight className="w-4 h-4"/> : <ArrowDownRight className="w-4 h-4"/>}
+                            {isUp ? '+' : ''}{pct}% לעומת ממוצע
+                          </div>
+                          <span className="text-indigo-300 text-sm">ממוצע חודשי ({calculatedData.avgPastMonthsCount} חודשים): ₪{calculatedData.avgPastMonthsIncome.toLocaleString()}</span>
+                        </>
                       );
                     })()}
-                    <span className="text-indigo-300 text-sm">חודש שעבר: ₪{calculatedData.lastMonthIncome.toLocaleString()}</span>
                   </div>
                 </div>
                 <div className="flex flex-col gap-4">
@@ -2531,7 +2562,7 @@ export default function App() {
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
                 <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Package className="w-3.5 h-3.5 text-green-500"/> פריטים במחסן</p>
                 <p className="text-3xl font-black text-slate-800">{calculatedData.inWarehouseCount}</p>
-                <p className="text-xs text-slate-400 mt-0.5">שווי: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
+                <p className="text-xs text-slate-400 mt-0.5">שווי עלות: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
                 <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Ship className="w-3.5 h-3.5 text-indigo-500"/> בדרך / בייצור</p>
@@ -2551,6 +2582,27 @@ export default function App() {
                 </p>
               </div>
             </div>
+
+            {/* ROW 1b — פוטנציאל רווח */}
+            {calculatedData.profitPotential > 0 && (
+              <div className="bg-gradient-to-l from-green-600 to-emerald-600 rounded-xl p-5 text-white shadow-md">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-green-200 mb-1 flex items-center gap-2">
+                      <DollarSign className="w-4 h-4"/> פוטנציאל רווח מהמלאי הקיים
+                    </p>
+                    <p className="text-4xl font-black tracking-tight">₪{Math.round(calculatedData.profitPotential).toLocaleString()}</p>
+                    <p className="text-green-200 text-sm mt-1">לפי מחירי מחירון מינוס עלות landed — על {calculatedData.inWarehouseCount} פריטים במחסן</p>
+                  </div>
+                  <div className="text-right opacity-80">
+                    <p className="text-xs text-green-200">שווי עלות מלאי</p>
+                    <p className="text-lg font-bold">₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
+                    <p className="text-xs text-green-200 mt-1">מחיר מחירון כולל</p>
+                    <p className="text-lg font-bold">₪{Math.round(calculatedData.totalInventoryValueILS + calculatedData.profitPotential).toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ROW 2 — תחזית מלאי */}
             <div>
