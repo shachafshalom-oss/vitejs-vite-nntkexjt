@@ -2009,12 +2009,17 @@ export default function App() {
   // --- Global Catalog PDF Upload ---
   const uploadGlobalCatalog = async (file: File) => {
     if (!file) return;
-    if (file.type !== 'application/pdf') { alert('יש להעלות קובץ PDF בלבד.'); return; }
+    // בדיקה לפי סיומת (לא file.type — לא אמין על iOS)
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext !== 'pdf') { alert('יש להעלות קובץ PDF בלבד.'); return; }
     setIsCatalogUploading(true);
     setCatalogUploadProgress(0);
     try {
-      const fileRef = storageRef(storage, `company-catalog/catalog.pdf`);
+      // נתיב שנמצא כבר בתוך כללי Firebase Storage הקיימים
+      const fileRef = storageRef(storage, `supplier-catalogs/company-global/catalog.pdf`);
       const uploadTask = uploadBytesResumable(fileRef, file);
+      // מונע unhandled rejection מה-Promise הפנימי של UploadTask
+      uploadTask.catch(() => {});
       await new Promise<void>((resolve, reject) => {
         uploadTask.on('state_changed',
           (snap) => setCatalogUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
@@ -2027,9 +2032,18 @@ export default function App() {
       setSettings(updated);
       await setDoc(doc(db, 'crm_settings', 'general_settings'), updated);
       alert('קטלוג הועלה בהצלחה!');
-    } catch (err) { alert('שגיאה בהעלאת הקטלוג.'); }
-    setIsCatalogUploading(false);
-    setCatalogUploadProgress(null);
+    } catch (err: any) {
+      const code = err?.code || err?.serverResponse || '';
+      const msg = code === 'storage/unauthorized'
+        ? 'אין הרשאות Firebase Storage לנתיב זה. נסה לעדכן את כללי Storage בקונסול Firebase.'
+        : code === 'storage/quota-exceeded'
+        ? 'חרגת ממכסת Firebase Storage.'
+        : `שגיאה בהעלאת הקטלוג: ${code || err?.message || 'שגיאה לא ידועה'}`;
+      alert(msg);
+    } finally {
+      setIsCatalogUploading(false);
+      setCatalogUploadProgress(null);
+    }
   };
 
   const logCatalogSent = async (customer: any) => {
@@ -4519,12 +4533,29 @@ export default function App() {
                     <p className="text-xs text-slate-400 mb-2">לא הועלה קטלוג עדיין</p>
                   )}
                   <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-100 text-indigo-400 pointer-events-none' : 'border-indigo-300 hover:border-indigo-500 hover:bg-indigo-100 text-indigo-600'}`}>
-                    {isCatalogUploading ? `מעלה... ${catalogUploadProgress}%` : '⬆️ העלה / החלף קטלוג PDF'}
-                    <input type="file" accept=".pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); (e.target as HTMLInputElement).value = ''; }}/>
+                    {isCatalogUploading ? `מעלה... ${catalogUploadProgress ?? 0}%` : '⬆️ העלה / החלף קטלוג PDF'}
+                    <input type="file" accept=".pdf,application/pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); (e.target as HTMLInputElement).value = ''; }}/>
                   </label>
                   {catalogUploadProgress !== null && (
                     <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
                   )}
+                  {/* Fallback: הדבקת URL ידנית */}
+                  <details className="mt-3">
+                    <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600 select-none">⚙️ חלופה: הדבק קישור ישיר לPDF (Google Drive / Dropbox)</summary>
+                    <div className="mt-2 flex gap-2">
+                      <input type="url" className="flex-1 border border-slate-300 rounded p-1.5 text-xs text-slate-700 focus:ring-indigo-500 focus:border-indigo-500" placeholder="https://..." id="catalog-url-input"/>
+                      <button onClick={async () => {
+                        const inp = document.getElementById('catalog-url-input') as HTMLInputElement;
+                        const url = inp?.value?.trim();
+                        if (!url) return;
+                        const u = { ...settings, catalogPdfUrl: url };
+                        setSettings(u);
+                        await setDoc(doc(db, 'crm_settings', 'general_settings'), u);
+                        alert('קישור נשמר!');
+                      }} className="bg-indigo-600 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-indigo-700 whitespace-nowrap">שמור קישור</button>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">שים לב: ב-Google Drive — לחץ "שיתוף" ← "כל אחד עם הקישור" ← העתק קישור</p>
+                  </details>
                   <p className="text-xs text-slate-400 mt-2">סרטוני וידאו לכל דגם — הגדר בטאב דגמים (תפעול)</p>
                 </div>
                 <div>
