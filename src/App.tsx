@@ -4520,55 +4520,85 @@ export default function App() {
 
             {/* --- קטלוג חברה גלובלי --- */}
             <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 mt-2">
-              <h2 className="font-bold text-indigo-800 text-lg mb-4 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h2>
+              <h2 className="font-bold text-indigo-800 text-lg mb-1 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h2>
+              <p className="text-xs text-slate-500 mb-4">הגדר קישור לקטלוג PDF — ישלח אוטומטית ללידים בלחיצה מטאב הלידים.</p>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <p className="text-sm font-medium text-slate-700 mb-2">קובץ PDF גלובלי</p>
-                  {settings?.catalogPdfUrl ? (
-                    <div className="flex items-center gap-3 mb-3">
-                      <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-sm text-indigo-600 underline flex items-center gap-1">📄 קטלוג קיים — לחץ לצפייה</a>
+                {/* === נתיב א: קישור URL — עיקרי ומומלץ === */}
+                <div className="bg-white rounded-xl border border-indigo-200 p-4">
+                  <p className="text-sm font-bold text-indigo-800 mb-1 flex items-center gap-1.5">
+                    <span className="bg-indigo-600 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-black">1</span>
+                    הדבק קישור לקטלוג — מומלץ
+                  </p>
+                  <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+                    העלה את הPDF לGoogle Drive, Dropbox, או כל שירות ← קבל קישור שיתוף ← הדבק כאן.
+                    <br/>
+                    <strong className="text-slate-700">Google Drive:</strong> לחץ על הקובץ ← "שתף" ← "כל אחד עם הקישור" ← "העתק קישור"
+                  </p>
+                  {settings?.catalogPdfUrl && (
+                    <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
+                      <span className="text-xs text-green-700 font-medium">✓ קטלוג מוגדר</span>
+                      <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 underline mr-auto">בדוק קישור ▸</a>
                       <button onClick={async () => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); await setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
                     </div>
-                  ) : (
-                    <p className="text-xs text-slate-400 mb-2">לא הועלה קטלוג עדיין</p>
                   )}
-                  <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-100 text-indigo-400 pointer-events-none' : 'border-indigo-300 hover:border-indigo-500 hover:bg-indigo-100 text-indigo-600'}`}>
-                    {isCatalogUploading ? `מעלה... ${catalogUploadProgress ?? 0}%` : '⬆️ העלה / החלף קטלוג PDF'}
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      className="flex-1 border border-indigo-300 rounded-lg p-2 text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                      placeholder="https://drive.google.com/..."
+                      value={settings?.catalogPdfUrl || ''}
+                      onChange={e => setSettings({...settings, catalogPdfUrl: e.target.value})}
+                    />
+                    <button
+                      onClick={async () => {
+                        const url = settings?.catalogPdfUrl?.trim();
+                        if (!url) return;
+                        try {
+                          const u = { ...settings, catalogPdfUrl: url };
+                          await setDoc(doc(db, 'crm_settings', 'general_settings'), u);
+                          alert('✓ הקישור נשמר בהצלחה!');
+                        } catch { alert('שגיאה בשמירה.'); }
+                      }}
+                      className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 whitespace-nowrap shadow-sm"
+                    >שמור</button>
+                  </div>
+                </div>
+
+                {/* === נתיב ב: העלאה ישירה לFirebase Storage === */}
+                <div className="bg-white rounded-xl border border-slate-200 p-4">
+                  <p className="text-sm font-bold text-slate-700 mb-1 flex items-center gap-1.5">
+                    <span className="bg-slate-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-black">2</span>
+                    העלאה ישירה לFirebase Storage
+                  </p>
+                  <p className="text-xs text-slate-400 mb-3">דורש הגדרת כללי Firebase Storage. אם לא עובד — השתמש בנתיב 1.</p>
+                  <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-slate-300 bg-slate-100 text-slate-400 pointer-events-none' : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 text-slate-600'}`}>
+                    {isCatalogUploading ? `מעלה... ${catalogUploadProgress ?? 0}%` : '⬆️ העלה PDF'}
                     <input type="file" accept=".pdf,application/pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); (e.target as HTMLInputElement).value = ''; }}/>
                   </label>
                   {catalogUploadProgress !== null && (
                     <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
                   )}
-                  {/* Fallback: הדבקת URL ידנית */}
-                  <details className="mt-3">
-                    <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600 select-none">⚙️ חלופה: הדבק קישור ישיר לPDF (Google Drive / Dropbox)</summary>
-                    <div className="mt-2 flex gap-2">
-                      <input type="url" className="flex-1 border border-slate-300 rounded p-1.5 text-xs text-slate-700 focus:ring-indigo-500 focus:border-indigo-500" placeholder="https://..." id="catalog-url-input"/>
-                      <button onClick={async () => {
-                        const inp = document.getElementById('catalog-url-input') as HTMLInputElement;
-                        const url = inp?.value?.trim();
-                        if (!url) return;
-                        const u = { ...settings, catalogPdfUrl: url };
-                        setSettings(u);
-                        await setDoc(doc(db, 'crm_settings', 'general_settings'), u);
-                        alert('קישור נשמר!');
-                      }} className="bg-indigo-600 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-indigo-700 whitespace-nowrap">שמור קישור</button>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">שים לב: ב-Google Drive — לחץ "שיתוף" ← "כל אחד עם הקישור" ← העתק קישור</p>
-                  </details>
-                  <p className="text-xs text-slate-400 mt-2">סרטוני וידאו לכל דגם — הגדר בטאב דגמים (תפעול)</p>
+                  <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                    אם ההעלאה נכשלת עם "storage/unauthorized" — בקונסול Firebase:
+                    Storage ← Rules ← שנה ל: <code className="bg-slate-100 px-1 rounded">allow read, write: if request.auth != null;</code>
+                  </p>
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-slate-700 mb-2">תבנית הודעת WhatsApp</p>
-                  <p className="text-xs text-slate-400 mb-1">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
+              </div>
+
+              {/* תבנית הודעה */}
+              <div className="mt-4 pt-4 border-t border-indigo-200">
+                <p className="text-sm font-medium text-slate-700 mb-1">תבנית הודעת WhatsApp</p>
+                <p className="text-xs text-slate-400 mb-2">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
+                <div className="flex gap-3">
                   <textarea
-                    rows={6}
-                    className="w-full border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
+                    rows={5}
+                    className="flex-1 border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
                     placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`}
                     value={settings?.catalogMessageTemplate || ''}
                     onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
                   />
-                  <button onClick={saveSettings} className="mt-2 bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-medium hover:bg-indigo-700">שמור תבנית</button>
+                  <button onClick={saveSettings} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 self-end">שמור</button>
                 </div>
               </div>
             </div>
@@ -6862,9 +6892,38 @@ export default function App() {
                     <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="mr-auto text-xs underline">צפה</a>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                    <span>⚠️ לא הועלה קטלוג — תישלח הודעה בלבד</span>
-                    <button onClick={() => { setIsCatalogSendModalOpen(false); setActiveTab('settings'); }} className="mr-auto text-xs underline">הגדר</button>
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <p className="text-sm text-amber-800 font-medium mb-2">⚠️ לא הוגדר קטלוג — 2 אפשרויות:</p>
+                    <div className="flex flex-col gap-2">
+                      {/* אפשרות א: שלח ממכשיר (מובייל) */}
+                      <label className="flex items-center gap-2 bg-white border border-amber-300 rounded-lg px-3 py-2 cursor-pointer hover:bg-amber-50">
+                        <input type="file" accept=".pdf,application/pdf" className="hidden" onChange={async e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (!(navigator as any).canShare?.({ files: [file] })) {
+                            alert('Web Share API לא נתמך בדפדפן זה. אנא השתמש בנתיב ב.');
+                            return;
+                          }
+                          setCatalogSending(true);
+                          try {
+                            const leadName = catalogSendTarget?.contactName || catalogSendTarget?.businessName || '';
+                            const vids = catalogSelectedModels.map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; }).filter(Boolean).join('\n');
+                            const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`;
+                            const msg = tpl.replace('{name}', leadName).replace('{videos}', vids || '').replace(/\n{3,}/g, '\n\n').trim();
+                            await (navigator as any).share({ files: [file], text: msg, title: 'קטלוג D.S Logistics' });
+                            await logCatalogSent(catalogSendTarget);
+                            setIsCatalogSendModalOpen(false);
+                          } catch(ex: any) { if (ex?.name !== 'AbortError') alert('שגיאה בשיתוף'); }
+                          setCatalogSending(false);
+                          (e.target as HTMLInputElement).value = '';
+                        }}/>
+                        <span className="text-sm text-amber-800 font-medium">📂 בחר PDF ממכשיר ושלח (מובייל)</span>
+                      </label>
+                      {/* אפשרות ב: הגדר קישור */}
+                      <button onClick={() => { setIsCatalogSendModalOpen(false); setActiveTab('settings'); }} className="flex items-center gap-2 text-sm text-amber-800 bg-white border border-amber-300 rounded-lg px-3 py-2 hover:bg-amber-50 text-right">
+                        <span>⚙️ הגדר קישור קטלוג בהגדרות (פעם אחת לכולם)</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
