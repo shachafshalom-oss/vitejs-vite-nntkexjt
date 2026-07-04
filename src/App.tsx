@@ -412,6 +412,7 @@ export default function App() {
   const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>, shippingInstallationCost: number} | null>(null);
   const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
   const [inlineSalePrices, setInlineSalePrices] = useState<Record<string, Record<string, number>>>({}); // projId -> {idx: price}
+  const [expandedInfoRows, setExpandedInfoRows] = useState<Record<string, boolean>>({}); // "projId:index" -> is the "Product Information" panel open
 
   // --- Custom Projects: autosave (no manual "save" click needed) ---
   const [autosaveStatus, setAutosaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({}); // debounce key -> status
@@ -4227,7 +4228,8 @@ export default function App() {
                                   debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
                                 };
                                 return (
-                                  <tr key={i} className="hover:bg-slate-50">
+                                  <React.Fragment key={i}>
+                                  <tr className="hover:bg-slate-50">
                                     <td className="px-3 py-2">
                                       <div className="relative group w-14 h-14">
                                         {pr.images && pr.images.length > 0
@@ -4246,7 +4248,17 @@ export default function App() {
                                     <td className="px-3 py-2 font-mono text-xs text-slate-500 whitespace-nowrap">{pr.id}</td>
                                     <td className="px-3 py-2 min-w-[160px]">
                                       <input className="w-full font-bold text-slate-800 text-xs bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors" value={pr.itemHe} onChange={e => updatePr({ itemHe: e.target.value })} title="שם עברי"/>
-                                      <input className="w-full text-[10px] text-slate-400 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-slate-300 outline-none py-0.5 transition-colors" value={pr.itemEn} onChange={e => updatePr({ itemEn: e.target.value })} title="שם אנגלי"/>
+                                      <input className="w-full text-[11px] text-slate-400 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-slate-300 outline-none py-0.5 transition-colors" value={pr.itemEn} onChange={e => updatePr({ itemEn: e.target.value })} title="שם אנגלי"/>
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedInfoRows(prev => ({ ...prev, [`${proj.id}:${i}`]: !prev[`${proj.id}:${i}`] }))}
+                                        className={`mt-1 text-[11px] flex items-center gap-1 font-medium ${pr.info ? 'text-indigo-600 hover:text-indigo-800' : 'text-slate-400 hover:text-slate-600'}`}
+                                        aria-expanded={!!expandedInfoRows[`${proj.id}:${i}`]}
+                                      >
+                                        <FileText className="w-3 h-3" aria-hidden="true"/>
+                                        {pr.info ? 'מידע ללקוח ✓' : 'הוסף מידע ללקוח'}
+                                        {expandedInfoRows[`${proj.id}:${i}`] ? <ChevronUp className="w-3 h-3" aria-hidden="true"/> : <ChevronDown className="w-3 h-3" aria-hidden="true"/>}
+                                      </button>
                                     </td>
                                     <td className="px-3 py-2 text-xs text-slate-500 min-w-[100px]">
                                       <input
@@ -4302,6 +4314,20 @@ export default function App() {
                                       <button onClick={deletePr} className="text-slate-300 hover:text-red-500 transition-colors" aria-label={`מחק מוצר ${pr.itemHe}`} title="מחק מוצר"><Trash2 className="w-4 h-4"/></button>
                                     </td>
                                   </tr>
+                                  {expandedInfoRows[`${proj.id}:${i}`] && (
+                                    <tr className="bg-indigo-50/40">
+                                      <td colSpan={10} className="px-4 py-3">
+                                        <label className="block text-[11px] font-medium text-indigo-700 mb-1.5 flex items-center gap-1"><FileText className="w-3 h-3" aria-hidden="true"/> מידע מוצר ללקוח (Product Information) — נשמר אוטומטית, יופיע גם בהצעת המחיר</label>
+                                        <textarea
+                                          className="w-full text-xs text-slate-700 bg-white border border-indigo-200 rounded-lg p-2.5 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-y min-h-[70px]"
+                                          value={pr.info || ''}
+                                          onChange={e => updatePr({ info: e.target.value })}
+                                          placeholder="למשל: מידות, טמפרטורת עבודה, דגם, גימור, אחריות — כל מה שרלוונטי ללקוח לגבי הפריט הזה"
+                                        />
+                                      </td>
+                                    </tr>
+                                  )}
+                                  </React.Fragment>
                                 );
                               })}
                             </tbody>
@@ -6496,7 +6522,10 @@ export default function App() {
                     return (
                       <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#fafafa'}}>
                         <td style={{padding:'6px 8px',color:'#94a3b8',fontSize:'10px'}}>{pr.id}</td>
-                        <td style={{padding:'6px 8px',fontWeight:'bold',color:'#1e293b'}}>{pr.itemHe}</td>
+                        <td style={{padding:'6px 8px',fontWeight:'bold',color:'#1e293b'}}>
+                          {pr.itemHe}
+                          {pr.info && <div style={{fontWeight:'normal',fontSize:'9px',color:'#94a3b8',marginTop:'2px',maxWidth:'220px'}}>{pr.info}</div>}
+                        </td>
                         <td style={{padding:'6px 8px',textAlign:'center'}}>{pr.qty}</td>
                         <td style={{padding:'6px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td>
                         <td style={{padding:'6px 8px',textAlign:'center',color:'#64748b'}}>{Number(pr.cbm).toFixed(3)}</td>
@@ -6580,7 +6609,10 @@ export default function App() {
                       <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#f9fafb',pageBreakInside:'avoid'}}>
                         <td style={{padding:'9px 10px',color:'#94a3b8',fontSize:'11px'}}>{i+1}</td>
                         <td style={{padding:'9px 10px',color:'#94a3b8',fontSize:'10px',fontFamily:'monospace'}}>{pr.id}</td>
-                        <td style={{padding:'9px 10px',fontWeight:'bold',color:'#1e293b'}}>{pr.itemHe}</td>
+                        <td style={{padding:'9px 10px',fontWeight:'bold',color:'#1e293b'}}>
+                          {pr.itemHe}
+                          {pr.info && <div style={{fontWeight:'normal',fontSize:'10px',color:'#64748b',marginTop:'3px',maxWidth:'240px'}}>{pr.info}</div>}
+                        </td>
                         <td style={{padding:'9px 10px',color:'#64748b',fontSize:'11px'}}>{sz2}</td>
                         <td style={{padding:'9px 10px',textAlign:'center',fontWeight:'bold'}}>{pr.qty}</td>
                         <td style={{padding:'9px 10px',textAlign:'center',color:'#15803d',fontWeight:'bold'}}>₪{saleU.toLocaleString()}</td>
