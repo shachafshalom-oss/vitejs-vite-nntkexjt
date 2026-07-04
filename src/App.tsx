@@ -338,6 +338,33 @@ const ModelAssetUploader = ({ label, icon: Icon, imageUrl, onUpload, onRemove }:
 );
 
 // =========================================================================
+// אינדיקטור שמירה אוטומטית — מציג "שומר... / נשמר ✓ / שגיאה" במקום כפתור שמור
+// =========================================================================
+const AutosaveIndicator = ({ status }: { status?: 'saving' | 'saved' | 'error' }) => {
+  if (!status) return null;
+  if (status === 'saving') {
+    return (
+      <span className="text-xs text-slate-400 flex items-center gap-1" role="status" aria-live="polite">
+        <span className="w-2.5 h-2.5 rounded-full border-2 border-slate-300 border-t-purple-500 animate-spin" aria-hidden="true" />
+        שומר...
+      </span>
+    );
+  }
+  if (status === 'saved') {
+    return (
+      <span className="text-xs text-green-600 flex items-center gap-1 font-medium" role="status" aria-live="polite">
+        <CheckCircle className="w-3.5 h-3.5" aria-hidden="true" /> נשמר
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs text-red-600 flex items-center gap-1 font-medium" role="status" aria-live="polite">
+      <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" /> שגיאת שמירה — נסה שוב
+    </span>
+  );
+};
+
+// =========================================================================
 // קומפוננטת האפליקציה הראשית
 // =========================================================================
 export default function App() {
@@ -376,7 +403,7 @@ export default function App() {
   const [customProjectForm, setCustomProjectForm] = useState<any>({
     name: '', clientName: '', date: new Date().toISOString().split('T')[0], status: 'preparation',
     products: [],
-    params: { exchangeRate: 3.7, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 },
+    params: { exchangeRate: 3, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 },
     marginPercent: 30,
   });
   const [isParsingExcel, setIsParsingExcel] = useState(false);
@@ -384,8 +411,19 @@ export default function App() {
   const [customProjectStatusFilter, setCustomProjectStatusFilter] = useState<string>('all');
   const [pdfExportModal, setPdfExportModal] = useState<{proj: any, totals: any, type: 'internal'|'customer', editablePrices: Record<string, number>, shippingInstallationCost: number} | null>(null);
   const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
-  const [isSavingProducts, setIsSavingProducts] = useState(false);
   const [inlineSalePrices, setInlineSalePrices] = useState<Record<string, Record<string, number>>>({}); // projId -> {idx: price}
+
+  // --- Custom Projects: autosave (no manual "save" click needed) ---
+  const [autosaveStatus, setAutosaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({}); // debounce key -> status
+  const autosaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // --- Custom Projects: Excel column-mapping preview (shown right after parsing, before data enters the form) ---
+  const [excelMappingPreview, setExcelMappingPreview] = useState<{
+    fileName: string;
+    mapping: { field: string; label: string; header: string | null }[];
+    rowCount: number;
+    products: any[];
+  } | null>(null);
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
@@ -1731,13 +1769,37 @@ export default function App() {
         return { ...pr, images: compressedImgs };
       }));
 
-      setCustomProjectForm((prev: any) => ({ ...prev, products: compressedProducts }));
-      alert(`✓ יובאו ${products.length} מוצרים מהקובץ!`);
+      // 5. בניית תצוגת מיפוי שדות — איזו עמודה באקסל שויכה לאיזה שדה במערכת,
+      // כדי שתוכל לאשר/לתקן לפני שהנתונים נכנסים בפועל לפרויקט
+      const rawHeaderAt = (idx: number): string | null => (idx === -1 ? null : String(raw[headerRow][idx] ?? '').trim());
+      const mapping = [
+        { field: 'id', label: 'מזהה פריט (ID)', header: rawHeaderAt(idxId) },
+        { field: 'itemEn', label: 'שם מוצר (ITEM)', header: rawHeaderAt(idxItem) },
+        { field: 'info', label: 'פרטי מוצר (Product Information)', header: rawHeaderAt(idxInfo) },
+        { field: 'qty', label: 'כמות (QTY)', header: rawHeaderAt(idxQty) },
+        { field: 'unitPriceUSD', label: 'מחיר יחידה $ (EXW UNIT PRICE)', header: rawHeaderAt(idxUnit) },
+        { field: 'totalPriceUSD', label: 'מחיר כולל $ — מחושב אוטומטית (כמות × מחיר יחידה), לא נלקח מהעמודה', header: rawHeaderAt(idxTotal) },
+        { field: 'cbm', label: 'CBM ליחידה בודדת', header: rawHeaderAt(idxCbm) },
+      ];
+
+      setExcelMappingPreview({
+        fileName: file.name,
+        mapping,
+        rowCount: products.length,
+        products: compressedProducts,
+      });
     } catch (err: any) {
       console.error(err);
       alert('שגיאה בקריאת הקובץ: ' + err.message);
     }
     setIsParsingExcel(false);
+  };
+
+  // מפעיל אחרי שהמשתמש אישר את תצוגת המיפוי — רק אז הנתונים נכנסים בפועל לטופס
+  const confirmExcelMappingImport = () => {
+    if (!excelMappingPreview) return;
+    setCustomProjectForm((prev: any) => ({ ...prev, products: excelMappingPreview.products }));
+    setExcelMappingPreview(null);
   };
 
   const calcProjectTotals = (form: any) => {
@@ -1746,7 +1808,7 @@ export default function App() {
     const totalCBM = products.reduce((s: number, pr: any) => s + (Number(pr.cbm) * Number(pr.qty)), 0);
     const totalQty = products.reduce((s: number, pr: any) => s + Number(pr.qty), 0);
     const totalFactoryUSD = products.reduce((s: number, pr: any) => s + (Number(pr.unitPriceUSD) * Number(pr.qty)), 0);
-    const rate = Number(p.exchangeRate) || 3.7;
+    const rate = Number(p.exchangeRate) || 3;
     const totalFactoryILS = totalFactoryUSD * rate;
     const containerShippingILS = Number(p.containerShippingUSD) * rate;
     // מכס: על עלות המפעל בלבד (לא על שילוח)
@@ -1805,7 +1867,35 @@ export default function App() {
   const updateProjectField = async (projId: string, fields: Record<string, any>) => {
     try {
       await updateDoc(doc(db, 'crm_custom_projects', projId), { ...fields, updatedAt: new Date().toISOString() });
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+      throw err; // חשוב: לזרוק הלאה כדי שהשמירה האוטומטית תדע שהשמירה נכשלה ותציג שגיאה במקום "נשמר"
+    }
+  };
+
+  // --- שמירה אוטומטית (debounce) לאזור פרויקטים קוסטום ---
+  // מחליף את כפתורי "שמור שינויים" הנפרדים: כל שינוי משתמש נשמר ל-Firestore
+  // כ-900ms אחרי ההקלדה/עריכה האחרונה, בלי צורך בלחיצת כפתור.
+  const AUTOSAVE_DELAY_MS = 900;
+  const debouncedSaveProjectField = (projId: string, statusKey: string, fields: Record<string, any>) => {
+    if (autosaveTimers.current[statusKey]) clearTimeout(autosaveTimers.current[statusKey]);
+    setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saving' }));
+    autosaveTimers.current[statusKey] = setTimeout(async () => {
+      try {
+        await updateProjectField(projId, fields);
+        setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saved' }));
+        setTimeout(() => {
+          setAutosaveStatus(prev => {
+            if (prev[statusKey] !== 'saved') return prev; // אל תמחק אם כבר החל שינוי/שגיאה חדשים
+            const next = { ...prev };
+            delete next[statusKey];
+            return next;
+          });
+        }, 1800);
+      } catch (err) {
+        setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'error' }));
+      }
+    }, AUTOSAVE_DELAY_MS);
   };
 
   const deleteCustomProject = async (id: string) => {
@@ -3885,7 +3975,7 @@ export default function App() {
                 <h2 className="text-2xl font-bold text-slate-800">פרויקטים קסטום</h2>
                 <p className="text-sm text-slate-400 mt-0.5">חישוב עלויות פנימי לפרויקטים מיוחדים</p>
               </div>
-              <button onClick={() => { setCustomProjectForm({ name: '', clientName: '', customerId: '', date: new Date().toISOString().split('T')[0], status: 'preparation', products: [], params: { exchangeRate: 3.7, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 }, marginPercent: 30, notes: '' }); setIsCustomProjectModalOpen(true); }}
+              <button onClick={() => { setCustomProjectForm({ name: '', clientName: '', customerId: '', date: new Date().toISOString().split('T')[0], status: 'preparation', products: [], params: { exchangeRate: 3, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 }, marginPercent: 30, notes: '' }); setIsCustomProjectModalOpen(true); }}
                 className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-2 shadow-sm">
                 <Plus className="w-4 h-4"/> פרויקט חדש
               </button>
@@ -3938,7 +4028,7 @@ export default function App() {
                               e.stopPropagation();
                               const idx = statusOrder.indexOf(proj.status);
                               const next = statusOrder[(idx + 1) % statusOrder.length];
-                              updateProjectField(proj.id, { status: next });
+                              updateProjectField(proj.id, { status: next }).catch(() => {});
                             }}
                             title="לחץ לשינוי סטטוס"
                           >
@@ -3984,13 +4074,17 @@ export default function App() {
               const totals = calcProjectTotals(liveForm);
               const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
 
+              const paramsStatusKey = `params:${proj.id}`;
+              const productsStatusKey = `products:${proj.id}`;
+              const salePricesStatusKey = `saleprices:${proj.id}`;
+              const productsOrPricesStatus =
+                (autosaveStatus[productsStatusKey] === 'error' || autosaveStatus[salePricesStatusKey] === 'error') ? 'error' :
+                (autosaveStatus[productsStatusKey] === 'saving' || autosaveStatus[salePricesStatusKey] === 'saving') ? 'saving' :
+                (autosaveStatus[productsStatusKey] === 'saved' || autosaveStatus[salePricesStatusKey] === 'saved') ? 'saved' : undefined;
               const handleParamChange = (key: string, val: number) => {
                 const updated = { ...liveParams, [key]: val };
                 setCustomProjectLiveParams(updated);
-              };
-              const saveInlineParams = async () => {
-                await updateProjectField(proj.id, { params: liveParams, ...calcProjectTotals({ ...proj, params: liveParams }) });
-                setCustomProjectLiveParams(null);
+                debouncedSaveProjectField(proj.id, paramsStatusKey, { params: updated, ...calcProjectTotals({ ...proj, params: updated }) });
               };
 
               return (
@@ -4004,11 +4098,11 @@ export default function App() {
                           <h2 className="text-2xl font-black">{proj.name}</h2>
                           <div className="flex items-center gap-3 mt-1 flex-wrap">
                             {proj.clientName && <span className="text-purple-200 text-sm">{proj.clientName}</span>}
-                            {linkedCustomer && <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full flex items-center gap-1"><User className="w-2.5 h-2.5"/> {linkedCustomer.businessName || linkedCustomer.contactName}</span>}
-                            {proj.notes && <span className="text-[10px] text-purple-300 italic">"{proj.notes}"</span>}
+                            {linkedCustomer && <span className="text-[11px] bg-white/20 px-2 py-0.5 rounded-full flex items-center gap-1"><User className="w-2.5 h-2.5"/> {linkedCustomer.businessName || linkedCustomer.contactName}</span>}
+                            {proj.notes && <span className="text-[11px] text-purple-300 italic">"{proj.notes}"</span>}
                           </div>
                         </div>
-                        <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="text-white/60 hover:text-white"><X className="w-6 h-6"/></button>
+                        <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="text-white/60 hover:text-white" aria-label="סגור חלון פרויקט"><X className="w-6 h-6"/></button>
                       </div>
                       {/* KPI bar */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
@@ -4019,7 +4113,7 @@ export default function App() {
                           { label: `מחיר מינימלי (${proj.marginPercent}%)`, value: `₪${Math.round(totals.suggestedPrice).toLocaleString()}` },
                         ].map(s => (
                           <div key={s.label} className="bg-white/10 rounded-xl p-3 text-center">
-                            <p className="text-[10px] text-purple-200">{s.label}</p>
+                            <p className="text-[11px] text-purple-200">{s.label}</p>
                             <p className="font-black text-lg mt-0.5">{s.value}</p>
                           </div>
                         ))}
@@ -4030,10 +4124,8 @@ export default function App() {
                       {/* INLINE PARAMS EDITOR */}
                       <div>
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-bold text-slate-600 flex items-center gap-2"><DollarSign className="w-4 h-4 text-purple-500"/> פרמטרי עלות — ניתן לעריכה ישירה</h3>
-                          {customProjectLiveParams && (
-                            <button onClick={saveInlineParams} className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 flex items-center gap-1"><CheckCircle className="w-3 h-3"/> שמור שינויים</button>
-                          )}
+                          <h3 className="text-sm font-bold text-slate-600 flex items-center gap-2"><DollarSign className="w-4 h-4 text-purple-500"/> פרמטרי עלות — ניתן לעריכה ישירה, נשמר אוטומטית</h3>
+                          <AutosaveIndicator status={autosaveStatus[paramsStatusKey]} />
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
                           {[
@@ -4078,31 +4170,18 @@ export default function App() {
                         ))}
                       </div>
 
-                      {/* Products table — inline editable */}
+                      {/* Products table — inline editable, autosaves */}
                       <div>
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({effectiveProducts.length})</h3>
-                          <div className="flex items-center gap-2">
-                            {inlineProductEdits[proj.id] && (
-                              <button
-                                onClick={async () => {
-                                  setIsSavingProducts(true);
-                                  const newProducts = inlineProductEdits[proj.id];
-                                  const newTotals = calcProjectTotals({ ...proj, products: newProducts });
-                                  await updateProjectField(proj.id, { products: newProducts, ...newTotals });
-                                  setInlineProductEdits(prev => { const n = {...prev}; delete n[proj.id]; return n; });
-                                  setIsSavingProducts(false);
-                                }}
-                                disabled={isSavingProducts}
-                                className="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1"
-                              >
-                                <CheckCircle className="w-3 h-3"/> {isSavingProducts ? 'שומר...' : 'שמור שינויים'}
-                              </button>
-                            )}
+                          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Package className="w-4 h-4 text-purple-600"/> מוצרים ({effectiveProducts.length}) — נשמר אוטומטית</h3>
+                          <div className="flex items-center gap-3">
+                            <AutosaveIndicator status={productsOrPricesStatus} />
                             <button
                               onClick={() => {
                                 const current = inlineProductEdits[proj.id] || proj.products || [];
-                                setInlineProductEdits(prev => ({...prev, [proj.id]: [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]}));
+                                const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
+                                setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
+                                debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
                               }}
                               className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1.5 rounded-lg font-medium hover:bg-purple-100 hover:text-purple-700 flex items-center gap-1"
                             >
@@ -4115,14 +4194,14 @@ export default function App() {
                           <table className="w-full text-sm">
                             <thead className="bg-slate-50 sticky top-0 z-10">
                               <tr>
-                                {['תמונה', 'ID', 'מוצר (לחץ לעריכה)', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ ✏️ (+${proj.marginPercent}%) — ניתן לעריכה`, ''].map(h => (
+                                {['תמונה', 'ID', 'מוצר (לחץ לעריכה)', 'גודל', 'כמות', 'מחיר $', 'CBM', 'עלות Landed ₪', `מחיר מכירה ₪ ✏️ (+${proj.marginPercent}%) — נשמר אוטומטית`, ''].map(h => (
                                   <th key={h} className={`px-3 py-2.5 text-right font-medium text-xs whitespace-nowrap ${h.includes('מחיר מכירה') ? 'text-green-600 bg-green-50' : h === '' ? '' : 'text-slate-500'}`}>{h}</th>
                                 ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {(effectiveProducts as any[]).map((pr: any, i: number) => {
-                                const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
+                                const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3);
                                 const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
                                 const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
                                 const factoryCostILS = Number(pr.unitPriceUSD) * rate;
@@ -4138,14 +4217,17 @@ export default function App() {
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
                                   const updated = base.map((p: any, idx: number) => idx === i ? {...p, ...fields} : p);
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
                                 };
                                 const deletePr = () => {
                                   if (!window.confirm(`למחוק את "${pr.itemHe}"?`)) return;
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
-                                  setInlineProductEdits(prev => ({...prev, [proj.id]: base.filter((_: any, idx: number) => idx !== i)}));
+                                  const updated = base.filter((_: any, idx: number) => idx !== i);
+                                  setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
                                 };
                                 return (
-                                  <tr key={i} className={`hover:bg-slate-50 ${inlineProductEdits[proj.id] ? 'bg-amber-50/20' : ''}`}>
+                                  <tr key={i} className="hover:bg-slate-50">
                                     <td className="px-3 py-2">
                                       <div className="relative group w-14 h-14">
                                         {pr.images && pr.images.length > 0
@@ -4201,20 +4283,23 @@ export default function App() {
                                         type="number"
                                         min="0"
                                         step="10"
+                                        aria-label={`מחיר מכירה ליחידה עבור ${pr.itemHe}`}
                                         className="w-24 text-xs font-black text-center text-green-700 bg-green-50 border border-transparent hover:border-green-300 focus:border-green-500 focus:bg-white rounded-lg px-1 py-0.5 outline-none transition-colors"
                                         value={inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : Math.round(salePricePerUnit)}
-                                        onChange={e => setInlineSalePrices(prev => ({
-                                          ...prev,
-                                          [proj.id]: { ...(prev[proj.id] || {}), [`${i}`]: Number(e.target.value) }
-                                        }))}
-                                        title="לחץ לעריכת מחיר מכירה — ישמר ב-PDF"
+                                        onChange={e => {
+                                          const newVal = Number(e.target.value);
+                                          const updatedOverrides = { ...(inlineSalePrices[proj.id] || proj.salePriceOverrides || {}), [`${i}`]: newVal };
+                                          setInlineSalePrices(prev => ({ ...prev, [proj.id]: updatedOverrides }));
+                                          debouncedSaveProjectField(proj.id, salePricesStatusKey, { salePriceOverrides: updatedOverrides });
+                                        }}
+                                        title="עריכת מחיר מכירה — נשמר אוטומטית לפרויקט"
                                       />
-                                      <div className="text-[10px] text-green-500 mt-0.5">
+                                      <div className="text-[11px] text-green-500 mt-0.5">
                                         ₪{Math.round((inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
                                       </div>
                                     </td>
                                     <td className="px-3 py-2 text-center">
-                                      <button onClick={deletePr} className="text-slate-300 hover:text-red-500 transition-colors" title="מחק מוצר"><Trash2 className="w-4 h-4"/></button>
+                                      <button onClick={deletePr} className="text-slate-300 hover:text-red-500 transition-colors" aria-label={`מחק מוצר ${pr.itemHe}`} title="מחק מוצר"><Trash2 className="w-4 h-4"/></button>
                                     </td>
                                   </tr>
                                 );
@@ -4230,7 +4315,7 @@ export default function App() {
                                 <td className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">
                                   {(() => {
                                     const products = effectiveProducts;
-                                    const rate3 = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3.7);
+                                    const rate3 = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3);
                                     const customsPct3 = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
                                     const marginMult3 = 1 + Number(proj.marginPercent || 30) / 100;
                                     const totalSale = products.reduce((sum: number, pr: any, i: number) => {
@@ -4251,12 +4336,7 @@ export default function App() {
                           </table>
                           </div>
                         </div>
-                        {inlineProductEdits[proj.id] && (
-                          <p className="text-[10px] text-amber-600 mt-1.5 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3"/> שינויים לא שמורים — לחץ "שמור שינויים" כדי לשמור
-                          </p>
-                        )}
-                        <p className="text-[10px] text-slate-400 mt-1">* עלות Landed: מפעל + שילוח + מכס + חלק יחסי מנמל/הובלה/התקנה לפי יחידה</p>
+                        <p className="text-[11px] text-slate-400 mt-1">* עלות Landed: מפעל + שילוח + מכס + חלק יחסי מנמל/הובלה/התקנה לפי יחידה</p>
                       </div>
 
                       {/* Bottom: suggested price + PDF + actions */}
@@ -4270,7 +4350,7 @@ export default function App() {
                           <button
                             onClick={() => {
                               const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
-                              const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3.7);
+                              const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3);
                               const customs2 = Number((customProjectLiveParams || proj.params)?.customsPercent || 12) / 100;
                               const products = effectiveProducts;
                               const initPrices: Record<string, number> = {};
@@ -4302,7 +4382,7 @@ export default function App() {
                                 s.onload = () => resolve((window as any).XLSX);
                                 document.head.appendChild(s);
                               });
-                              const rate2 = Number(liveParams?.exchangeRate || proj.params?.exchangeRate || 3.7);
+                              const rate2 = Number(liveParams?.exchangeRate || proj.params?.exchangeRate || 3);
                               const customs2 = Number(liveParams?.customsPercent || proj.params?.customsPercent || 12) / 100;
                               const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
                               // Products sheet — use effectiveProducts + inlineSalePrices (same as screen)
@@ -4382,7 +4462,7 @@ export default function App() {
                         <thead><tr style={{background:'#f1f5f9'}}>{['ID','מוצר','גודל','כמות','מחיר $','CBM','עלות Landed ₪'].map(h=><th key={h} style={{padding:'6px 8px',textAlign:'right',border:'1px solid #e2e8f0'}}>{h}</th>)}</tr></thead>
                         <tbody>
                           {(proj.products||[]).map((pr:any,i:number)=>{
-                            const rate2=Number(proj.params?.exchangeRate||3.7);const customs2=Number(proj.params?.customsPercent||12)/100;
+                            const rate2=Number(proj.params?.exchangeRate||3);const customs2=Number(proj.params?.customsPercent||12)/100;
                             const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
                             // מכס על מפעל בלבד
                             const full2=(f2+s2+(f2*customs2)+totals.overheadPerUnit)*Number(pr.qty);
@@ -6234,7 +6314,7 @@ export default function App() {
           setPdfExportModal(null);
         };
 
-        const rate2 = Number(proj.params?.exchangeRate || 3.7);
+        const rate2 = Number(proj.params?.exchangeRate || 3);
         const customs2 = Number(proj.params?.customsPercent || 12) / 100;
 
         return (
@@ -6321,15 +6401,17 @@ export default function App() {
                                   value={saleUnit}
                                   onChange={e => {
                                     const newVal = Number(e.target.value);
+                                    const updatedOverrides = { ...editablePrices, [`${i}`]: newVal };
                                     setPdfExportModal({
                                       ...pdfExportModal,
-                                      editablePrices: { ...editablePrices, [`${i}`]: newVal }
+                                      editablePrices: updatedOverrides
                                     });
-                                    // Sync back to main view sale prices
+                                    // סנכרון לתצוגה הראשית + שמירה אוטומטית ל-Firestore
                                     setInlineSalePrices(prev => ({
                                       ...prev,
-                                      [proj.id]: { ...(prev[proj.id] || {}), [`${i}`]: newVal }
+                                      [proj.id]: updatedOverrides
                                     }));
+                                    debouncedSaveProjectField(proj.id, `saleprices:${proj.id}`, { salePriceOverrides: updatedOverrides });
                                   }}
                                 />
                               </td>
@@ -6356,7 +6438,11 @@ export default function App() {
                           step="50"
                           className="w-full border border-blue-300 rounded-lg pr-8 pl-3 py-2 text-sm font-bold text-blue-700 bg-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-300"
                           value={shippingInstallationCost}
-                          onChange={e => setPdfExportModal({...pdfExportModal, shippingInstallationCost: Number(e.target.value)})}
+                          onChange={e => {
+                            const newVal = Number(e.target.value);
+                            setPdfExportModal({...pdfExportModal, shippingInstallationCost: newVal});
+                            debouncedSaveProjectField(proj.id, `delivery:${proj.id}`, { deliveryCost: newVal });
+                          }}
                           placeholder="0"
                         />
                       </div>
@@ -6371,22 +6457,12 @@ export default function App() {
                 )}
 
                 {/* Actions */}
-                <div className="flex gap-3 pt-2 border-t">
+                <div className="flex gap-3 pt-2 border-t items-center">
                   <button onClick={generatePDF} className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-md">
                     <Download className="w-4 h-4"/>
                     {isCustomer ? 'הפק הצעת מחיר ללקוח' : 'הפק מסמך פנימי'}
                   </button>
-                  <button
-                    onClick={async () => {
-                      await updateProjectField(proj.id, { salePriceOverrides: editablePrices, deliveryCost: shippingInstallationCost });
-                      setInlineSalePrices(prev => ({...prev, [proj.id]: editablePrices}));
-                      alert('✓ מחירי מכירה ועלות הובלה/התקנה נשמרו לפרויקט');
-                    }}
-                    className="px-4 py-3 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700 flex items-center gap-2 whitespace-nowrap"
-                    title="שמור מחירי מכירה לצמיתות ב-Firestore"
-                  >
-                    <CheckCircle className="w-4 h-4"/> שמור מחירים
-                  </button>
+                  <span className="px-2"><AutosaveIndicator status={autosaveStatus[`saleprices:${proj.id}`] || autosaveStatus[`delivery:${proj.id}`]} /></span>
                   <button onClick={() => setPdfExportModal(null)} className="px-6 py-3 bg-white border border-slate-300 text-slate-700 rounded-xl font-medium hover:bg-slate-50">ביטול</button>
                 </div>
               </div>
@@ -6588,7 +6664,7 @@ export default function App() {
               <div className="border-2 border-dashed border-purple-200 rounded-xl p-5 text-center bg-purple-50">
                 <Layers className="w-8 h-8 text-purple-400 mx-auto mb-2"/>
                 <p className="text-sm font-medium text-purple-700 mb-1">העלה קובץ Excel מהספקית</p>
-                <p className="text-xs text-slate-400 mb-3">הקובץ ייובא אוטומטית עם תמונות ותרגום עברי</p>
+                <p className="text-xs text-slate-400 mb-3">לאחר הפרסור תוצג תצוגת מיפוי שדות לאישור, לפני שהנתונים נכנסים לפרויקט</p>
                 <label className="cursor-pointer">
                   <span className={`inline-block px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${isParsingExcel ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-purple-600 text-white border-purple-600 hover:bg-purple-700'}`}>
                     {isParsingExcel ? '⏳ מעבד קובץ...' : '📂 בחר קובץ Excel'}
@@ -6699,6 +6775,64 @@ export default function App() {
                 <button type="button" onClick={() => setIsCustomProjectModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* EXCEL COLUMN MAPPING PREVIEW — מוצג מיד אחרי פרסור הקובץ, לפני שהנתונים נכנסים לפרויקט */}
+      {excelMappingPreview && (
+        <div className="fixed inset-0 z-[130] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4">
+            <div className="p-5 border-b flex justify-between items-center bg-indigo-600 rounded-t-2xl">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2"><Layers className="w-5 h-5"/> מיפוי שדות מהקובץ</h3>
+                <p className="text-xs text-indigo-200 mt-0.5">{excelMappingPreview.fileName} · {excelMappingPreview.rowCount} שורות מוצר זוהו</p>
+              </div>
+              <button onClick={() => setExcelMappingPreview(null)} className="text-white/70 hover:text-white" aria-label="בטל ייבוא"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-600">בדוק שכל שדה במערכת שויך לעמודה הנכונה בקובץ שהעלית. אם שיוך כלשהו שגוי — בטל, תקן את כותרת העמודה בקובץ, והעלה שוב.</p>
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-slate-500">שדה במערכת</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-slate-500">עמודה שזוהתה בקובץ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {excelMappingPreview.mapping.map(m => (
+                      <tr key={m.field} className={!m.header ? 'bg-amber-50' : ''}>
+                        <td className="px-3 py-2 text-xs text-slate-700">{m.label}</td>
+                        <td className="px-3 py-2 text-xs font-mono">
+                          {m.header
+                            ? <span className="text-green-700 font-bold">{m.header}</span>
+                            : <span className="text-amber-600 flex items-center gap-1"><AlertTriangle className="w-3 h-3" aria-hidden="true"/> לא זוהתה עמודה מתאימה</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <p className="text-xs font-medium text-slate-600 mb-2">דוגמת שורה ראשונה שתיובא:</p>
+                {excelMappingPreview.products[0] ? (
+                  <p className="text-xs text-slate-500 font-mono">
+                    {excelMappingPreview.products[0].id} · {excelMappingPreview.products[0].itemHe} · כמות {excelMappingPreview.products[0].qty} · ${excelMappingPreview.products[0].unitPriceUSD} · {excelMappingPreview.products[0].cbm} CBM
+                  </p>
+                ) : <p className="text-xs text-slate-400">לא נמצאו שורות מוצר בקובץ</p>}
+              </div>
+              <div className="flex gap-2 pt-2 border-t">
+                <button
+                  onClick={confirmExcelMappingImport}
+                  disabled={excelMappingPreview.rowCount === 0}
+                  className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <CheckCircle className="w-4 h-4" aria-hidden="true"/> אשר וייבא {excelMappingPreview.rowCount} מוצרים
+                </button>
+                <button onClick={() => setExcelMappingPreview(null)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">בטל</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
