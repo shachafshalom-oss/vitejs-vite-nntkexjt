@@ -41,6 +41,15 @@ const translateProduct = (name: string): string => {
   return name;
 };
 
+// עדיפות הגודל המוצג: 1) עריכה ידנית (sizeOverride) 2) עמודת SIZE הייעודית מהאקסל 3) נפילה אחורה —
+// חילוץ מתוך טקסט "Product Information" (לתמיכה בפרויקטים ישנים שיובאו לפני שהייתה עמודת SIZE נפרדת)
+const getProductSize = (pr: any): string => {
+  if (pr.sizeOverride !== undefined) return pr.sizeOverride;
+  if (pr.size) return pr.size;
+  const legacyMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
+  return legacyMatch ? legacyMatch[1].trim() : '';
+};
+
 // ==========================================
 // 1. הגדרות FIREBASE פרטיות (עם גיבוי אוטומטי)
 // ==========================================
@@ -1693,12 +1702,15 @@ export default function App() {
       const idxUnit  = headers.findIndex((h: string) => h.includes('UNIT') && h.includes('PRICE'));
       const idxTotal = headers.findIndex((h: string) => h.includes('TOTAL') && h.includes('PRICE'));
       const idxCbm   = headers.findIndex((h: string) => h.replace(/\s+/g,'') === 'CBM' || h === 'CBM');
+      const idxSize  = headers.findIndex((h: string) => h === 'SIZE' || h.includes('SIZE'));
 
       // 2. Extract images via JSZip
+      // תיקון: מקבלים כל סיומת תמונה נפוצה (לא רק png/jpg) — ספקים סיניים לעיתים קרובות
+      // שומרים כ-jpeg/gif/bmp, וסיומות כאלה נעלמו בשקט לפני התיקון.
       const zip = await JSZip.loadAsync(arrayBuffer);
       const imgFiles: Record<string, string> = {};
       for (const [path, zipEntry] of Object.entries(zip.files) as any[]) {
-        if (path.startsWith('xl/media/image') && (path.endsWith('.png') || path.endsWith('.jpg'))) {
+        if (path.startsWith('xl/media/image') && /\.(png|jpe?g|gif|bmp|tiff?|webp)$/i.test(path)) {
           const blob = await zipEntry.async('blob');
           const url = await new Promise<string>((res) => {
             const reader = new FileReader();
@@ -1720,11 +1732,14 @@ export default function App() {
       for (const m of relsMatches) ridToImg[m[1]] = m[2];
 
       // Parse anchor rows -> rId mapping
+      // תיקון: תמונות בקובצי Excel יכולות להיות מעוגנות גם כ-<xdr:oneCellAnchor> (עיגון לתא בודד —
+      // נפוץ כשמדביקים תמונה עם "הכנס תמונה" ב-WPS Office), לא רק <xdr:twoCellAnchor>.
+      // לפני התיקון, תמונות מעוגנות כ-oneCellAnchor נעלמו בשקט בלי שום אזהרה.
       const rowToImgs: Record<number, string[]> = {};
-      const anchorRegex = /<xdr:twoCellAnchor[^>]*>[\s\S]*?<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>[\s\S]*?<\/xdr:from>[\s\S]*?embed="([^"]+)"[\s\S]*?<\/xdr:twoCellAnchor>/g;
+      const anchorRegex = /<xdr:(twoCellAnchor|oneCellAnchor)[^>]*>[\s\S]*?<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>[\s\S]*?<\/xdr:from>[\s\S]*?embed="([^"]+)"[\s\S]*?<\/xdr:\1>/g;
       for (const m of drawingXml.matchAll(anchorRegex)) {
-        const row = parseInt(m[1]);
-        const rid = m[2];
+        const row = parseInt(m[2]);
+        const rid = m[3];
         const imgFile = ridToImg[rid];
         if (imgFile && imgFiles[imgFile]) {
           if (!rowToImgs[row]) rowToImgs[row] = [];
@@ -1741,6 +1756,7 @@ export default function App() {
         const qty = Number(row[idxQty]) || 0;
         const unitPrice = Number(row[idxUnit]) || 0;
         const cbm = Number(row[idxCbm]) || 0;
+        const size = idxSize !== -1 ? String(row[idxSize] || '').trim() : '';
         if (!item || item.toUpperCase() === 'TOTAL' || item.toUpperCase() === 'NOTES' || (!id && !unitPrice)) continue;
         
         // Excel row = r+1 (1-indexed), drawing row = r (0-indexed since header is row headerRow)
@@ -1753,6 +1769,7 @@ export default function App() {
           itemEn: item,
           itemHe: translateProduct(item),
           info: String(row[idxInfo] || '').replace(/\n/g, ' ').trim(),
+          size,
           qty: qty || 1,
           unitPriceUSD: unitPrice,
           totalPriceUSD: unitPrice * (qty || 1), // always compute from qty × unit
@@ -1781,6 +1798,7 @@ export default function App() {
         { field: 'unitPriceUSD', label: 'מחיר יחידה $ (EXW UNIT PRICE)', header: rawHeaderAt(idxUnit) },
         { field: 'totalPriceUSD', label: 'מחיר כולל $ — מחושב אוטומטית (כמות × מחיר יחידה), לא נלקח מהעמודה', header: rawHeaderAt(idxTotal) },
         { field: 'cbm', label: 'CBM ליחידה בודדת', header: rawHeaderAt(idxCbm) },
+        { field: 'size', label: 'גודל (SIZE) — עמודה עצמאית, אופציונלי', header: rawHeaderAt(idxSize) },
       ];
 
       setExcelMappingPreview({
@@ -4180,7 +4198,7 @@ export default function App() {
                             <button
                               onClick={() => {
                                 const current = inlineProductEdits[proj.id] || proj.products || [];
-                                const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
+                                const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
                                 setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                 debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
                               }}
@@ -4212,8 +4230,7 @@ export default function App() {
                                 const fullLandedILS = landedPerUnit * Number(pr.qty);
                                 const salePricePerUnit = landedPerUnit * marginMult;
                                 const salePriceTotal = salePricePerUnit * Number(pr.qty);
-                                const sizeMatch = pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i);
-                                const size = sizeMatch ? sizeMatch[1].trim() : '';
+                                const size = getProductSize(pr);
                                 const updatePr = (fields: any) => {
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
                                   const updated = base.map((p: any, idx: number) => idx === i ? {...p, ...fields} : p);
@@ -4263,7 +4280,7 @@ export default function App() {
                                     <td className="px-3 py-2 text-xs text-slate-500 min-w-[100px]">
                                       <input
                                         className="w-full text-xs text-slate-600 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-purple-400 outline-none py-0.5 transition-colors"
-                                        value={pr.sizeOverride !== undefined ? pr.sizeOverride : size}
+                                        value={size}
                                         onChange={e => updatePr({ sizeOverride: e.target.value })}
                                         placeholder="גודל..."
                                         title="לחץ לעריכת גודל"
@@ -4425,8 +4442,7 @@ export default function App() {
                                     ? inlineSalePrices[proj.id][`${i}`]
                                     : Math.round(landedUnit * margin2);
                                 const saleTotal = saleUnit * Number(pr.qty);
-                                // Size: use pr.sizeOverride if edited, else parse from info
-                                const sz2 = pr.sizeOverride !== undefined ? pr.sizeOverride : (pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim() || '');
+                                const sz2 = getProductSize(pr);
                                 return {
                                   'ID': pr.id,
                                   'מוצר (עברית)': pr.itemHe,
@@ -4492,7 +4508,7 @@ export default function App() {
                             const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
                             // מכס על מפעל בלבד
                             const full2=(f2+s2+(f2*customs2)+totals.overheadPerUnit)*Number(pr.qty);
-                            const sz2=pr.sizeOverride!==undefined?pr.sizeOverride:(pr.info?.match(/size[：:]((?:(?!\n)[^,\uFF0C\u3001])+)/i)?.[1]?.trim()||'');
+                            const sz2=getProductSize(pr);
                             return <tr key={i} style={{borderBottom:'1px solid #e2e8f0'}}><td style={{padding:'5px 8px'}}>{pr.id}</td><td style={{padding:'5px 8px',fontWeight:'bold'}}>{pr.itemHe}</td><td style={{padding:'5px 8px',fontSize:'10px'}}>{sz2}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{pr.qty}</td><td style={{padding:'5px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{Number(pr.cbm).toFixed(3)}</td><td style={{padding:'5px 8px',textAlign:'center',fontWeight:'bold',color:'#7c3aed'}}>₪{Math.round(full2).toLocaleString()}</td></tr>;
                           })}
                         </tbody>
@@ -6604,7 +6620,7 @@ export default function App() {
                   {(proj.products||[]).map((pr:any,i:number)=>{
                     const saleU=Number(editablePrices[`${i}`]||0);
                     const saleT=Math.round(saleU*Number(pr.qty));
-                    const sz2=pr.sizeOverride!==undefined?pr.sizeOverride:(pr.info?.match(/size[：:]((?:(?!\n)[^,，])+)/i)?.[1]?.trim()||'');
+                    const sz2=getProductSize(pr);
                     return (
                       <tr key={i} style={{borderBottom:'1px solid #e2e8f0',background:i%2===0?'#ffffff':'#f9fafb',pageBreakInside:'avoid'}}>
                         <td style={{padding:'9px 10px',color:'#94a3b8',fontSize:'11px'}}>{i+1}</td>
@@ -6708,7 +6724,7 @@ export default function App() {
                 )}
                 <button type="button"
                   className="mt-2 text-xs text-purple-600 hover:text-purple-800 font-medium flex items-center gap-1"
-                  onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}>
+                  onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}>
                   <Plus className="w-3 h-3"/> הוסף פריט ידני (ללא Excel)
                 </button>
               </div>
@@ -6718,7 +6734,7 @@ export default function App() {
                 <div className="flex justify-between items-center mb-2">
                   <h4 className="text-sm font-bold text-slate-700">מוצרים ({customProjectForm.products.length})</h4>
                   <button type="button"
-                    onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}
+                    onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}
                     className="text-xs bg-purple-100 text-purple-700 px-2.5 py-1 rounded-lg font-bold hover:bg-purple-200 flex items-center gap-1"><Plus className="w-3 h-3"/> הוסף ידני</button>
                 </div>
                 <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
