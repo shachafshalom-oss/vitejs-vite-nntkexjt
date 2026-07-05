@@ -475,7 +475,6 @@ const defaultSettings: any = {
     'Urban': { cbm: 1.5, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
     'Events': { cbm: 2.0, blueprintUrl: '', itemImgUrl: '', listPrice: 0 } 
   },
-  companyLogoUrl: ''
 };
 
 const QUICK_IMPORT_KEYWORDS = [
@@ -756,6 +755,10 @@ export default function App() {
 
   // Data States
   const [settings, setSettings] = useState<any>(defaultSettings);
+  // לוגו החברה נשמר ונטען בנפרד לגמרי מ-settings (ראה crm_settings/company_logo) —
+  // כדי שלא "יטרמפ" בטעות בתוך כל setDoc({...settings}) שכפתורי שמירה אחרים מבצעים על general_settings,
+  // שכבר קרוב למגבלת 1MB למסמך בגלל תמונות המודלים.
+  const [companyLogoUrl, setCompanyLogoUrl] = useState<string>('');
   const [shipments, setShipments] = useState<any[]>([]);
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -909,14 +912,22 @@ export default function App() {
     const unsubSettings = onSnapshot(collection(db, 'crm_settings'), (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
       const settingsDoc = docs.find((d: any) => d.id === 'general_settings');
+      // הלוגו נשמר במסמך נפרד משלו (crm_settings/company_logo) ולא בתוך general_settings —
+      // כי general_settings כבר עמוס בתמונות בייס64 של מודלים (itemImgUrl/blueprintUrl לכל מודל)
+      // וקרוב מאוד למגבלת הגודל של 1MB למסמך ב-Firestore. לוגו נוסף שם עלול לגרום לכשל שמירה שקט.
+      const logoDoc = docs.find((d: any) => d.id === 'company_logo');
+      setCompanyLogoUrl(logoDoc?.url || '');
       if (settingsDoc) {
+        // מנקה שדה companyLogoUrl ישן אם נשאר במסמך general_settings מגרסה קודמת —
+        // כדי שהוא לא ימשיך "לטרמפ" על כל setDoc({...settings}) עתידי מכפתורי שמירה אחרים
+        const { companyLogoUrl: _legacyLogo, ...settingsDocClean } = settingsDoc;
         // שמירת API Key אוטומטית אם עדיין לא קיים
-        if (!settingsDoc.finbotApiKey) {
+        if (!settingsDocClean.finbotApiKey) {
           const FINBOT_KEY = atob('ZmI4NWM3NDEtY2IzMC00NWY0LWFjYzMtNTQxZWNkMDAyMjM0');
-          setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settingsDoc, finbotApiKey: FINBOT_KEY }, { merge: true });
-          setSettings({ ...settingsDoc, finbotApiKey: FINBOT_KEY });
+          setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settingsDocClean, finbotApiKey: FINBOT_KEY }, { merge: true });
+          setSettings({ ...settingsDocClean, finbotApiKey: FINBOT_KEY });
         } else {
-          setSettings(settingsDoc);
+          setSettings(settingsDocClean);
         }
       } else {
          const oldSettingsDoc = docs.find((d: any) => d.id === 'general_cbm');
@@ -926,7 +937,7 @@ export default function App() {
                  if (!updatedModels[key].blueprintUrl) updatedModels[key].blueprintUrl = '';
                  if (!updatedModels[key].itemImgUrl) updatedModels[key].itemImgUrl = '';
              });
-             setSettings({ models: updatedModels, companyLogoUrl: '' });
+             setSettings({ models: updatedModels });
          }
       }
     });
@@ -989,8 +1000,8 @@ export default function App() {
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
   useEffect(() => {
-    if (!settings?.companyLogoUrl) return;
-    const logoUrl = settings.companyLogoUrl;
+    if (!companyLogoUrl) return;
+    const logoUrl = companyLogoUrl;
 
     // עדכון favicon
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -1013,7 +1024,7 @@ export default function App() {
 
     // עדכון כותרת הדף
     document.title = 'D.S Logistics CRM';
-  }, [settings?.companyLogoUrl]);
+  }, [companyLogoUrl]);
 
   // --- Login Handler ---
   const handleLogin = async (e: any) => {
@@ -2914,9 +2925,9 @@ export default function App() {
 
           {/* מרכז - לוגו החברה — flex-1 עם justify-center, מסתתר אם אין מקום */}
           <div className="flex-1 flex justify-center items-center min-w-0 px-2">
-            {settings?.companyLogoUrl ? (
+            {companyLogoUrl ? (
               <img
-                src={settings.companyLogoUrl}
+                src={companyLogoUrl}
                 alt="לוגו החברה"
                 className="h-9 max-w-[120px] object-contain"
                 crossOrigin="anonymous"
@@ -4952,29 +4963,29 @@ export default function App() {
                   type="file" 
                   accept="image/*" 
                   onChange={(e) => handleImageUpload(e, async (base64) => {
-                    const updated = {...settings, companyLogoUrl: base64};
-                    setSettings(updated);
+                    setCompanyLogoUrl(base64);
                     try {
-                      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated, { merge: true });
-                    } catch (err) {
+                      // נשמר במסמך נפרד (לא בתוך general_settings) כדי לא להתנגש
+                      // במגבלת 1MB למסמך שכבר כמעט מלאה מתמונות המודלים
+                      await setDoc(doc(db, 'crm_settings', 'company_logo'), { url: base64 });
+                    } catch (err: any) {
                       console.error(err);
-                      alert('שגיאה בשמירת הלוגו — נסה שוב');
+                      alert('שגיאה בשמירת הלוגו: ' + (err?.message || 'שגיאה לא ידועה') + ' — נסה שוב');
                     }
                   })} 
                   className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded-md p-1" 
                 />
               </div>
-              {(settings && settings.companyLogoUrl) && (
+              {companyLogoUrl && (
                 <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
-                  <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
+                  <img src={companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
                   <button onClick={async () => {
-                    const updated = {...settings, companyLogoUrl: ''};
-                    setSettings(updated);
+                    setCompanyLogoUrl('');
                     try {
-                      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated, { merge: true });
-                    } catch (err) {
+                      await setDoc(doc(db, 'crm_settings', 'company_logo'), { url: '' });
+                    } catch (err: any) {
                       console.error(err);
-                      alert('שגיאה בהסרת הלוגו — נסה שוב');
+                      alert('שגיאה בהסרת הלוגו: ' + (err?.message || 'שגיאה לא ידועה') + ' — נסה שוב');
                     }
                   }} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
                 </div>
@@ -5708,7 +5719,7 @@ export default function App() {
 
                 {/* PDF Preview Area (Using Reusable Component) */}
                 <div className="mt-8 w-full bg-slate-800 p-4 sm:p-8 flex justify-center items-start rounded-lg overflow-x-auto">
-                  <QuoteDocument quote={selectedQuote} customer={selectedQuote.customerInfo || {}} settings={settings} />
+                  <QuoteDocument quote={selectedQuote} customer={selectedQuote.customerInfo || {}} settings={{...settings, companyLogoUrl}} />
                 </div>
               </div>
             </div>
@@ -6566,7 +6577,7 @@ export default function App() {
 
               {/* PDF Preview Area (Using Reusable Component) */}
               <div className="w-full lg:flex-1 bg-slate-800 p-4 sm:p-8 lg:overflow-y-auto flex justify-center items-start">
-                <QuoteDocument quote={quoteData} customer={currentCustomer} settings={settings} innerRef={quoteRef} />
+                <QuoteDocument quote={quoteData} customer={currentCustomer} settings={{...settings, companyLogoUrl}} innerRef={quoteRef} />
               </div>
 
             </div>
@@ -6647,7 +6658,7 @@ export default function App() {
 
         const generatePDF = async () => {
           const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-          const logoUrl = settings?.companyLogoUrl || '';
+          const logoUrl = companyLogoUrl || '';
           if (isCustomer) {
             drawCustomerPdfNative(doc, proj, totals, editablePrices, shippingInstallationCost, logoUrl);
           } else {
