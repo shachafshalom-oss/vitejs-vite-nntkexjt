@@ -117,6 +117,26 @@ function pdfDrawImageFit(doc: any, dataUrl: string, boxX: number, boxY: number, 
   }
 }
 
+// מצייר לוגו עם "כרית" בהירה מאחוריו — נחוץ כי לוגואים רבים משתמשים בטקסט כהה
+// שנעלם על רקע כהה (כמו הדר המסמך). נכשל בשקט לתצוגת טקסט "Steel & Spirit" אם הלוגו לא ניתן לטעינה.
+function pdfDrawLogoWithBacking(doc: any, logoUrl: string, x: number, headerHeight: number, maxLogoHeight: number): boolean {
+  try {
+    const p = doc.getImageProperties(logoUrl);
+    const ratio = maxLogoHeight / p.height;
+    const lw = p.width * ratio, lh = maxLogoHeight;
+    const padX = 10, padY = 8;
+    const pillW = lw + padX * 2, pillH = lh + padY * 2;
+    const pillY = (headerHeight - pillH) / 2;
+    doc.setFillColor(PDF_BRAND.cream);
+    doc.roundedRect(x, pillY, pillW, pillH, 4, 4, 'F');
+    doc.addImage(logoUrl, p.fileType, x + padX, pillY + padY, lw, lh);
+    return true;
+  } catch (e) {
+    console.error('שגיאה בציור לוגו ב-PDF:', e);
+    return false;
+  }
+}
+
 function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices: Record<string, number>, shippingInstallationCost: number, logoUrl?: string) {
   setupPdfHebrew(doc);
   const pageW = doc.internal.pageSize.getWidth();
@@ -138,8 +158,9 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
     doc.setTextColor(PDF_BRAND.cream);
     pdfRtlText(doc, 'הצעת מחיר', rightX, isFirstPage ? 38 : 30);
     if (logoUrl) {
-      const logoSize = isFirstPage ? 60 : 32;
-      pdfDrawImageFit(doc, logoUrl, leftX, isFirstPage ? 15 : 9, logoSize);
+      const headerH = isFirstPage ? 90 : 50;
+      const logoH = isFirstPage ? 44 : 26;
+      pdfDrawLogoWithBacking(doc, logoUrl, leftX, headerH, logoH);
     } else {
       doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
       doc.text('Steel & Spirit', leftX, isFirstPage ? 30 : 25, { align: 'left' });
@@ -271,8 +292,9 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
     doc.setFont('Rubik', 'bold'); doc.setFontSize(isFirstPage ? 17 : 12); doc.setTextColor(PDF_BRAND.cream);
     pdfRtlText(doc, `${proj.name} — מסמך פנימי`, rightX, isFirstPage ? 34 : 28);
     if (logoUrl) {
-      const logoSize = isFirstPage ? 52 : 28;
-      pdfDrawImageFit(doc, logoUrl, leftX, isFirstPage ? 14 : 9, logoSize);
+      const headerH = isFirstPage ? 80 : 46;
+      const logoH = isFirstPage ? 38 : 22;
+      pdfDrawLogoWithBacking(doc, logoUrl, leftX, headerH, logoH);
     } else {
       doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
       doc.text('Steel & Spirit', leftX, isFirstPage ? 28 : 24, { align: 'left' });
