@@ -528,7 +528,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
           {settings?.companyLogoUrl ? (
             <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
           ) : (
-            <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>D.S Logistics</div>
+            <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>Steel & Spirit</div>
           )}
         </div>
         <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#c91028', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
@@ -645,8 +645,8 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
               <div style={{ lineHeight: '1.8', color: '#222' }}>
                 <span style={{ display: 'block' }}>בנק: בנק הבינלאומי</span>
                 <span style={{ display: 'block' }}>סניף: 065</span>
-                <span style={{ display: 'block' }}>מס' חשבון: 372264</span>
-                <span style={{ display: 'block' }}>שם בעל החשבון: ד.ש לוגיסטיקה</span>
+                <span style={{ display: 'block' }}>מס' חשבון: 379811</span>
+                <span style={{ display: 'block' }}>שם בעל החשבון: סטיל אנד ספיריט בע"מ</span>
               </div>
             </div>
             <div style={{ flex: 1, minWidth: '140px', borderRight: '1px solid #ddd', paddingRight: '20px' }}>
@@ -1045,7 +1045,7 @@ export default function App() {
     appleIcon.href = logoUrl;
 
     // עדכון כותרת הדף
-    document.title = 'D.S Logistics CRM';
+    document.title = 'Steel & Spirit CRM';
   }, [companyLogoUrl]);
 
   // --- Login Handler ---
@@ -1498,7 +1498,7 @@ export default function App() {
   const generateWithGemini = async (prompt: string) => {
     if (!geminiApiKey || geminiApiKey === "YOUR_GEMINI_API_KEY") return "שים לב: לא הגדרת מפתח API של Gemini בקוד המערכת.";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${geminiApiKey}`;
-    const payload = { contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: "You are an expert business consultant for D.S Logistics." }] } };
+    const payload = { contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: "You are an expert business consultant for Steel & Spirit." }] } };
     try {
       const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
       const data = await res.json();
@@ -2566,7 +2566,7 @@ export default function App() {
       const videoLines = catalogSelectedModels
         .map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; })
         .filter(Boolean).join('\n');
-      const defaultTemplate = `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של D.S Logistics.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות D.S Logistics`;
+      const defaultTemplate = `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של Steel & Spirit.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות Steel & Spirit`;
       const template = settings?.catalogMessageTemplate || defaultTemplate;
       const msg = template.replace('{name}', leadName).replace('{videos}', videoLines || '').replace(/\n{3,}/g, '\n\n').trim();
 
@@ -2581,7 +2581,7 @@ export default function App() {
           const pdfFile = new File([blob], 'DS-Logistics-Catalog.pdf', { type: 'application/pdf' });
           if ((navigator as any).canShare({ files: [pdfFile] })) {
             try { await navigator.clipboard.writeText(msg); } catch {}
-            await (navigator as any).share({ files: [pdfFile], text: msg, title: 'קטלוג D.S Logistics' });
+            await (navigator as any).share({ files: [pdfFile], text: msg, title: 'קטלוג Steel & Spirit' });
             shared = true;
           }
         } catch (e: any) {
@@ -2899,7 +2899,7 @@ export default function App() {
           <div className="flex flex-col items-center mb-6">
             <div className="bg-indigo-100 p-3 rounded-full mb-3"><Lock className="w-8 h-8 text-indigo-600"/></div>
             <h1 className="text-2xl font-bold text-slate-800">התחברות למערכת</h1>
-            <p className="text-slate-500 text-sm mt-1">D.S Logistics CRM</p>
+            <p className="text-slate-500 text-sm mt-1">Steel & Spirit CRM</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
@@ -2928,7 +2928,7 @@ export default function App() {
           {/* ימין — טוגל + שם מערכת */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <div className="bg-indigo-100 p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-indigo-700" /></div>
-            <h1 className="text-sm font-bold text-slate-600 hidden sm:block">D.S Logistics CRM</h1>
+            <h1 className="text-sm font-bold text-slate-600 hidden sm:block">Steel & Spirit CRM</h1>
             <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
               <button
                 onClick={() => navigateTo('sales', 'sales_dashboard')}
@@ -2955,7 +2955,7 @@ export default function App() {
                 crossOrigin="anonymous"
               />
             ) : (
-              <span className="text-base font-bold text-slate-700 tracking-tight hidden sm:block">D.S Logistics</span>
+              <span className="text-base font-bold text-slate-700 tracking-tight hidden sm:block">Steel & Spirit</span>
             )}
           </div>
 
@@ -5128,7 +5128,7 @@ export default function App() {
                   <textarea
                     rows={5}
                     className="flex-1 border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
-                    placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`}
+                    placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות Steel & Spirit`}
                     value={settings?.catalogMessageTemplate || ''}
                     onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
                   />
@@ -7278,9 +7278,9 @@ export default function App() {
                           try {
                             const leadName = catalogSendTarget?.contactName || catalogSendTarget?.businessName || '';
                             const vids = catalogSelectedModels.map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; }).filter(Boolean).join('\n');
-                            const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות D.S Logistics`;
+                            const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות Steel & Spirit`;
                             const msg = tpl.replace('{name}', leadName).replace('{videos}', vids || '').replace(/\n{3,}/g, '\n\n').trim();
-                            await (navigator as any).share({ files: [file], text: msg, title: 'קטלוג D.S Logistics' });
+                            await (navigator as any).share({ files: [file], text: msg, title: 'קטלוג Steel & Spirit' });
                             await logCatalogSent(catalogSendTarget);
                             setIsCatalogSendModalOpen(false);
                           } catch(ex: any) { if (ex?.name !== 'AbortError') alert('שגיאה בשיתוף'); }
@@ -7323,7 +7323,7 @@ export default function App() {
                   {(() => {
                     const nm = catalogSendTarget.contactName || catalogSendTarget.businessName || '';
                     const vids = catalogSelectedModels.map((m: string) => { const v = settings?.models?.[m]?.videoUrl; return v ? `🎥 ${m}: ${v}` : null; }).filter(Boolean).join('\n');
-                    const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של D.S Logistics.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות D.S Logistics`;
+                    const tpl = settings?.catalogMessageTemplate || `שלום {name}! 👋\n\nתודה על התעניינות בעמדות הבר שלנו.\nמצורף קטלוג המוצרים של Steel & Spirit.\n\n{videos}\n\nנשמח לענות על כל שאלה!\nצוות Steel & Spirit`;
                     return tpl.replace('{name}', nm).replace('{videos}', vids || '').replace(/\n{3,}/g, '\n\n').trim();
                   })()}
                   {settings?.catalogPdfUrl && <span className="block mt-2 text-green-600 text-xs font-medium">[📎 קובץ PDF יצורף]</span>}
