@@ -117,7 +117,7 @@ function pdfDrawImageFit(doc: any, dataUrl: string, boxX: number, boxY: number, 
   }
 }
 
-function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices: Record<string, number>, shippingInstallationCost: number) {
+function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices: Record<string, number>, shippingInstallationCost: number, logoUrl?: string) {
   setupPdfHebrew(doc);
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
@@ -137,10 +137,15 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
     doc.setFontSize(isFirstPage ? 20 : 13);
     doc.setTextColor(PDF_BRAND.cream);
     pdfRtlText(doc, 'הצעת מחיר', rightX, isFirstPage ? 38 : 30);
-    doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
-    doc.text('Steel & Spirit', leftX, isFirstPage ? 30 : 25, { align: 'left' });
-    doc.setFontSize(7.5);
-    doc.text('Crafted by Bartenders', leftX, isFirstPage ? 42 : 36, { align: 'left' });
+    if (logoUrl) {
+      const logoSize = isFirstPage ? 60 : 32;
+      pdfDrawImageFit(doc, logoUrl, leftX, isFirstPage ? 15 : 9, logoSize);
+    } else {
+      doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
+      doc.text('Steel & Spirit', leftX, isFirstPage ? 30 : 25, { align: 'left' });
+      doc.setFontSize(7.5);
+      doc.text('Crafted by Bartenders', leftX, isFirstPage ? 42 : 36, { align: 'left' });
+    }
     if (isFirstPage) {
       doc.setFont('Rubik', 'normal'); doc.setFontSize(10); doc.setTextColor(PDF_BRAND.cream);
       pdfRtlText(doc, `לכבוד: ${proj.clientName || proj.name}`, rightX, 62);
@@ -177,9 +182,13 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
   let subtotal = 0;
 
   (proj.products || []).forEach((pr: any, i: number) => {
-    doc.setFont('Rubik', 'normal'); doc.setFontSize(9);
+    doc.setFont('Rubik', 'bold'); doc.setFontSize(10);
+    const nameLines = pdfWrapLogical(doc, pr.itemHe, nameColWrapWidth);
+    doc.setFont('Rubik', 'normal'); doc.setFontSize(8);
+    const enLines = pr.itemEn ? pdfWrapLogical(doc, pr.itemEn, nameColWrapWidth) : [];
+    doc.setFontSize(9);
     const infoLines = pr.info ? pdfWrapLogical(doc, pr.info, nameColWrapWidth) : [];
-    const nameLineCount = 1 + (pr.itemEn ? 1 : 0) + infoLines.length;
+    const nameLineCount = nameLines.length + enLines.length + infoLines.length;
     const rowHeight = Math.max(rowImgSize + 14, 16 + nameLineCount * 11);
 
     if (y + rowHeight > pageH - marginBottom) {
@@ -200,9 +209,9 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
 
     doc.setFont('Rubik', 'bold'); doc.setFontSize(10); doc.setTextColor(PDF_BRAND.charcoal);
     let textY = y + 14;
-    pdfRtlText(doc, pr.itemHe, nameColRight, textY);
+    nameLines.forEach((line: string, idx: number) => { if (idx > 0) textY += 12; pdfRtlText(doc, line, nameColRight, textY); });
     doc.setFont('Rubik', 'normal'); doc.setFontSize(8); doc.setTextColor(PDF_BRAND.textMuted);
-    if (pr.itemEn) { textY += 11; pdfRtlText(doc, pr.itemEn, nameColRight, textY); }
+    enLines.forEach((line: string) => { textY += 11; pdfRtlText(doc, line, nameColRight, textY); });
     doc.setFontSize(7.5);
     infoLines.forEach((line: string) => { textY += 10; pdfRtlText(doc, line, nameColRight, textY); });
 
@@ -241,7 +250,7 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
   drawFooter();
 }
 
-function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices: Record<string, number>, shippingInstallationCost: number) {
+function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices: Record<string, number>, shippingInstallationCost: number, logoUrl?: string) {
   setupPdfHebrew(doc);
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
@@ -261,10 +270,15 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
     doc.rect(0, 0, pageW, isFirstPage ? 80 : 46, 'F');
     doc.setFont('Rubik', 'bold'); doc.setFontSize(isFirstPage ? 17 : 12); doc.setTextColor(PDF_BRAND.cream);
     pdfRtlText(doc, `${proj.name} — מסמך פנימי`, rightX, isFirstPage ? 34 : 28);
-    doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
-    doc.text('Steel & Spirit', leftX, isFirstPage ? 28 : 24, { align: 'left' });
+    if (logoUrl) {
+      const logoSize = isFirstPage ? 52 : 28;
+      pdfDrawImageFit(doc, logoUrl, leftX, isFirstPage ? 14 : 9, logoSize);
+    } else {
+      doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
+      doc.text('Steel & Spirit', leftX, isFirstPage ? 28 : 24, { align: 'left' });
+    }
     if (isFirstPage) {
-      doc.setFontSize(9);
+      doc.setFont('Rubik', 'normal'); doc.setFontSize(9); doc.setTextColor(PDF_BRAND.cream);
       pdfRtlText(doc, `לקוח: ${proj.clientName || '—'}  ·  תאריך: ${new Date().toLocaleDateString('he-IL')}`, rightX, 58);
     }
     return isFirstPage ? 80 : 46;
@@ -299,9 +313,13 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
   let totalLandedAll = 0, totalSaleAll = 0;
 
   (proj.products || []).forEach((pr: any, i: number) => {
-    doc.setFont('Rubik', 'normal'); doc.setFontSize(8.5);
+    doc.setFont('Rubik', 'bold'); doc.setFontSize(9.5);
+    const nameLines = pdfWrapLogical(doc, pr.itemHe, nameColWrapWidth);
+    doc.setFont('Rubik', 'normal'); doc.setFontSize(7.5);
+    const enLines = pr.itemEn ? pdfWrapLogical(doc, pr.itemEn, nameColWrapWidth) : [];
+    doc.setFontSize(8.5);
     const infoLines = pr.info ? pdfWrapLogical(doc, pr.info, nameColWrapWidth) : [];
-    const nameLineCount = 1 + (pr.itemEn ? 1 : 0) + infoLines.length;
+    const nameLineCount = nameLines.length + enLines.length + infoLines.length;
     const rowHeight = Math.max(rowImgSize + 12, 15 + nameLineCount * 10);
 
     if (y + rowHeight > pageH - marginBottom) {
@@ -318,9 +336,9 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
 
     doc.setFont('Rubik', 'bold'); doc.setFontSize(9.5); doc.setTextColor(PDF_BRAND.charcoal);
     let textY = y + 12;
-    pdfRtlText(doc, pr.itemHe, nameColRight, textY);
+    nameLines.forEach((line: string, idx: number) => { if (idx > 0) textY += 11; pdfRtlText(doc, line, nameColRight, textY); });
     doc.setFont('Rubik', 'normal'); doc.setFontSize(7.5); doc.setTextColor(PDF_BRAND.textMuted);
-    if (pr.itemEn) { textY += 10; pdfRtlText(doc, pr.itemEn, nameColRight, textY); }
+    enLines.forEach((line: string) => { textY += 10; pdfRtlText(doc, line, nameColRight, textY); });
     doc.setFontSize(7);
     infoLines.forEach((line: string) => { textY += 9; pdfRtlText(doc, line, nameColRight, textY); });
 
@@ -4928,18 +4946,37 @@ export default function App() {
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
               <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2"><ImageIcon className="w-5 h-5 text-indigo-600"/> לוגו החברה למסמכים (PDF)</h2>
               <div className="mb-4">
-                <label className="block text-sm font-bold text-slate-700 mb-2">העלה לוגו מהמחשב או הטלפון</label>
+                <label className="block text-sm font-bold text-slate-700 mb-1">העלה לוגו מהמחשב או הטלפון</label>
+                <p className="text-xs text-slate-400 mb-2">נשמר אוטומטית מיד עם ההעלאה</p>
                 <input 
                   type="file" 
                   accept="image/*" 
-                  onChange={(e) => handleImageUpload(e, (base64) => setSettings({...settings, companyLogoUrl: base64}))} 
+                  onChange={(e) => handleImageUpload(e, async (base64) => {
+                    const updated = {...settings, companyLogoUrl: base64};
+                    setSettings(updated);
+                    try {
+                      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated, { merge: true });
+                    } catch (err) {
+                      console.error(err);
+                      alert('שגיאה בשמירת הלוגו — נסה שוב');
+                    }
+                  })} 
                   className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded-md p-1" 
                 />
               </div>
               {(settings && settings.companyLogoUrl) && (
                 <div className="mt-4 border border-dashed border-slate-300 p-4 rounded-lg flex flex-col items-center bg-slate-50 relative">
                   <img src={settings.companyLogoUrl} alt="לוגו חברה" className="max-h-24 object-contain"/>
-                  <button onClick={() => setSettings({...settings, companyLogoUrl: ''})} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
+                  <button onClick={async () => {
+                    const updated = {...settings, companyLogoUrl: ''};
+                    setSettings(updated);
+                    try {
+                      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated, { merge: true });
+                    } catch (err) {
+                      console.error(err);
+                      alert('שגיאה בהסרת הלוגו — נסה שוב');
+                    }
+                  }} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
                 </div>
               )}
             </div>
@@ -6610,10 +6647,11 @@ export default function App() {
 
         const generatePDF = async () => {
           const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+          const logoUrl = settings?.companyLogoUrl || '';
           if (isCustomer) {
-            drawCustomerPdfNative(doc, proj, totals, editablePrices, shippingInstallationCost);
+            drawCustomerPdfNative(doc, proj, totals, editablePrices, shippingInstallationCost, logoUrl);
           } else {
-            drawInternalPdfNative(doc, proj, totals, editablePrices, shippingInstallationCost);
+            drawInternalPdfNative(doc, proj, totals, editablePrices, shippingInstallationCost, logoUrl);
           }
           const suffix = isCustomer ? 'quote' : 'internal';
           doc.save(`${proj.name || 'project'}-${suffix}.pdf`);
@@ -7278,4 +7316,4 @@ export default function App() {
 
     </div>
   );
-} 
+}
