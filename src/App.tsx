@@ -523,7 +523,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
   return (
     <div ref={innerRef} className="bg-[#eae5dd] shadow-2xl relative shrink-0" style={{ width: '210mm', minHeight: '297mm', padding: '20mm', boxSizing: 'border-box', direction: 'rtl', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' }}>
       {/* Header / Logo */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #c91028', paddingBottom: '15px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', borderBottom: '2px solid #7B1315', paddingBottom: '15px' }}>
         <div style={{ width: '200px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
           {settings?.companyLogoUrl ? (
             <img src={settings.companyLogoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} crossOrigin="anonymous" />
@@ -531,7 +531,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
             <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>Steel & Spirit</div>
           )}
         </div>
-        <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#c91028', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
+        <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#7B1315', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
           <p style={{ margin: '3px 0' }}>050-2212880 | 054-8050870</p>
           <p style={{ margin: '3px 0' }}>Dslogistics69@gmail.com</p>
           <p style={{ margin: '3px 0', color: '#000' }}>ds-logistics.interaa.ai</p>
@@ -556,13 +556,13 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
           return d.toLocaleDateString('he-IL');
         })() : null;
         return (
-          <div style={{ background: 'rgba(201,16,40,0.07)', border: '1px solid #c91028', borderRadius: '6px', padding: '12px 16px', marginBottom: '20px', fontSize: '12.5px', lineHeight: '1.7' }}>
+          <div style={{ background: 'rgba(123,19,21,0.07)', border: '1px solid #7B1315', borderRadius: '6px', padding: '12px 16px', marginBottom: '20px', fontSize: '12.5px', lineHeight: '1.7' }}>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px' }}>
-              <span style={{ fontWeight: 'bold', color: '#c91028', whiteSpace: 'nowrap' }}>⏱ תוקף ההצעה:</span>
+              <span style={{ fontWeight: 'bold', color: '#7B1315', whiteSpace: 'nowrap' }}>⏱ תוקף ההצעה:</span>
               <span>הצעת מחיר זו תקפה ל-<strong>10 ימים בלבד</strong> ממועד הפקתה{validUntil ? `, עד לתאריך: ${validUntil}` : ''}. לאחר מועד זה תידרש הצעת מחיר מעודכנת.</span>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-              <span style={{ fontWeight: 'bold', color: '#c91028', whiteSpace: 'nowrap' }}>📦 זמינות מלאי:</span>
+              <span style={{ fontWeight: 'bold', color: '#7B1315', whiteSpace: 'nowrap' }}>📦 זמינות מלאי:</span>
               <span>הצעת מחיר זו אינה מהווה הזמנה מחייבת ואינה משריינת את המוצרים המפורטים עבור הלקוח — המוצרים עומדים למכירה לכל דורש. לאחר קבלת הסכמה מפורשת מצד הלקוח לסגירת העסקה, יישמרו המוצרים לטובתו לתקופה של <strong>יום עסקים אחד (1) בלבד</strong> ממועד ההסכמה, בכפוף לתשלום מלא. בהיעדר תשלום בפרק הזמן האמור, שומרת ד.ש. לוגיסטיקה לעצמה את הזכות למכור את המוצר לגורם אחר ללא כל התחייבות. תנאי תשלום שונים יחולו רק אם הוסכם עליהם במפורש בכתב.</span>
             </div>
           </div>
@@ -604,7 +604,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
                  {hasDiscount ? (
                    <span>
                      מחיר רשמי: <span style={{ textDecoration: 'line-through', color: '#888' }}>{originalPrice.toLocaleString()} ₪</span>
-                     {' '}הנחה: <span style={{ color: '#c91028', fontWeight: 'bold' }}>−{Number(item.discount).toLocaleString()} ₪</span>
+                     {' '}הנחה: <span style={{ color: '#7B1315', fontWeight: 'bold' }}>−{Number(item.discount).toLocaleString()} ₪</span>
                      {' '}מחיר סופי: <span style={{ fontWeight: 'bold' }}>{effectivePrice.toLocaleString()} ₪ + מע"מ</span>
                    </span>
                  ) : (
@@ -624,7 +624,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#555' }}>
                   <span>מחיר לפני הנחה:</span><span>{listTotal.toLocaleString()} ₪</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#c91028', fontWeight: 'bold' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#7B1315', fontWeight: 'bold' }}>
                   <span>סה"כ הנחות:</span><span>−{totalDiscount.toLocaleString()} ₪</span>
                 </div>
               </>
@@ -637,8 +637,8 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
             </div>
         </div>
         {/* פרטי תשלום */}
-        <div style={{ marginTop: '14px', background: 'rgba(255,255,255,0.85)', border: '1px solid #c91028', borderRadius: '6px', padding: '12px 14px', fontSize: '12.5px' }}>
-          <div style={{ fontWeight: 'bold', color: '#c91028', marginBottom: '8px', fontSize: '13px' }}>אמצעי תשלום</div>
+        <div style={{ marginTop: '14px', background: 'rgba(255,255,255,0.85)', border: '1px solid #7B1315', borderRadius: '6px', padding: '12px 14px', fontSize: '12.5px' }}>
+          <div style={{ fontWeight: 'bold', color: '#7B1315', marginBottom: '8px', fontSize: '13px' }}>אמצעי תשלום</div>
           <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: '180px' }}>
               <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '12px' }}>🏦 העברה בנקאית:</div>
@@ -672,7 +672,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
              
              return (
                  <div key={idx} style={{ marginTop: '20px', borderTop: idx > 0 ? '1px dashed #ccc' : 'none', paddingTop: idx > 0 ? '20px' : '0' }}>
-                     <h4 style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '14px', color: '#c91028' }}>דגם {item.model}</h4>
+                     <h4 style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '14px', color: '#7B1315' }}>דגם {item.model}</h4>
                      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
                          {modelSettings.blueprintUrl && (
                              <div style={{ textAlign: 'center', flex: '1', minWidth: '200px' }}>
