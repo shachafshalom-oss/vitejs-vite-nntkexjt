@@ -74,6 +74,16 @@ const PDF_BRAND = {
   rowAlt: '#FAF8F2',
 };
 
+// מחיר אפקטיבי (אחרי הנחה) לפריט בהצעת מחיר - מחושב תמיד טרי מ-listPrice/discount
+// במקום לסמוך על finalPrice/price שעלולים להיות לא מסונכרנים (הצעות ישנות וכו').
+// נופל בחזרה ל-finalPrice/price רק אם אין בכלל listPrice שמור על הפריט.
+function getEffectivePrice(item: any): number {
+  if (item?.listPrice !== undefined && item?.listPrice !== null) {
+    return Math.max(0, Number(item.listPrice) - Number(item.discount || 0));
+  }
+  return Number(item?.finalPrice ?? item?.price ?? 0);
+}
+
 function pdfToVisual(str: any): string {
   if (!str) return '';
   const s = String(str);
@@ -262,11 +272,25 @@ function drawCustomerPdfNative(doc: any, proj: any, totals: any, editablePrices:
     pdfRtlText(doc, `₪${Math.round(deliveryCost).toLocaleString()}`, totalColRight, y);
     y += 20;
   }
-  if (y + 40 > pageH - marginBottom) { drawFooter(); doc.addPage(); pageNum++; y = drawHeader(false) + 15; }
+  const preVat = subtotal + deliveryCost;
+  const vatAmount = preVat * 0.18;
+  const totalWithVat = preVat + vatAmount;
+  if (y + 90 > pageH - marginBottom) { drawFooter(); doc.addPage(); pageNum++; y = drawHeader(false) + 15; }
   doc.setFont('Rubik', 'bold'); doc.setFontSize(12); doc.setTextColor(PDF_BRAND.charcoal);
   pdfRtlText(doc, 'סה"כ לתשלום לפני מע"מ', nameColRight, y);
   doc.setTextColor(PDF_BRAND.burgundy); doc.setFontSize(14);
-  pdfRtlText(doc, `₪${Math.round(subtotal + deliveryCost).toLocaleString()}`, totalColRight, y);
+  pdfRtlText(doc, `₪${Math.round(preVat).toLocaleString()}`, totalColRight, y);
+
+  y += 22;
+  doc.setFont('Rubik', 'normal'); doc.setFontSize(11); doc.setTextColor(PDF_BRAND.textMuted);
+  pdfRtlText(doc, 'מע"מ (18%)', nameColRight, y);
+  pdfRtlText(doc, `₪${Math.round(vatAmount).toLocaleString()}`, totalColRight, y);
+
+  y += 24;
+  doc.setFont('Rubik', 'bold'); doc.setFontSize(13); doc.setTextColor(PDF_BRAND.charcoal);
+  pdfRtlText(doc, 'סה"כ כולל מע"מ', nameColRight, y);
+  doc.setTextColor(PDF_BRAND.burgundy); doc.setFontSize(16);
+  pdfRtlText(doc, `₪${Math.round(totalWithVat).toLocaleString()}`, totalColRight, y);
 
   drawFooter();
 }
@@ -514,7 +538,7 @@ const QUICK_IMPORT_KEYWORDS = [
 
 // 1. רכיב תצוגת מסמך הצעת המחיר (PDF)
 const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, customer: any, settings: any, innerRef?: React.RefObject<HTMLDivElement> }) => {
-  const getItemEffectivePrice = (item: any) => Number(item.finalPrice ?? item.price ?? 0);
+  const getItemEffectivePrice = (item: any) => getEffectivePrice(item);
   const itemsTotal = quote?.items?.reduce((sum: number, item: any) => sum + (getItemEffectivePrice(item) * Number(item.qty)), 0) || 0;
   const totalDiscount = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.discount || 0) * Number(item.qty)), 0) || 0;
   const listTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.listPrice ?? item.price ?? 0) * Number(item.qty)), 0) || 0;
@@ -717,7 +741,7 @@ const FabButton = ({ onClick, icon: Icon, iconColor, label }: any) => (
 const ModelAssetUploader = ({ label, icon: Icon, imageUrl, onUpload, onRemove }: any) => (
   <div className="bg-white p-3 rounded border border-slate-200">
     <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1"><Icon className="w-4 h-4"/> {label}</label>
-    <input type="file" accept="image/*" onChange={onUpload} className="block w-full text-xs text-slate-500 file:ml-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded p-1" />
+    <input type="file" accept="image/*" onChange={onUpload} className="block w-full text-xs text-slate-500 file:ml-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-bold file:bg-[#F7F1F1] file:text-[#651011] hover:file:bg-[#EDDEDE] cursor-pointer border border-slate-200 rounded p-1" />
     {imageUrl && (
       <div className="mt-3 relative inline-block">
         <img src={imageUrl} alt="" className="h-20 object-contain rounded border border-slate-200 p-1" crossOrigin="anonymous" />
@@ -2445,7 +2469,7 @@ export default function App() {
     if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
     try {
       const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
-        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: Number(i.finalPrice ?? i.price ?? 0) })),
+        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: getEffectivePrice(i) })),
         Number(quote.approvedShippingCost) || 0,
         customer
       );
@@ -2753,7 +2777,7 @@ export default function App() {
     if (newStatus === 'approved') {
       const itemsToProcess = quote.items.map((item: any) => ({
         model: item.model, qty: item.qty,
-        salePrice: Number(item.finalPrice ?? item.price ?? 0),
+        salePrice: getEffectivePrice(item),
         discountAmount: Number(item.discount || 0),
         saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
         campaignId: quote.campaignId || '', processed: 0
@@ -2890,35 +2914,35 @@ export default function App() {
 
 
   // --- Render Login Screen if not authenticated ---
-  if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>;
+  if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#7B1315]"></div></div>;
   
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50" dir="rtl">
         <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full border border-slate-200">
           <div className="flex flex-col items-center mb-6">
-            <div className="bg-indigo-100 p-3 rounded-full mb-3"><Lock className="w-8 h-8 text-indigo-600"/></div>
+            <div className="bg-[#EDDEDE] p-3 rounded-full mb-3"><Lock className="w-8 h-8 text-[#7B1315]"/></div>
             <h1 className="text-2xl font-bold text-slate-800">התחברות למערכת</h1>
             <p className="text-slate-500 text-sm mt-1">Steel & Spirit CRM</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label>
-              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-indigo-500" dir="ltr"/>
+              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-[#7B1315]" dir="ltr"/>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">סיסמה</label>
-              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-indigo-500" dir="ltr"/>
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full border border-slate-300 rounded-md p-2.5 outline-none focus:ring-2 focus:ring-[#7B1315]" dir="ltr"/>
             </div>
             {authError && <p className="text-red-500 text-sm text-center">{authError}</p>}
-            <button type="submit" className="w-full bg-indigo-600 text-white font-medium py-2.5 rounded-md hover:bg-indigo-700 transition-colors">כניסה מאובטחת</button>
+            <button type="submit" className="w-full bg-[#7B1315] text-white font-medium py-2.5 rounded-md hover:bg-[#651011] transition-colors">כניסה מאובטחת</button>
           </form>
         </div>
       </div>
     );
   }
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#7B1315]"></div></div>;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
@@ -2927,12 +2951,12 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center">
           {/* ימין — טוגל + שם מערכת */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="bg-indigo-100 p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-indigo-700" /></div>
+            <div className="bg-[#EDDEDE] p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-[#651011]" /></div>
             <h1 className="text-sm font-bold text-slate-600 hidden sm:block">Steel & Spirit CRM</h1>
             <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
               <button
                 onClick={() => navigateTo('sales', 'sales_dashboard')}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-[#7B1315] text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 <Activity className="w-3.5 h-3.5"/> <span>מכירות</span>
               </button>
@@ -2986,7 +3010,7 @@ export default function App() {
                 { id: 'suppliers', icon: Building2, label: 'ספקים' },
                 { id: 'settings', icon: Settings, label: 'הגדרות' },
               ]).map(t => (
-                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? (activeSpace === 'sales' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-green-100 text-green-700 shadow-sm') : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
+                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? (activeSpace === 'sales' ? 'bg-[#EDDEDE] text-[#651011] shadow-sm' : 'bg-green-100 text-green-700 shadow-sm') : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
                   <t.icon className="w-4 h-4" /> <span>{t.label}</span>
                 </button>
               ))}
@@ -3006,7 +3030,7 @@ export default function App() {
                 <h2 className="text-2xl font-bold text-slate-800">תמונת מצב — מכירות</h2>
                 <p className="text-sm text-slate-400 mt-0.5">{new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
               </div>
-              <button onClick={handleGetInsights} className="bg-gradient-to-l from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
+              <button onClick={handleGetInsights} className="bg-gradient-to-l from-[#7B1315] to-purple-600 hover:from-[#651011] hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-yellow-300"/>
                 <span className="hidden sm:inline">יועץ עסקי AI ✨</span>
               </button>
@@ -3015,18 +3039,18 @@ export default function App() {
             {/* ROW 1 — REVENUE HERO */}
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <div className="w-1 h-5 bg-indigo-600 rounded-full"/>
+                <div className="w-1 h-5 bg-[#7B1315] rounded-full"/>
                 <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">הכנסות</h3>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2 bg-gradient-to-br from-indigo-600 via-indigo-700 to-purple-700 p-6 rounded-2xl shadow-lg text-white relative overflow-hidden">
+                <div className="md:col-span-2 bg-gradient-to-br from-[#7B1315] via-[#651011] to-purple-700 p-6 rounded-2xl shadow-lg text-white relative overflow-hidden">
                   <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 80% 20%, white 0%, transparent 60%)'}}/>
-                  <p className="text-sm font-medium text-indigo-200 mb-1">הכנסות חודש נוכחי</p>
+                  <p className="text-sm font-medium text-[#DABDBD] mb-1">הכנסות חודש נוכחי</p>
                   <p className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
                   <div className="flex items-center gap-3 flex-wrap">
                     {(() => {
                       if (calculatedData.avgPastMonthsCount === 0) {
-                        return <span className="text-indigo-300 text-sm">אין נתוני עבר להשוואה עדיין</span>;
+                        return <span className="text-[#C49596] text-sm">אין נתוני עבר להשוואה עדיין</span>;
                       }
                       const diff = calculatedData.currentMonthIncome - calculatedData.avgPastMonthsIncome;
                       const pct = calculatedData.avgPastMonthsIncome > 0 ? Math.round((diff / calculatedData.avgPastMonthsIncome) * 100) : 0;
@@ -3037,7 +3061,7 @@ export default function App() {
                             {isUp ? <ArrowUpRight className="w-4 h-4"/> : <ArrowDownRight className="w-4 h-4"/>}
                             {isUp ? '+' : ''}{pct}% לעומת ממוצע
                           </div>
-                          <span className="text-indigo-300 text-sm">ממוצע חודשי ({calculatedData.avgPastMonthsCount} חודשים): ₪{calculatedData.avgPastMonthsIncome.toLocaleString()}</span>
+                          <span className="text-[#C49596] text-sm">ממוצע חודשי ({calculatedData.avgPastMonthsCount} חודשים): ₪{calculatedData.avgPastMonthsIncome.toLocaleString()}</span>
                         </>
                       );
                     })()}
@@ -3051,10 +3075,10 @@ export default function App() {
                     </div>
                     <p className="text-2xl font-black text-slate-800">₪{calculatedData.avgProfit.toLocaleString()}</p>
                   </div>
-                  <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1 cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all group">
+                  <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1 cursor-pointer hover:border-[#C49596] hover:shadow-md transition-all group">
                     <div className="flex items-center gap-2 mb-1">
-                      <div className="bg-indigo-100 p-1.5 rounded-lg group-hover:bg-indigo-200 transition-colors"><Package className="w-4 h-4 text-indigo-600"/></div>
-                      <p className="text-xs text-slate-500 font-medium flex items-center gap-1">פריטים במלאי <span className="text-[10px] text-indigo-400 group-hover:text-indigo-600">פירוט ▸</span></p>
+                      <div className="bg-[#EDDEDE] p-1.5 rounded-lg group-hover:bg-[#DABDBD] transition-colors"><Package className="w-4 h-4 text-[#7B1315]"/></div>
+                      <p className="text-xs text-slate-500 font-medium flex items-center gap-1">פריטים במלאי <span className="text-[10px] text-[#A55F60] group-hover:text-[#7B1315]">פירוט ▸</span></p>
                     </div>
                     <p className="text-2xl font-black text-slate-800">{calculatedData.inWarehouseCount} <span className="text-sm font-medium text-slate-400">יח'</span></p>
                     <p className="text-xs text-slate-400 mt-0.5">שווי: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
@@ -3081,7 +3105,7 @@ export default function App() {
                       <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">לידים</h3>
                       <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">{allLeads.length} פעילים</span>
                     </div>
-                    <button onClick={() => navigateTo('sales', 'leads')} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">לכל הלידים ▸</button>
+                    <button onClick={() => navigateTo('sales', 'leads')} className="text-xs text-[#7B1315] hover:text-[#4E2426] font-medium flex items-center gap-1">לכל הלידים ▸</button>
                   </div>
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                     {/* Lead stage funnel */}
@@ -3159,15 +3183,15 @@ export default function App() {
                               const shortName = agent === 'לא מוקצה' ? agent : agent.split('@')[0];
                               return (
                                 <div key={agent} className="flex items-center gap-3">
-                                  <div className="w-7 h-7 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-xs font-black shrink-0">{shortName[0]?.toUpperCase()}</div>
+                                  <div className="w-7 h-7 bg-[#EDDEDE] text-[#651011] rounded-full flex items-center justify-center text-xs font-black shrink-0">{shortName[0]?.toUpperCase()}</div>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex justify-between text-xs mb-0.5">
                                       <span className="font-medium text-slate-700 truncate">{shortName}</span>
                                       <span className="text-slate-500 shrink-0 mr-2">{data.leads} לידים</span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      <div className="flex-1 bg-slate-100 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: pct + '%' }}/></div>
-                                      <span className="text-[10px] font-bold text-indigo-600 w-8 text-left">{pct}%</span>
+                                      <div className="flex-1 bg-slate-100 rounded-full h-1.5"><div className="bg-[#7B1315] h-1.5 rounded-full" style={{ width: pct + '%' }}/></div>
+                                      <span className="text-[10px] font-bold text-[#7B1315] w-8 text-left">{pct}%</span>
                                     </div>
                                   </div>
                                 </div>
@@ -3237,8 +3261,8 @@ export default function App() {
                 <p className="text-xs text-slate-400 mt-0.5">שווי עלות: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Ship className="w-3.5 h-3.5 text-indigo-500"/> בדרך / בייצור</p>
-                <p className="text-3xl font-black text-indigo-700">{calculatedData.enrichedItems.filter((i: any) => i.status === 'ordered' || i.status === 'in_transit').length}</p>
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Ship className="w-3.5 h-3.5 text-[#7B1315]"/> בדרך / בייצור</p>
+                <p className="text-3xl font-black text-[#651011]">{calculatedData.enrichedItems.filter((i: any) => i.status === 'ordered' || i.status === 'in_transit').length}</p>
                 <p className="text-xs text-slate-400 mt-0.5">פריטים בהמתנה</p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -3289,7 +3313,7 @@ export default function App() {
                     <h4 className="font-bold text-slate-800 mb-3">{f.model}</h4>
                     <div className="space-y-1.5 text-sm">
                       <p className="flex justify-between"><span className="text-slate-500">במלאי:</span><span className="font-bold">{f.stock} יח'</span></p>
-                      <p className="flex justify-between"><span className="text-slate-500">בדרך:</span><span className="font-bold text-indigo-600">{f.onTheWay} יח'</span></p>
+                      <p className="flex justify-between"><span className="text-slate-500">בדרך:</span><span className="font-bold text-[#7B1315]">{f.onTheWay} יח'</span></p>
                       <p className="flex justify-between"><span className="text-slate-500">מכירות/30י:</span><span className="font-bold">{f.sold30} יח'</span></p>
                       <div className="pt-2 mt-2 border-t border-slate-100">
                         <p className={`text-lg font-black ${f.daysLeft !== 0 && f.daysLeft < 30 ? 'text-red-600' : 'text-green-600'}`}>{f.daysLeft === 'מעל חצי שנה' ? '6+ חודשים' : f.daysLeft > 0 ? '~' + f.daysLeft + ' ימים' : 'נגמר'}</p>
@@ -3304,9 +3328,9 @@ export default function App() {
             {/* ROW 3 — משלוחים אחרונים */}
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <div className="w-1 h-5 bg-indigo-500 rounded-full"/>
+                <div className="w-1 h-5 bg-[#7B1315] rounded-full"/>
                 <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">משלוחים פעילים</h3>
-                <button onClick={() => navigateTo('operations', 'shipments')} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 mr-auto">לכל המשלוחים ▸</button>
+                <button onClick={() => navigateTo('operations', 'shipments')} className="text-xs text-[#7B1315] hover:text-[#4E2426] font-medium flex items-center gap-1 mr-auto">לכל המשלוחים ▸</button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {shipments.filter((s: any) => s.status !== 'in_warehouse').slice(0, 6).map((s: any) => (
@@ -3334,7 +3358,7 @@ export default function App() {
         {activeTab === 'finance' && (
           <div className="space-y-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Banknote className="w-6 h-6 text-indigo-600"/> ניהול כספים ותזרים</h2>
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Banknote className="w-6 h-6 text-[#7B1315]"/> ניהול כספים ותזרים</h2>
               <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
                 <select className="bg-transparent font-bold text-slate-700 outline-none pr-2 border-l border-slate-200" value={financeMonth} onChange={e => setFinanceMonth(Number(e.target.value))}>
                   {Array.from({length: 12}, (_, i) => i + 1).map(m => (
@@ -3390,8 +3414,8 @@ export default function App() {
                     const profit = m.income - m.expense;
                     const isSelected = m.month === financeMonth;
                     return (
-                      <tr key={m.month} className={`hover:bg-slate-50 cursor-pointer ${isSelected ? 'bg-indigo-50/50' : ''}`} onClick={() => setFinanceMonth(m.month)}>
-                        <td className={`px-4 py-3 font-bold ${isSelected ? 'text-indigo-700' : 'text-slate-700'}`}>{m.month < 10 ? `0${m.month}` : m.month}/{financeYear} {isSelected && '👈'}</td>
+                      <tr key={m.month} className={`hover:bg-slate-50 cursor-pointer ${isSelected ? 'bg-[#F7F1F1]/50' : ''}`} onClick={() => setFinanceMonth(m.month)}>
+                        <td className={`px-4 py-3 font-bold ${isSelected ? 'text-[#651011]' : 'text-slate-700'}`}>{m.month < 10 ? `0${m.month}` : m.month}/{financeYear} {isSelected && '👈'}</td>
                         <td className="px-4 py-3 text-green-600 font-medium">₪{Math.round(m.income).toLocaleString()}</td>
                         <td className="px-4 py-3 text-red-600 font-medium">₪{Math.round(m.expense).toLocaleString()}</td>
                         <td className={`px-4 py-3 font-bold ${profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>₪{Math.round(profit).toLocaleString()}</td>
@@ -3417,7 +3441,7 @@ export default function App() {
             <div className="mt-8">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><TrendingDown className="w-5 h-5 text-red-500"/> פירוט הוצאות כלליות (ידניות)</h3>
-                <button onClick={() => setIsExpenseModalOpen(true)} className="bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 hover:bg-indigo-200"><Plus className="w-4 h-4"/> הוסף הוצאה חדשה</button>
+                <button onClick={() => setIsExpenseModalOpen(true)} className="bg-[#EDDEDE] text-[#651011] px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 hover:bg-[#DABDBD]"><Plus className="w-4 h-4"/> הוסף הוצאה חדשה</button>
               </div>
               <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -3463,7 +3487,7 @@ export default function App() {
                   setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                   setIsQuoteModalOpen(true); 
                 }} 
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
               >
                 <Plus className="w-4 h-4"/> הצעת מחיר חדשה
               </button>
@@ -3481,7 +3505,7 @@ export default function App() {
                 <button
                   key={f.val}
                   onClick={() => setQuoteStatusFilter(f.val)}
-                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${quoteStatusFilter === f.val ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${quoteStatusFilter === f.val ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'}`}
                 >
                   {f.label}
                 </button>
@@ -3504,14 +3528,14 @@ export default function App() {
                     .filter(q => quoteStatusFilter === 'all' || (quoteStatusFilter === 'pending' ? (!q.status || q.status === 'pending') : q.status === quoteStatusFilter))
                     .map(q => {
                     const customer = customers.find(c => c.id === q.customerId) || { name: 'לקוח נמחק' };
-                    const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (Number(item.finalPrice ?? item.price ?? 0) * Number(item.qty)), 0);
+                    const itemsTotal = q.items.reduce((sum: number, item: any) => sum + (getEffectivePrice(item) * Number(item.qty)), 0);
                     const grandTotal = itemsTotal + Number(q.shippingCost || 0);
                     
                     return (
                       <tr key={q.id} className="hover:bg-slate-50">
                         <td className="px-4 py-4 text-slate-600">{new Date(q.date).toLocaleDateString('he-IL')}</td>
                         <td className="px-4 py-4 font-bold text-slate-800">{customer.businessName || customer.contactName || customer.name}</td>
-                        <td className="px-4 py-4 font-bold text-indigo-700">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
+                        <td className="px-4 py-4 font-bold text-[#651011]">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
                           <select 
                             className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
@@ -3525,7 +3549,7 @@ export default function App() {
                           </select>
                         </td>
                         <td className="px-4 py-4 text-left flex items-center justify-end gap-2">
-                          <button onClick={() => { setSelectedQuote({...q, customerInfo: customer}); setIsQuoteOverviewOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1.5" title="מבט כולל"><Eye className="w-5 h-5"/></button>
+                          <button onClick={() => { setSelectedQuote({...q, customerInfo: customer}); setIsQuoteOverviewOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1.5" title="מבט כולל"><Eye className="w-5 h-5"/></button>
                           <button onClick={() => deleteDocHandler('crm_quotes', q.id)} className="text-slate-400 hover:text-red-500 p-1.5"><Trash2 className="w-5 h-5"/></button>
                         </td>
                       </tr>
@@ -3544,8 +3568,8 @@ export default function App() {
         {activeTab === 'suppliers' && (
           <div>
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-6 h-6 text-indigo-600"/> ספקים מסין</h2>
-              <button onClick={() => { setSupplierEditingData({ name: '', contactName: '', whatsapp: '', wechat: '', email: '', city: '', notes: '', catalog: [] }); setIsSupplierModalOpen(true); }} className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-6 h-6 text-[#7B1315]"/> ספקים מסין</h2>
+              <button onClick={() => { setSupplierEditingData({ name: '', contactName: '', whatsapp: '', wechat: '', email: '', city: '', notes: '', catalog: [] }); setIsSupplierModalOpen(true); }} className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2">
                 <Plus className="w-4 h-4"/> הוסף ספק
               </button>
             </div>
@@ -3563,7 +3587,7 @@ export default function App() {
               if (modelsWithMultiple.length === 0) return null;
               return (
                 <div className="mb-6 bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
-                  <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-indigo-500"/> השוואת מחירים בין ספקים</h3>
+                  <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-[#7B1315]"/> השוואת מחירים בין ספקים</h3>
                   <div className="space-y-3">
                     {modelsWithMultiple.map(([model, sups]: any) => {
                       const sorted = [...sups].sort((a,b) => a.unitCostUSD - b.unitCostUSD);
@@ -3616,7 +3640,7 @@ export default function App() {
                       <div className="p-5 cursor-pointer" onClick={() => { setSelectedSupplier(s); setActiveSupplierTab('details'); setIsSupplierOverviewOpen(true); }}>
                         <div className="flex justify-between items-start mb-3">
                           <div className="flex items-center gap-3">
-                            <div className="bg-indigo-100 p-2.5 rounded-full"><Building2 className="w-5 h-5 text-indigo-600"/></div>
+                            <div className="bg-[#EDDEDE] p-2.5 rounded-full"><Building2 className="w-5 h-5 text-[#7B1315]"/></div>
                             <div>
                               <h3 className="font-bold text-slate-800">{s.name}</h3>
                               {s.contactName && <p className="text-xs text-slate-500">{s.contactName}</p>}
@@ -3625,7 +3649,7 @@ export default function App() {
                             </div>
                           </div>
                           <div className="flex gap-1">
-                            <button onClick={e => { e.stopPropagation(); setSupplierEditingData(s); setIsSupplierModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
+                            <button onClick={e => { e.stopPropagation(); setSupplierEditingData(s); setIsSupplierModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1"><Edit className="w-4 h-4"/></button>
                             <button onClick={e => { e.stopPropagation(); deleteDocHandler('crm_suppliers', s.id); }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                           </div>
                         </div>
@@ -3633,7 +3657,7 @@ export default function App() {
                         {/* מודלים שמספק */}
                         {stats.models.length > 0 && (
                           <div className="flex flex-wrap gap-1 mb-3">
-                            {stats.models.map((m: string) => <span key={m} className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{m}</span>)}
+                            {stats.models.map((m: string) => <span key={m} className="text-[10px] bg-[#F7F1F1] text-[#651011] px-2 py-0.5 rounded-full font-medium">{m}</span>)}
                           </div>
                         )}
 
@@ -3675,7 +3699,7 @@ export default function App() {
                         )}
                         {s.catalogFileUrl && (
                           <a href={s.catalogFileUrl} target="_blank" rel="noopener noreferrer"
-                             className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md py-1.5 hover:bg-indigo-100 transition-colors"
+                             className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#F7F1F1] text-[#651011] border border-[#DABDBD] rounded-md py-1.5 hover:bg-[#EDDEDE] transition-colors"
                              onClick={e => e.stopPropagation()}>
                             <FileText className="w-3.5 h-3.5"/> קטלוג
                           </a>
@@ -3699,7 +3723,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-700 mb-1">שם הדגם החדש</label>
                   <input type="text" required value={newModelName} onChange={e => setNewModelName(e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm p-2 border" placeholder="לדוגמה: Premium Bar" />
                 </div>
-                <button type="submit" className="bg-indigo-600 text-white px-6 py-2 rounded-md font-medium hover:bg-indigo-700">הוסף דגם</button>
+                <button type="submit" className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-medium hover:bg-[#651011]">הוסף דגם</button>
               </form>
               
               <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת</h3>
@@ -3718,7 +3742,7 @@ export default function App() {
                             <input
                               autoFocus
                               type="text"
-                              className="border border-indigo-400 rounded-md p-1.5 font-bold text-lg text-slate-800 bg-white focus:ring-2 focus:ring-indigo-500 outline-none w-40"
+                              className="border border-[#A55F60] rounded-md p-1.5 font-bold text-lg text-slate-800 bg-white focus:ring-2 focus:ring-[#7B1315] outline-none w-40"
                               value={editingModelName.newVal}
                               onChange={e => setEditingModelName({ old: model, newVal: e.target.value })}
                               onKeyDown={e => {
@@ -3729,7 +3753,7 @@ export default function App() {
                             <button
                               onClick={() => renameModel(model, editingModelName.newVal)}
                               disabled={isSaving}
-                              className="bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                              className="bg-[#7B1315] text-white text-xs px-3 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 whitespace-nowrap"
                             >שמור שם</button>
                             <button
                               onClick={() => setEditingModelName(null)}
@@ -3741,7 +3765,7 @@ export default function App() {
                             <h4 className="font-bold text-lg text-slate-800">{model}</h4>
                             <button
                               onClick={() => setEditingModelName({ old: model, newVal: model })}
-                              className="text-slate-400 hover:text-indigo-600 p-1 rounded transition-colors"
+                              className="text-slate-400 hover:text-[#7B1315] p-1 rounded transition-colors"
                               title="ערוך שם דגם"
                             >
                               <Edit className="w-3.5 h-3.5"/>
@@ -3752,7 +3776,7 @@ export default function App() {
                             <div className="flex items-center gap-2">
                               <label className="text-sm font-medium text-slate-600">ספק ראשי:</label>
                               <select
-                                className="text-sm border border-slate-300 rounded p-1.5 bg-white focus:ring-indigo-500"
+                                className="text-sm border border-slate-300 rounded p-1.5 bg-white focus:ring-[#7B1315]"
                                 value={settings.models?.[model]?.supplierId || ''}
                                 onChange={e => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], supplierId: e.target.value }}})}
                               >
@@ -3762,7 +3786,7 @@ export default function App() {
                             </div>
                             <div className="flex items-center gap-2">
                                 <label className="text-sm font-medium text-slate-600">CBM:</label>
-                                <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white" value={settings.models?.[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
+                                <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-[#7B1315] focus:border-[#7B1315] sm:text-sm bg-white" value={settings.models?.[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
                             </div>
                             <div className="flex items-center gap-2">
                                 <label className="text-sm font-medium text-green-700">מחיר מחירון (₪):</label>
@@ -3771,8 +3795,8 @@ export default function App() {
                         </div>
                     </div>
                     <div className="mb-4">
-                      <label className="text-sm font-medium text-indigo-700 flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo):</label>
-                      <input type="url" className="w-full p-1.5 border border-indigo-200 rounded bg-indigo-50 text-sm text-indigo-900 focus:ring-indigo-500" placeholder="https://youtube.com/watch?v=..." value={settings.models?.[model]?.videoUrl || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], videoUrl: e.target.value } } })}/>
+                      <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo):</label>
+                      <input type="url" className="w-full p-1.5 border border-[#DABDBD] rounded bg-[#F7F1F1] text-sm text-[#2A3134] focus:ring-[#7B1315]" placeholder="https://youtube.com/watch?v=..." value={settings.models?.[model]?.videoUrl || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], videoUrl: e.target.value } } })}/>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <ModelAssetUploader 
@@ -3820,7 +3844,7 @@ export default function App() {
                     setEditingData({ name: '', date: new Date().toISOString().split('T')[0], status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
                     setIsShipmentModalOpen(true); 
                   }} 
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                  className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
                 >
                   <Plus className="w-4 h-4"/> הוסף משלוח מסין
                 </button>
@@ -3828,7 +3852,7 @@ export default function App() {
             </div>
 
             {/* משלוחים מסין */}
-            <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2"><Ship className="w-5 h-5 text-indigo-600"/> משלוחים מסין</h3>
+            <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2"><Ship className="w-5 h-5 text-[#7B1315]"/> משלוחים מסין</h3>
             <div className="bg-white shadow-sm border border-slate-200 rounded-lg overflow-hidden mb-8">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50">
@@ -3855,9 +3879,9 @@ export default function App() {
                         </td>
                         <td className="px-4 py-3 text-slate-600">{s.arrivalDate ? new Date(s.arrivalDate).toLocaleDateString('he-IL') : '---'}</td>
                         <td className="px-4 py-3 text-slate-600"><div className="font-medium">${factoryTotalUSD.toLocaleString()}</div><div className="text-xs">(₪{(factoryTotalUSD * Number(s.exchangeRate)).toLocaleString()})</div></td>
-                        <td className="px-4 py-3 text-slate-600"><div className="font-medium text-indigo-700">₪{shippingTotalILS.toLocaleString()}</div></td>
+                        <td className="px-4 py-3 text-slate-600"><div className="font-medium text-[#651011]">₪{shippingTotalILS.toLocaleString()}</div></td>
                         <td className="px-4 py-3 text-left">
-                          <button onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-indigo-600 bg-indigo-50 p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button>
+                          <button onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-[#7B1315] bg-[#F7F1F1] p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_shipments', s.id)} className="text-red-500 bg-red-50 p-1.5 rounded"><Trash2 className="w-4 h-4"/></button>
                         </td>
                       </tr>
@@ -3934,12 +3958,12 @@ export default function App() {
                 <tbody className="divide-y divide-slate-200">
                   {calculatedData.groupedInventory.map((group: any) => (
                     <React.Fragment key={group.id}>
-                      <tr className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-indigo-50/30' : ''}`} onClick={() => setExpandedGroups(p => ({ ...p, [group.id]: !p[group.id] }))}>
+                      <tr className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-[#F7F1F1]/30' : ''}`} onClick={() => setExpandedGroups(p => ({ ...p, [group.id]: !p[group.id] }))}>
                         <td className="px-4 py-4 font-bold text-slate-800 text-base">{group.model}</td>
                         <td className="px-4 py-4 text-slate-600"><div>{group.shipmentName}</div>{group.arrivalDate && <div className="text-xs text-slate-400">הגיע: {new Date(group.arrivalDate).toLocaleDateString('he-IL')}</div>}</td>
                         <td className="px-4 py-4"><span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[group.status]}`}>{STATUS_MAP[group.status]}</span></td>
-                        <td className="px-4 py-4 font-bold text-indigo-700 text-lg">{group.qty} יח'</td>
-                        <td className="px-4 py-4 text-left"><button className="text-indigo-600 p-1.5 rounded-full">{expandedGroups[group.id] ? <ChevronUp className="w-5 h-5"/> : <ChevronDown className="w-5 h-5"/>}</button></td>
+                        <td className="px-4 py-4 font-bold text-[#651011] text-lg">{group.qty} יח'</td>
+                        <td className="px-4 py-4 text-left"><button className="text-[#7B1315] p-1.5 rounded-full">{expandedGroups[group.id] ? <ChevronUp className="w-5 h-5"/> : <ChevronDown className="w-5 h-5"/>}</button></td>
                       </tr>
                       {expandedGroups[group.id] && (
                         <tr className="bg-slate-50">
@@ -3966,7 +3990,7 @@ export default function App() {
                                       <td className="px-3 py-2">
                                         {item.status === 'sold' ? (
                                           <div>
-                                            <span className="font-medium text-indigo-700">{item.customerName}</span>
+                                            <span className="font-medium text-[#651011]">{item.customerName}</span>
                                             {item.warrantyMonths > 0 ? (
                                               item.isWarrantyActive ? (
                                                 <div className="flex items-center gap-1 text-[10px] text-green-600 mt-0.5"><ShieldCheck className="w-3 h-3"/> באחריות (עוד {item.warrantyDaysLeft} ימים)</div>
@@ -3986,7 +4010,7 @@ export default function App() {
                                             setEditingData({...item, isGlobalSale: false}); 
                                             setIsItemModalOpen(true); 
                                           }} 
-                                          className="text-indigo-600 bg-indigo-50 p-1 rounded"
+                                          className="text-[#7B1315] bg-[#F7F1F1] p-1 rounded"
                                         >
                                           <Edit className="w-3.5 h-3.5"/>
                                         </button>
@@ -4027,7 +4051,7 @@ export default function App() {
                     setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'lead', notes: '' });
                     setIsCustomerModalOpen(true);
                   }}
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                  className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
                 >
                   <UserPlus className="w-4 h-4"/> ליד חדש
                 </button>
@@ -4041,7 +4065,7 @@ export default function App() {
                 placeholder="חיפוש לפי שם, טלפון, אימייל..."
                 value={customerSearch}
                 onChange={e => setCustomerSearch(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none bg-white"
               />
               {customerSearch && (
                 <button onClick={() => setCustomerSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
@@ -4103,7 +4127,7 @@ export default function App() {
                           {c.businessName && c.contactName && <p className="text-xs text-slate-500">{c.contactName}</p>}
                         </div>
                         <div className="flex gap-1 lead-actions shrink-0 mr-1">
-                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1" title="עריכה"><Edit className="w-3.5 h-3.5"/></button>
+                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="עריכה"><Edit className="w-3.5 h-3.5"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1" title="מחיקה"><Trash2 className="w-3.5 h-3.5"/></button>
                         </div>
                       </div>
@@ -4126,7 +4150,7 @@ export default function App() {
 
                       {/* Contact info */}
                       <div className="space-y-1 text-xs text-slate-600 mb-3">
-                        {c.phone && <div className="flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-indigo-600" onClick={e => e.stopPropagation()}>{c.phone}</a></div>}
+                        {c.phone && <div className="flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-[#7B1315]" onClick={e => e.stopPropagation()}>{c.phone}</a></div>}
                         {c.address && <div className="flex items-center gap-1.5"><MapPin className="w-3 h-3 text-slate-400"/> <span className="truncate">{c.address}</span></div>}
                       </div>
 
@@ -4156,7 +4180,7 @@ export default function App() {
                           {!leadFollowupEditId && c.followUpNote && <p className="text-[10px] text-slate-500 mt-0.5 italic truncate">"{c.followUpNote}"</p>}
                         </div>
                       ) : (
-                        <button className="lead-actions text-[10px] text-slate-400 hover:text-indigo-600 flex items-center gap-1 mb-2"
+                        <button className="lead-actions text-[10px] text-slate-400 hover:text-[#7B1315] flex items-center gap-1 mb-2"
                           onClick={e => { e.stopPropagation(); setLeadFollowupEditId(c.id); }}>
                           <CalendarDays className="w-3 h-3"/> + קבע תזכורת חזרה
                         </button>
@@ -4169,7 +4193,7 @@ export default function App() {
                             <div className="flex items-center gap-1 flex-wrap" onClick={e => e.stopPropagation()}>
                               {AGENTS.map(a => (
                                 <button key={a.email}
-                                  className={`text-xs px-2.5 py-1 rounded-full font-bold border transition-colors ${c.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                                  className={`text-xs px-2.5 py-1 rounded-full font-bold border transition-colors ${c.assignedTo === a.email ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60] hover:text-[#7B1315]'}`}
                                   onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: a.email }); setAssignDropdownId(null); }}>
                                   {a.name}
                                 </button>
@@ -4177,14 +4201,14 @@ export default function App() {
                               <button className="text-[10px] text-slate-400 hover:text-red-500 px-1" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: '' }); setAssignDropdownId(null); }}>✕ הסר</button>
                             </div>
                           ) : (
-                            <button className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-indigo-600 transition-colors"
+                            <button className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-[#7B1315] transition-colors"
                               onClick={e => { e.stopPropagation(); setAssignDropdownId(c.id); }}>
                               <User className="w-3 h-3"/>
-                              {c.assignedTo ? <span className="font-medium text-indigo-600">{AGENTS.find(a => a.email === c.assignedTo)?.name || c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
+                              {c.assignedTo ? <span className="font-medium text-[#7B1315]">{AGENTS.find(a => a.email === c.assignedTo)?.name || c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
                             </button>
                           )}
                         </div>
-                        <button className="lead-actions text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-medium hover:bg-indigo-100 flex items-center gap-1"
+                        <button className="lead-actions text-[10px] bg-[#F7F1F1] text-[#651011] px-2 py-0.5 rounded font-medium hover:bg-[#EDDEDE] flex items-center gap-1"
                           onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
                           <FileText className="w-3 h-3"/> הצעה
                         </button>
@@ -4208,7 +4232,7 @@ export default function App() {
                       { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
                     ].map(f => (
                       <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
-                        className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === f.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'} ${f.id === 'today' && todayReminders > 0 ? 'animate-pulse' : ''}`}>
+                        className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === f.id ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'} ${f.id === 'today' && todayReminders > 0 ? 'animate-pulse' : ''}`}>
                         {f.label}
                       </button>
                     ))}
@@ -4216,7 +4240,7 @@ export default function App() {
                     <select
                       value={leadStageFilter}
                       onChange={e => setLeadStageFilter(e.target.value)}
-                      className="text-xs px-3 py-1.5 rounded-full font-medium border border-slate-300 bg-white text-slate-600 hover:border-indigo-400 outline-none focus:border-indigo-500 cursor-pointer"
+                      className="text-xs px-3 py-1.5 rounded-full font-medium border border-slate-300 bg-white text-slate-600 hover:border-[#A55F60] outline-none focus:border-[#7B1315] cursor-pointer"
                     >
                       <option value="all">כל השלבים</option>
                       {Object.entries(LEAD_STAGE_MAP).filter(([k]) => k !== 'not_relevant').map(([k, v]) => (
@@ -4294,14 +4318,14 @@ export default function App() {
               <h2 className="text-2xl font-bold text-slate-800">לקוחות פעילים ועבר</h2>
               <button
                 onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }}
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
               >
                 <UserPlus className="w-4 h-4"/> הוסף לקוח
               </button>
             </div>
             {/* חיפוש */}
             <div className="mb-4 relative">
-              <input type="text" placeholder="חיפוש לפי שם, טלפון, אימייל..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"/>
+              <input type="text" placeholder="חיפוש לפי שם, טלפון, אימייל..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none bg-white"/>
               {customerSearch && <button onClick={() => setCustomerSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"><X className="w-4 h-4"/></button>}
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -4343,22 +4367,22 @@ export default function App() {
                         </div>
                         <div className="flex gap-1 customer-actions">
                           <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
-                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit className="w-4 h-4"/></button>
+                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
                       </div>
                       <div className="space-y-2 mt-4 text-sm text-slate-600">
-                        {c.phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-indigo-600 hover:underline">{c.phone}</a></div>}
+                        {c.phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-[#7B1315] hover:underline">{c.phone}</a></div>}
                         {c.email && <div className="flex items-center gap-2"><Mail className="w-4 h-4 text-slate-400"/> {c.email}</div>}
                         <div className="flex items-center justify-between text-xs mt-3 pt-3 border-t border-slate-100">
                           <span className="text-slate-400">התעניינות: <span className="font-medium text-slate-600">{stat ? stat.interestDate : ''}</span></span>
-                          <span className="text-slate-400">קשר אחרון: <span className="font-medium text-indigo-600">{stat ? stat.lastContactDate : ''}</span></span>
+                          <span className="text-slate-400">קשר אחרון: <span className="font-medium text-[#7B1315]">{stat ? stat.lastContactDate : ''}</span></span>
                         </div>
                       </div>
                     </div>
                     <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
                       <div><p className="text-xs text-slate-500 mb-1">רכישות</p><p className="font-bold text-slate-800">{stat ? stat.itemCount : 0} ברים</p></div>
-                      <div><p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p><p className="font-bold text-indigo-700">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p></div>
+                      <div><p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p><p className="font-bold text-[#651011]">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p></div>
                       {(stat && stat.activeWarranties > 0) && (
                         <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
                           <ShieldCheck className="w-3 h-3"/> {stat.activeWarranties} באחריות
@@ -4431,7 +4455,7 @@ export default function App() {
                           <div className="flex-1 min-w-0 ml-2">
                             <h3 className="font-bold text-slate-800 truncate">{proj.name}</h3>
                             {proj.clientName && <p className="text-xs text-slate-500 mt-0.5">{proj.clientName}</p>}
-                            {linkedCustomer && <p className="text-[10px] text-indigo-500 mt-0.5 flex items-center gap-1"><User className="w-2.5 h-2.5"/>{linkedCustomer.businessName || linkedCustomer.contactName}</p>}
+                            {linkedCustomer && <p className="text-[10px] text-[#7B1315] mt-0.5 flex items-center gap-1"><User className="w-2.5 h-2.5"/>{linkedCustomer.businessName || linkedCustomer.contactName}</p>}
                           </div>
                           {/* Clickable status badge */}
                           <button
@@ -4465,7 +4489,7 @@ export default function App() {
                         <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-100">
                           <p className="text-xs text-slate-400">{proj.date ? new Date(proj.date).toLocaleDateString('he-IL') : ''}</p>
                           <div className="flex gap-1">
-                            <button onClick={e => { e.stopPropagation(); setCustomProjectForm(proj); setIsCustomProjectModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="ערוך"><Edit className="w-3.5 h-3.5"/></button>
+                            <button onClick={e => { e.stopPropagation(); setCustomProjectForm(proj); setIsCustomProjectModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-[#7B1315] hover:bg-[#F7F1F1] rounded" title="ערוך"><Edit className="w-3.5 h-3.5"/></button>
                             <button onClick={e => { e.stopPropagation(); deleteCustomProject(proj.id); }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded" title="מחק"><Trash2 className="w-3.5 h-3.5"/></button>
                           </div>
                         </div>
@@ -4503,7 +4527,7 @@ export default function App() {
                 <div className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm flex items-start justify-center overflow-y-auto p-4">
                   <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl my-4">
                     {/* Gradient header */}
-                    <div className="bg-gradient-to-l from-purple-700 to-indigo-600 p-6 rounded-t-2xl text-white">
+                    <div className="bg-gradient-to-l from-purple-700 to-[#7B1315] p-6 rounded-t-2xl text-white">
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="text-sm text-purple-200 mb-1">דוח עלויות פנימי</p>
@@ -4563,7 +4587,7 @@ export default function App() {
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                         {[
                           { label: 'עלות מפעל (₪)', val: totals.totalFactoryILS, color: 'text-slate-700', pct: totals.totalCostILS > 0 ? totals.totalFactoryILS/totals.totalCostILS : 0 },
-                          { label: 'שילוח מכולה (₪)', val: totals.containerShippingILS, color: 'text-indigo-600', pct: totals.totalCostILS > 0 ? totals.containerShippingILS/totals.totalCostILS : 0 },
+                          { label: 'שילוח מכולה (₪)', val: totals.containerShippingILS, color: 'text-[#7B1315]', pct: totals.totalCostILS > 0 ? totals.containerShippingILS/totals.totalCostILS : 0 },
                           { label: 'מכס ומיסים (₪)', val: totals.customsILS, color: 'text-amber-600', pct: totals.totalCostILS > 0 ? totals.customsILS/totals.totalCostILS : 0 },
                           { label: 'אגרות נמל (₪)', val: totals.portFeesILS, color: 'text-slate-600', pct: totals.totalCostILS > 0 ? totals.portFeesILS/totals.totalCostILS : 0 },
                           { label: 'הובלה בארץ (₪)', val: totals.localTransportILS, color: 'text-slate-600', pct: totals.totalCostILS > 0 ? totals.localTransportILS/totals.totalCostILS : 0 },
@@ -4662,7 +4686,7 @@ export default function App() {
                                       <button
                                         type="button"
                                         onClick={() => setExpandedInfoRows(prev => ({ ...prev, [`${proj.id}:${i}`]: !prev[`${proj.id}:${i}`] }))}
-                                        className={`mt-1 text-[11px] flex items-center gap-1 font-medium ${pr.info ? 'text-indigo-600 hover:text-indigo-800' : 'text-slate-400 hover:text-slate-600'}`}
+                                        className={`mt-1 text-[11px] flex items-center gap-1 font-medium ${pr.info ? 'text-[#7B1315] hover:text-[#4E2426]' : 'text-slate-400 hover:text-slate-600'}`}
                                         aria-expanded={!!expandedInfoRows[`${proj.id}:${i}`]}
                                       >
                                         <FileText className="w-3 h-3" aria-hidden="true"/>
@@ -4725,11 +4749,11 @@ export default function App() {
                                     </td>
                                   </tr>
                                   {expandedInfoRows[`${proj.id}:${i}`] && (
-                                    <tr className="bg-indigo-50/40">
+                                    <tr className="bg-[#F7F1F1]/40">
                                       <td colSpan={10} className="px-4 py-3">
-                                        <label className="block text-[11px] font-medium text-indigo-700 mb-1.5 flex items-center gap-1"><FileText className="w-3 h-3" aria-hidden="true"/> מידע מוצר ללקוח (Product Information) — נשמר אוטומטית, יופיע גם בהצעת המחיר</label>
+                                        <label className="block text-[11px] font-medium text-[#651011] mb-1.5 flex items-center gap-1"><FileText className="w-3 h-3" aria-hidden="true"/> מידע מוצר ללקוח (Product Information) — נשמר אוטומטית, יופיע גם בהצעת המחיר</label>
                                         <textarea
-                                          className="w-full text-xs text-slate-700 bg-white border border-indigo-200 rounded-lg p-2.5 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-y min-h-[70px]"
+                                          className="w-full text-xs text-slate-700 bg-white border border-[#DABDBD] rounded-lg p-2.5 outline-none focus:border-[#A55F60] focus:ring-1 focus:ring-[#C49596] resize-y min-h-[70px]"
                                           value={pr.info || ''}
                                           onChange={e => updatePr({ info: e.target.value })}
                                           placeholder="למשל: מידות, טמפרטורת עבודה, דגם, גימור, אחריות — כל מה שרלוונטי ללקוח לגבי הפריט הזה"
@@ -4805,7 +4829,7 @@ export default function App() {
                               });
                               setPdfExportModal({ proj: {...proj, products}, totals, type: 'internal', editablePrices: initPrices, shippingInstallationCost: Number(proj.deliveryCost || 0) });
                             }}
-                            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                            className="px-4 py-2 bg-[#7B1315] text-white rounded-lg text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
                           >
                             <Download className="w-4 h-4"/> ייצא PDF
                           </button>
@@ -4933,7 +4957,7 @@ export default function App() {
                   setEditingData({ name: '', totalCost: 0, startDate: new Date().toISOString().split('T')[0], endDate: '' }); 
                   setIsCampaignModalOpen(true); 
                 }} 
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+                className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
               >
                 <Plus className="w-4 h-4"/> הוסף קמפיין
               </button>
@@ -4955,8 +4979,8 @@ export default function App() {
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between"><span className="text-slate-500">עלות קמפיין:</span> <span className="font-medium">₪{Number(c.totalCost).toLocaleString()}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">ברים שנמכרו:</span> <span className="font-medium">{stat ? stat.itemCount : 0} יח'</span></div>
-                      <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center"><span className="text-slate-500 font-medium">עלות לבר:</span> <span className="font-bold text-indigo-700 text-lg">₪{Math.round(costPerItem).toLocaleString()}</span></div>
-                      <button onClick={() => handleGenerateAd(c.name)} className="mt-4 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> צור מודעת שיווק AI ✨</button>
+                      <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center"><span className="text-slate-500 font-medium">עלות לבר:</span> <span className="font-bold text-[#651011] text-lg">₪{Math.round(costPerItem).toLocaleString()}</span></div>
+                      <button onClick={() => handleGenerateAd(c.name)} className="mt-4 w-full border border-[#DABDBD] bg-[#F7F1F1] text-[#651011] hover:bg-[#EDDEDE] py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> צור מודעת שיווק AI ✨</button>
                       <button
                         onClick={() => { setImportCampaignId(c.id); setImportResult(null); setIsImportModalOpen(true); }}
                         className="mt-2 w-full border border-green-200 bg-green-50 text-green-700 hover:bg-green-100 py-2 rounded-md font-medium text-xs flex justify-center items-center gap-1.5"
@@ -4977,7 +5001,7 @@ export default function App() {
             
             {/* Logo Settings */}
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
-              <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2"><ImageIcon className="w-5 h-5 text-indigo-600"/> לוגו החברה למסמכים (PDF)</h2>
+              <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2"><ImageIcon className="w-5 h-5 text-[#7B1315]"/> לוגו החברה למסמכים (PDF)</h2>
               <div className="mb-4">
                 <label className="block text-sm font-bold text-slate-700 mb-1">העלה לוגו מהמחשב או הטלפון</label>
                 <p className="text-xs text-slate-400 mb-2">נשמר אוטומטית מיד עם ההעלאה</p>
@@ -4995,7 +5019,7 @@ export default function App() {
                       alert('שגיאה בשמירת הלוגו: ' + (err?.message || 'שגיאה לא ידועה') + ' — נסה שוב');
                     }
                   })} 
-                  className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-slate-200 rounded-md p-1" 
+                  className="block w-full text-sm text-slate-500 file:me-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-bold file:bg-[#F7F1F1] file:text-[#651011] hover:file:bg-[#EDDEDE] cursor-pointer border border-slate-200 rounded-md p-1" 
                 />
               </div>
               {companyLogoUrl && (
@@ -5017,7 +5041,7 @@ export default function App() {
             {/* Finbot Integration Settings */}
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
               <h2 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                <ExternalLink className="w-5 h-5 text-indigo-600"/> חיבור ל-Finbot
+                <ExternalLink className="w-5 h-5 text-[#7B1315]"/> חיבור ל-Finbot
               </h2>
               <p className="text-sm text-slate-500 mb-4">מפתח ה-API ישמש להנפקת דרישת תשלום אוטומטית ב-Finbot בעת אישור הצעת מחיר.</p>
               <div>
@@ -5026,7 +5050,7 @@ export default function App() {
                   <input
                     type="password"
                     dir="ltr"
-                    className="flex-1 border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    className="flex-1 border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
                     placeholder="הדבק כאן את ה-API Key"
                     value={settings?.finbotApiKey || ''}
                     onChange={e => setSettings({...settings, finbotApiKey: e.target.value})}
@@ -5038,7 +5062,7 @@ export default function App() {
                         alert('✓ מפתח ה-API נשמר בהצלחה ב-Firebase.');
                       } catch { alert('שגיאה בשמירת המפתח.'); }
                     }}
-                    className="bg-indigo-600 text-white px-4 py-2.5 rounded-md text-sm font-bold hover:bg-indigo-700 whitespace-nowrap"
+                    className="bg-[#7B1315] text-white px-4 py-2.5 rounded-md text-sm font-bold hover:bg-[#651011] whitespace-nowrap"
                   >
                     שמור
                   </button>
@@ -5053,15 +5077,15 @@ export default function App() {
             </div>
 
             {/* --- קטלוג חברה גלובלי --- */}
-            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 mt-2">
-              <h2 className="font-bold text-indigo-800 text-lg mb-1 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h2>
+            <div className="bg-[#F7F1F1] border border-[#DABDBD] rounded-xl p-5 mt-2">
+              <h2 className="font-bold text-[#4E2426] text-lg mb-1 flex items-center gap-2">📋 קטלוג מוצרים לשליחה ללידים</h2>
               <p className="text-xs text-slate-500 mb-4">הגדר קישור לקטלוג PDF — ישלח אוטומטית ללידים בלחיצה מטאב הלידים.</p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* === נתיב א: קישור URL — עיקרי ומומלץ === */}
-                <div className="bg-white rounded-xl border border-indigo-200 p-4">
-                  <p className="text-sm font-bold text-indigo-800 mb-1 flex items-center gap-1.5">
-                    <span className="bg-indigo-600 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-black">1</span>
+                <div className="bg-white rounded-xl border border-[#DABDBD] p-4">
+                  <p className="text-sm font-bold text-[#4E2426] mb-1 flex items-center gap-1.5">
+                    <span className="bg-[#7B1315] text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-black">1</span>
                     הדבק קישור לקטלוג — מומלץ
                   </p>
                   <p className="text-xs text-slate-500 mb-3 leading-relaxed">
@@ -5072,14 +5096,14 @@ export default function App() {
                   {settings?.catalogPdfUrl && (
                     <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
                       <span className="text-xs text-green-700 font-medium">✓ קטלוג מוגדר</span>
-                      <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 underline mr-auto">בדוק קישור ▸</a>
+                      <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-xs text-[#7B1315] underline mr-auto">בדוק קישור ▸</a>
                       <button onClick={async () => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); await setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
                     </div>
                   )}
                   <div className="flex gap-2">
                     <input
                       type="url"
-                      className="flex-1 border border-indigo-300 rounded-lg p-2 text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                      className="flex-1 border border-[#C49596] rounded-lg p-2 text-sm text-slate-700 focus:ring-2 focus:ring-[#7B1315] focus:border-[#7B1315] outline-none bg-white"
                       placeholder="https://drive.google.com/..."
                       value={settings?.catalogPdfUrl || ''}
                       onChange={e => setSettings({...settings, catalogPdfUrl: e.target.value})}
@@ -5094,7 +5118,7 @@ export default function App() {
                           alert('✓ הקישור נשמר בהצלחה!');
                         } catch { alert('שגיאה בשמירה.'); }
                       }}
-                      className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 whitespace-nowrap shadow-sm"
+                      className="bg-[#7B1315] text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-[#651011] whitespace-nowrap shadow-sm"
                     >שמור</button>
                   </div>
                 </div>
@@ -5106,12 +5130,12 @@ export default function App() {
                     העלאה ישירה לFirebase Storage
                   </p>
                   <p className="text-xs text-slate-400 mb-3">דורש הגדרת כללי Firebase Storage. אם לא עובד — השתמש בנתיב 1.</p>
-                  <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-slate-300 bg-slate-100 text-slate-400 pointer-events-none' : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 text-slate-600'}`}>
+                  <label className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 px-4 text-sm font-medium cursor-pointer transition-colors ${isCatalogUploading ? 'border-slate-300 bg-slate-100 text-slate-400 pointer-events-none' : 'border-slate-300 hover:border-[#A55F60] hover:bg-[#F7F1F1] text-slate-600'}`}>
                     {isCatalogUploading ? `מעלה... ${catalogUploadProgress ?? 0}%` : '⬆️ העלה PDF'}
                     <input type="file" accept=".pdf,application/pdf" className="hidden" disabled={isCatalogUploading} onChange={e => { if (e.target.files?.[0]) uploadGlobalCatalog(e.target.files[0]); (e.target as HTMLInputElement).value = ''; }}/>
                   </label>
                   {catalogUploadProgress !== null && (
-                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
+                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-[#7B1315] h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
                   )}
                   <p className="text-xs text-slate-400 mt-2 leading-relaxed">
                     אם ההעלאה נכשלת עם "storage/unauthorized" — בקונסול Firebase:
@@ -5121,18 +5145,18 @@ export default function App() {
               </div>
 
               {/* תבנית הודעה */}
-              <div className="mt-4 pt-4 border-t border-indigo-200">
+              <div className="mt-4 pt-4 border-t border-[#DABDBD]">
                 <p className="text-sm font-medium text-slate-700 mb-1">תבנית הודעת WhatsApp</p>
                 <p className="text-xs text-slate-400 mb-2">משתנים: <code className="bg-slate-100 px-1 rounded">{'{name}'}</code> = שם הליד, <code className="bg-slate-100 px-1 rounded">{'{videos}'}</code> = קישורי סרטונים</p>
                 <div className="flex gap-3">
                   <textarea
                     rows={5}
-                    className="flex-1 border border-indigo-200 rounded-lg p-2.5 text-sm bg-white focus:ring-indigo-500 resize-none"
+                    className="flex-1 border border-[#DABDBD] rounded-lg p-2.5 text-sm bg-white focus:ring-[#7B1315] resize-none"
                     placeholder={`שלום {name}! 👋\n\nמצורף קטלוג המוצרים שלנו.\n\n{videos}\n\nצוות Steel & Spirit`}
                     value={settings?.catalogMessageTemplate || ''}
                     onChange={e => setSettings({...settings, catalogMessageTemplate: e.target.value})}
                   />
-                  <button onClick={saveSettings} className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 self-end">שמור</button>
+                  <button onClick={saveSettings} className="bg-[#7B1315] text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-[#651011] self-end">שמור</button>
                 </div>
               </div>
             </div>
@@ -5151,7 +5175,7 @@ export default function App() {
 
       {/* --- GLOBAL FLOATING ACTION BUTTON (FAB) --- */}
       <div className="fixed bottom-6 left-6 z-40 flex flex-col-reverse items-center gap-3">
-        <button onClick={() => setIsFabOpen(!isFabOpen)} className="bg-indigo-600 text-white p-4 rounded-full shadow-xl hover:bg-indigo-700 transition-transform transform hover:scale-105 active:scale-95 flex items-center justify-center">
+        <button onClick={() => setIsFabOpen(!isFabOpen)} className="bg-[#7B1315] text-white p-4 rounded-full shadow-xl hover:bg-[#651011] transition-transform transform hover:scale-105 active:scale-95 flex items-center justify-center">
           <Plus className={`w-6 h-6 transition-transform duration-300 ${isFabOpen ? 'rotate-45' : ''}`} />
         </button>
         
@@ -5341,7 +5365,7 @@ export default function App() {
                         <option value="">ללא שיוך לקוח</option>
                         {customers.map((c: any) => <option key={c.id} value={c.id}>{c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}</option>)}
                       </select>
-                      <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-indigo-100 text-indigo-700 px-3 rounded-md text-sm font-bold hover:bg-indigo-200 whitespace-nowrap"><UserPlus className="w-4 h-4"/></button>
+                      <button type="button" onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData({ contactName: '', phone: '', businessName: '', companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' }); setIsCustomerModalOpen(true); }} className="bg-[#EDDEDE] text-[#651011] px-3 rounded-md text-sm font-bold hover:bg-[#DABDBD] whitespace-nowrap"><UserPlus className="w-4 h-4"/></button>
                     </div>
                   </div>
                   <div>
@@ -5368,7 +5392,7 @@ export default function App() {
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-white rounded-t-xl">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Ship className="w-5 h-5 text-indigo-600"/> {editingData.id ? 'עריכת משלוח' : 'משלוח חדש מסין'}</h3>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Ship className="w-5 h-5 text-[#7B1315]"/> {editingData.id ? 'עריכת משלוח' : 'משלוח חדש מסין'}</h3>
               <button onClick={() => setIsShipmentModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             <form onSubmit={saveShipment} className="p-6 overflow-y-auto flex-1 space-y-4">
@@ -5403,7 +5427,7 @@ export default function App() {
               <div className="border-t border-slate-200 pt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h4 className="font-bold text-slate-700">שורות פריטים במשלוח</h4>
-                  <button type="button" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף שורה</button>
+                  <button type="button" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
                 </div>
                 {(editingData.lines || []).map((line: any, idx: number) => (
                   <div key={idx} className="flex gap-2 items-end mb-3 bg-slate-50 p-3 rounded-lg border border-slate-200 relative">
@@ -5426,7 +5450,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-2 mt-6 pt-4 border-t">
-                <button type="submit" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 disabled:opacity-50">{isSaving ? 'שומר...' : editingData.id ? 'עדכן משלוח' : 'צור משלוח חדש'}</button>
+                <button type="submit" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50">{isSaving ? 'שומר...' : editingData.id ? 'עדכן משלוח' : 'צור משלוח חדש'}</button>
                 <button type="button" onClick={() => setIsShipmentModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
               </div>
             </form>
@@ -5541,49 +5565,49 @@ export default function App() {
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white rounded-t-xl z-10">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-indigo-600"/> 
+                <UserPlus className="w-5 h-5 text-[#7B1315]"/> 
                 {customerEditingData.id ? 'עריכת פרטי לקוח/ליד' : 'הוספת לקוח / ליד חדש'}
               </h3>
               <button onClick={() => setIsCustomerModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             <div className="p-6 overflow-y-auto flex-1">
               {/* Quick Import */}
-              <div className="mb-6 bg-indigo-50/50 p-4 rounded-lg border border-indigo-100">
+              <div className="mb-6 bg-[#F7F1F1]/50 p-4 rounded-lg border border-[#EDDEDE]">
                 <div className="flex justify-between items-center mb-2">
-                  <label className="text-sm font-bold text-indigo-900 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-yellow-500"/> יבוא מהיר מוואטסאפ / טקסט חופשי</label>
-                  <button type="button" onClick={() => setShowQuickImport(!showQuickImport)} className="text-xs text-indigo-600 bg-white border border-indigo-200 px-2 py-1 rounded shadow-sm hover:bg-indigo-50 transition-colors font-medium">
+                  <label className="text-sm font-bold text-[#2A3134] flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-yellow-500"/> יבוא מהיר מוואטסאפ / טקסט חופשי</label>
+                  <button type="button" onClick={() => setShowQuickImport(!showQuickImport)} className="text-xs text-[#7B1315] bg-white border border-[#DABDBD] px-2 py-1 rounded shadow-sm hover:bg-[#F7F1F1] transition-colors font-medium">
                     {showQuickImport ? 'סגור יבוא חכם' : 'פתח יבוא חכם'}
                   </button>
                 </div>
                 {showQuickImport && (
                   <div className="mt-3 space-y-3 animate-in fade-in zoom-in duration-200">
-                    <p className="text-xs text-indigo-700">הדבק כאן את הטקסט או ההודעה מוואטסאפ, והמערכת תנסה לחלץ את הפרטים אוטומטית לשדות המתאימים מטה.</p>
-                    <textarea className="w-full border border-indigo-200 rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 min-h-[100px] outline-none" placeholder="הדבק הודעת וואטסאפ או טקסט כאן..." value={quickImportText} onChange={e => setQuickImportText(e.target.value)}></textarea>
-                    <button type="button" onClick={processQuickImport} className="w-full bg-indigo-600 text-white font-bold py-2 rounded shadow-sm hover:bg-indigo-700 transition-colors">חלץ נתונים לשדות</button>
+                    <p className="text-xs text-[#651011]">הדבק כאן את הטקסט או ההודעה מוואטסאפ, והמערכת תנסה לחלץ את הפרטים אוטומטית לשדות המתאימים מטה.</p>
+                    <textarea className="w-full border border-[#DABDBD] rounded p-2 text-sm focus:ring-2 focus:ring-[#7B1315] min-h-[100px] outline-none" placeholder="הדבק הודעת וואטסאפ או טקסט כאן..." value={quickImportText} onChange={e => setQuickImportText(e.target.value)}></textarea>
+                    <button type="button" onClick={processQuickImport} className="w-full bg-[#7B1315] text-white font-bold py-2 rounded shadow-sm hover:bg-[#651011] transition-colors">חלץ נתונים לשדות</button>
                   </div>
                 )}
               </div>
 
               <form id="customerForm" onSubmit={saveCustomer} className="space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם איש קשר</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.contactName || ''} onChange={e => setCustomerEditingData({...customerEditingData, contactName: e.target.value})} placeholder="לדוגמה: משה כהן"/></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם העסק / מסעדה / בר <span className="text-red-500">*</span></label><input required type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.businessName || ''} onChange={e => setCustomerEditingData({...customerEditingData, businessName: e.target.value})} placeholder="לדוגמה: הבר של משה"/></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם חברה משפטית (אופציונלי)</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.companyName || ''} onChange={e => setCustomerEditingData({...customerEditingData, companyName: e.target.value})} placeholder="לדוגמה: משה השקעות בע״מ"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם איש קשר</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.contactName || ''} onChange={e => setCustomerEditingData({...customerEditingData, contactName: e.target.value})} placeholder="לדוגמה: משה כהן"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם העסק / מסעדה / בר <span className="text-red-500">*</span></label><input required type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.businessName || ''} onChange={e => setCustomerEditingData({...customerEditingData, businessName: e.target.value})} placeholder="לדוגמה: הבר של משה"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">שם חברה משפטית (אופציונלי)</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.companyName || ''} onChange={e => setCustomerEditingData({...customerEditingData, companyName: e.target.value})} placeholder="לדוגמה: משה השקעות בע״מ"/></div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">סוג עסק</label>
-                    <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.businessType || 'bar'} onChange={e => setCustomerEditingData({...customerEditingData, businessType: e.target.value})}>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.businessType || 'bar'} onChange={e => setCustomerEditingData({...customerEditingData, businessType: e.target.value})}>
                       <option value="bar">בר</option>
                       <option value="restaurant">מסעדה</option>
                       <option value="event_hall">אולם אירועים</option>
                       <option value="other">אחר / פרטי</option>
                     </select>
                   </div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">ח.פ. / עוסק מורשה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.hp || ''} onChange={e => setCustomerEditingData({...customerEditingData, hp: e.target.value})} placeholder="מספר ח.פ / ת.ז"/></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label><input type="email" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none text-left" dir="ltr" value={customerEditingData.email || ''} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} placeholder="email@example.com"/></div>
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">טלפון נייד <span className="text-red-500">*</span></label><input required type="tel" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none text-left" dir="ltr" value={customerEditingData.phone || ''} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">ח.פ. / עוסק מורשה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.hp || ''} onChange={e => setCustomerEditingData({...customerEditingData, hp: e.target.value})} placeholder="מספר ח.פ / ת.ז"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">אימייל</label><input type="email" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none text-left" dir="ltr" value={customerEditingData.email || ''} onChange={e => setCustomerEditingData({...customerEditingData, email: e.target.value})} placeholder="email@example.com"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">טלפון נייד <span className="text-red-500">*</span></label><input required type="tel" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none text-left" dir="ltr" value={customerEditingData.phone || ''} onChange={e => setCustomerEditingData({...customerEditingData, phone: e.target.value})} placeholder="050-0000000"/></div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס</label>
-                    <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold" value={customerEditingData.status || 'lead'} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none font-bold" value={customerEditingData.status || 'lead'} onChange={e => setCustomerEditingData({...customerEditingData, status: e.target.value})}>
                       <option value="lead">ליד (מתעניין)</option>
                       <option value="active">לקוח פעיל (רוכש)</option>
                       <option value="inactive">לקוח עבר (לא פעיל)</option>
@@ -5595,7 +5619,7 @@ export default function App() {
                       <div className="flex gap-2 flex-wrap">
                         {AGENTS.map(a => (
                           <button key={a.email} type="button"
-                            className={`text-sm px-4 py-2 rounded-lg font-bold border transition-colors ${customerEditingData.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                            className={`text-sm px-4 py-2 rounded-lg font-bold border transition-colors ${customerEditingData.assignedTo === a.email ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60] hover:text-[#7B1315]'}`}
                             onClick={() => setCustomerEditingData({...customerEditingData, assignedTo: a.email})}>
                             {a.name}
                           </button>
@@ -5606,7 +5630,7 @@ export default function App() {
                   {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">שלב הליד</label>
-                      <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.leadStage || ''} onChange={e => setCustomerEditingData({...customerEditingData, leadStage: e.target.value})}>
+                      <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.leadStage || ''} onChange={e => setCustomerEditingData({...customerEditingData, leadStage: e.target.value})}>
                         <option value="">-- בחר שלב --</option>
                         {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
@@ -5615,18 +5639,18 @@ export default function App() {
                   {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5"/> תאריך חזרה ללקוח</label>
-                      <input type="date" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.followUpDate || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpDate: e.target.value})} />
-                      <input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none mt-1" placeholder="הערה לתזכורת (אופציונלי)" value={customerEditingData.followUpNote || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpNote: e.target.value})} />
+                      <input type="date" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.followUpDate || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpDate: e.target.value})} />
+                      <input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none mt-1" placeholder="הערה לתזכורת (אופציונלי)" value={customerEditingData.followUpNote || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpNote: e.target.value})} />
                     </div>
                   )}
-                  <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
-                  <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
+                  <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
+                  <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
                 </div>
               </form>
             </div>
             <div className="p-4 border-t border-slate-100 flex gap-3 bg-slate-50 rounded-b-xl shrink-0">
               <button type="button" onClick={() => setIsCustomerModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50 transition-colors">ביטול</button>
-              <button type="submit" form="customerForm" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+              <button type="submit" form="customerForm" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50 transition-colors">
                 {isSaving ? 'שומר במערכת...' : 'שמור פרטי לקוח'}
               </button>
             </div>
@@ -5670,7 +5694,7 @@ export default function App() {
 
       {/* QUOTE OVERVIEW MODAL */}
       {isQuoteOverviewOpen && selectedQuote && (() => {
-        const itemsTotal = selectedQuote.items.reduce((sum: number, item: any) => sum + (Number(item.finalPrice ?? item.price ?? 0) * Number(item.qty)), 0);
+        const itemsTotal = selectedQuote.items.reduce((sum: number, item: any) => sum + (getEffectivePrice(item) * Number(item.qty)), 0);
         const grandTotal = (itemsTotal + Number(selectedQuote.shippingCost || 0)) * 1.18;
         const campaign = campaigns.find(c => c.id === selectedQuote.campaignId);
 
@@ -5678,20 +5702,20 @@ export default function App() {
           <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
               <div className="p-5 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white z-10">
-                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Eye className="w-5 h-5 text-indigo-600"/> צפייה והיסטוריית הצעת מחיר</h3>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Eye className="w-5 h-5 text-[#7B1315]"/> צפייה והיסטוריית הצעת מחיר</h3>
                 <button onClick={() => setIsQuoteOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
               <div className="p-6">
                 <div className="flex justify-between items-start mb-6">
                   <div>
-                    <h2 className="text-2xl font-bold text-indigo-900">
+                    <h2 className="text-2xl font-bold text-[#2A3134]">
                       {(selectedQuote.customerInfo && selectedQuote.customerInfo.businessName) ? selectedQuote.customerInfo.businessName : ((selectedQuote.customerInfo && selectedQuote.customerInfo.contactName) ? selectedQuote.customerInfo.contactName : 'לקוח כללי')}
                     </h2>
                     <p className="text-slate-500 text-sm">הופק בתאריך: {new Date(selectedQuote.date).toLocaleDateString('he-IL')}</p>
                     {campaign && <span className="inline-block mt-2 bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded font-medium">מקור הגעה: קמפיין {campaign.name}</span>}
                   </div>
                   <div className="text-left">
-                     <div className="text-3xl font-black text-indigo-700 mb-1">₪{Math.round(grandTotal).toLocaleString()}</div>
+                     <div className="text-3xl font-black text-[#651011] mb-1">₪{Math.round(grandTotal).toLocaleString()}</div>
                      <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
                        סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status ? selectedQuote.status : 'pending']}
                      </span>
@@ -5710,7 +5734,7 @@ export default function App() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {selectedQuote.items.map((item: any, idx: number) => {
-                        const effPrice = Number(item.finalPrice ?? item.price ?? 0);
+                        const effPrice = getEffectivePrice(item);
                         const hasDisc = Number(item.discount || 0) > 0;
                         return (
                         <tr key={idx} className="bg-white">
@@ -5761,7 +5785,7 @@ export default function App() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-indigo-600"/> תיק לקוח / ליד</h3>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <button onClick={() => setIsCustomerOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             
@@ -5769,7 +5793,7 @@ export default function App() {
               {/* Left Sidebar: Customer Details + Warranty */}
               <div className="w-full md:w-[280px] border-b md:border-b-0 md:border-l border-slate-200 bg-slate-50 p-5 md:overflow-y-auto shrink-0 space-y-5">
                 <div>
-                  <div className="w-14 h-14 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
+                  <div className="w-14 h-14 bg-[#EDDEDE] text-[#7B1315] rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
                     <Users className="w-7 h-7"/>
                   </div>
                   <h2 className="text-lg font-bold text-center text-slate-800">{selectedCustomer.businessName || selectedCustomer.contactName}</h2>
@@ -5815,7 +5839,7 @@ export default function App() {
                       <div className="flex gap-1.5 flex-wrap">
                         {AGENTS.map(a => (
                           <button key={a.email}
-                            className={`text-xs px-3 py-1.5 rounded-full font-bold border transition-colors ${selectedCustomer.assignedTo === a.email ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-500 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'}`}
+                            className={`text-xs px-3 py-1.5 rounded-full font-bold border transition-colors ${selectedCustomer.assignedTo === a.email ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-500 border-slate-300 hover:border-[#A55F60] hover:text-[#7B1315]'}`}
                             onClick={() => saveLeadField(selectedCustomer.id, { assignedTo: a.email })}>
                             {a.name}
                           </button>
@@ -5829,11 +5853,11 @@ export default function App() {
                     {/* Follow-up date */}
                     <div>
                       <p className="text-[11px] text-slate-400 font-medium mb-1 flex items-center gap-1"><CalendarDays className="w-3 h-3"/> תאריך חזרה ללקוח</p>
-                      <input type="date" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400"
+                      <input type="date" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-[#A55F60]"
                         value={selectedCustomer.followUpDate || ''}
                         onChange={e => setSelectedCustomer((p: any) => ({...p, followUpDate: e.target.value}))}
                         onBlur={e => saveLeadField(selectedCustomer.id, { followUpDate: e.target.value || null })} />
-                      <input type="text" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-indigo-400 mt-1"
+                      <input type="text" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-[#A55F60] mt-1"
                         value={selectedCustomer.followUpNote || ''}
                         placeholder="הערה לתזכורת..."
                         onChange={e => setSelectedCustomer((p: any) => ({...p, followUpNote: e.target.value}))}
@@ -5849,7 +5873,7 @@ export default function App() {
                 )}
 
                 <div className="space-y-3 text-sm">
-                  <div className="flex items-center gap-2 text-slate-600"><Phone className="w-4 h-4 text-slate-400 shrink-0"/> <a href={`tel:${selectedCustomer.phone}`} className="hover:text-indigo-600">{selectedCustomer.phone || '---'}</a></div>
+                  <div className="flex items-center gap-2 text-slate-600"><Phone className="w-4 h-4 text-slate-400 shrink-0"/> <a href={`tel:${selectedCustomer.phone}`} className="hover:text-[#7B1315]">{selectedCustomer.phone || '---'}</a></div>
                   <div className="flex items-center gap-2 text-slate-600"><Mail className="w-4 h-4 text-slate-400 shrink-0"/> <span className="truncate">{selectedCustomer.email || '---'}</span></div>
                   <div className="flex items-center gap-2 text-slate-600"><MapPin className="w-4 h-4 text-slate-400 shrink-0"/> <span className="text-xs">{selectedCustomer.address || '---'}</span></div>
                 </div>
@@ -5857,7 +5881,7 @@ export default function App() {
                 <div className="pt-4 border-t border-slate-200 space-y-3 text-xs">
                   <div>
                     <p className="text-slate-400 font-medium">תאריך יצירת ליד</p>
-                    <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><CalendarDays className="w-3.5 h-3.5 text-indigo-400"/> {calculatedData.customerStats?.[selectedCustomer.id]?.interestDate || '---'}</p>
+                    <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><CalendarDays className="w-3.5 h-3.5 text-[#A55F60]"/> {calculatedData.customerStats?.[selectedCustomer.id]?.interestDate || '---'}</p>
                   </div>
                   <div>
                     <p className="text-slate-400 font-medium">קשר אחרון</p>
@@ -5865,7 +5889,7 @@ export default function App() {
                   </div>
                   <div>
                     <p className="text-slate-400 font-medium">סה"כ רכישות</p>
-                    <p className="font-bold text-indigo-700 text-sm mt-0.5">{customerItems.length} פריטים · ₪{(calculatedData.customerStats?.[selectedCustomer.id]?.totalRevenue || 0).toLocaleString()}</p>
+                    <p className="font-bold text-[#651011] text-sm mt-0.5">{customerItems.length} פריטים · ₪{(calculatedData.customerStats?.[selectedCustomer.id]?.totalRevenue || 0).toLocaleString()}</p>
                   </div>
                 </div>
 
@@ -5925,7 +5949,7 @@ export default function App() {
                     <button
                       key={tab.id}
                       onClick={() => setActiveCustomerOverviewTab(tab.id as any)}
-                      className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeCustomerOverviewTab === tab.id ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                      className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeCustomerOverviewTab === tab.id ? 'border-[#7B1315] text-[#651011] bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
                     >
                       <tab.icon className="w-4 h-4"/> {tab.label}
                     </button>
@@ -5942,10 +5966,10 @@ export default function App() {
                           <p>אין עדיין תיעוד התקשרויות.</p>
                         </div>
                       ) : (
-                        <div className="relative border-r-2 border-indigo-100 pr-4 ml-2 space-y-5">
+                        <div className="relative border-r-2 border-[#EDDEDE] pr-4 ml-2 space-y-5">
                           {[...selectedCustomer.interactionLogs].reverse().map((log: any, idx: number) => (
                             <div key={idx} className="relative">
-                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-indigo-500 rounded-full border-4 border-white shadow-sm"></div>
+                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-[#7B1315] rounded-full border-4 border-white shadow-sm"></div>
                               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                                 <div className="flex justify-between items-center mb-1">
                                   <span className="text-xs font-bold text-slate-500">{new Date(log.date).toLocaleString('he-IL')}</span>
@@ -5959,9 +5983,9 @@ export default function App() {
                       )}
                     </div>
                     <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
-                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" rows={3} placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..." value={newNoteText} onChange={e => setNewNoteText(e.target.value)}></textarea>
+                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none resize-none" rows={3} placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..." value={newNoteText} onChange={e => setNewNoteText(e.target.value)}></textarea>
                       <div className="flex justify-end mt-2">
-                        <button onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm">
+                        <button onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 transition-colors shadow-sm">
                           {isSaving ? 'שומר...' : 'שמור הערה ועדכן תאריך'}
                         </button>
                       </div>
@@ -5999,7 +6023,7 @@ export default function App() {
                                 {item.serialNumber && <p className="text-xs text-slate-400 mt-0.5">סריאל: {item.serialNumber}</p>}
                               </div>
                               <div className="text-left shrink-0 ml-4">
-                                <p className="font-bold text-indigo-700">₪{Math.round(item.totalRevenue || item.salePrice || 0).toLocaleString()}</p>
+                                <p className="font-bold text-[#651011]">₪{Math.round(item.totalRevenue || item.salePrice || 0).toLocaleString()}</p>
                                 <p className="text-xs text-green-600">רווח: ₪{Math.round(item.profit || 0).toLocaleString()}</p>
                               </div>
                             </div>
@@ -6021,7 +6045,7 @@ export default function App() {
                     ) : (
                       <div className="space-y-3">
                         {customerQuotes.map((q: any) => {
-                          const total = (q.items || []).reduce((s: number, i: any) => s + (Number(i.finalPrice ?? i.price ?? 0) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
+                          const total = (q.items || []).reduce((s: number, i: any) => s + (getEffectivePrice(i) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
                           const statusLabel = QUOTE_STATUS_MAP[q.status] || q.status;
                           const statusColor = q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-700' : q.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600';
                           return (
@@ -6032,13 +6056,13 @@ export default function App() {
                                   <p className="text-sm text-slate-700 mt-1">{(q.items || []).map((i: any) => `${i.model} ×${i.qty}`).join(', ')}</p>
                                 </div>
                                 <div className="text-left shrink-0 ml-3">
-                                  <p className="font-bold text-indigo-700">₪{Math.round(total).toLocaleString()}</p>
+                                  <p className="font-bold text-[#651011]">₪{Math.round(total).toLocaleString()}</p>
                                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${statusColor}`}>{statusLabel}</span>
                                 </div>
                               </div>
                               <button
                                 onClick={() => { setSelectedQuote({...q, customerInfo: selectedCustomer}); setIsQuoteOverviewOpen(true); }}
-                                className="mt-2 text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"
+                                className="mt-2 text-xs text-[#7B1315] hover:text-[#4E2426] font-medium flex items-center gap-1"
                               >
                                 <Eye className="w-3.5 h-3.5"/> צפה בהצעה
                               </button>
@@ -6083,7 +6107,7 @@ export default function App() {
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-5 h-5 text-indigo-600"/> {supplierEditingData.id ? 'עריכת ספק' : 'ספק חדש'}</h3>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Building2 className="w-5 h-5 text-[#7B1315]"/> {supplierEditingData.id ? 'עריכת ספק' : 'ספק חדש'}</h3>
               <button onClick={() => setIsSupplierModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             <form onSubmit={saveSupplier} className="p-6 overflow-y-auto flex-1 space-y-4">
@@ -6091,7 +6115,7 @@ export default function App() {
                 <div className="col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">מיקום ספק</label>
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, location: 'china'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${(!supplierEditingData.location || supplierEditingData.location === 'china') ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                    <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, location: 'china'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${(!supplierEditingData.location || supplierEditingData.location === 'china') ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'}`}>
                       🇨🇳 סין
                     </button>
                     <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, location: 'israel'})} className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${supplierEditingData.location === 'israel' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-600 border-slate-300 hover:border-green-400'}`}>
@@ -6131,7 +6155,7 @@ export default function App() {
               <div className="border-t border-slate-200 pt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h4 className="font-bold text-slate-700 text-sm">קטלוג — דגמים ומחירים מוצעים</h4>
-                  <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, catalog: [...(supplierEditingData.catalog||[]), { model: modelsList[0] || '', unitCostUSD: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף דגם</button>
+                  <button type="button" onClick={() => setSupplierEditingData({...supplierEditingData, catalog: [...(supplierEditingData.catalog||[]), { model: modelsList[0] || '', unitCostUSD: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף דגם</button>
                 </div>
                 {(supplierEditingData.catalog || []).map((c: any, idx: number) => (
                   <div key={idx} className="flex gap-2 items-center mb-2">
@@ -6153,20 +6177,20 @@ export default function App() {
               {/* קטלוג קבצים */}
               {supplierEditingData.id && (
                 <div className="border-t border-slate-200 pt-4">
-                  <h4 className="font-bold text-slate-700 text-sm mb-3 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-500"/> קטלוג מוצרים (PDF / Excel)</h4>
+                  <h4 className="font-bold text-slate-700 text-sm mb-3 flex items-center gap-2"><FileText className="w-4 h-4 text-[#7B1315]"/> קטלוג מוצרים (PDF / Excel)</h4>
                   {supplierEditingData.catalogFileUrl ? (
                     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-center justify-between mb-2">
                       <div>
                         <p className="text-xs font-medium text-slate-700 truncate max-w-[200px]">{supplierEditingData.catalogFileName || 'קטלוג קיים'}</p>
                         {supplierEditingData.catalogUploadedAt && <p className="text-[10px] text-slate-400 mt-0.5">הועלה: {new Date(supplierEditingData.catalogUploadedAt).toLocaleDateString('he-IL')}</p>}
                       </div>
-                      <a href={supplierEditingData.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
+                      <a href={supplierEditingData.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-[#7B1315] hover:text-[#4E2426] font-medium flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
                     </div>
                   ) : (
                     <p className="text-xs text-slate-400 mb-2">אין קטלוג מועלה עדיין.</p>
                   )}
                   <label className="cursor-pointer block">
-                    <div className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 text-sm font-medium transition-colors ${isCatalogUploading ? 'border-indigo-300 bg-indigo-50 text-indigo-500' : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600'}`}>
+                    <div className={`flex items-center justify-center gap-2 border-2 border-dashed rounded-lg py-3 text-sm font-medium transition-colors ${isCatalogUploading ? 'border-[#C49596] bg-[#F7F1F1] text-[#7B1315]' : 'border-slate-300 hover:border-[#A55F60] hover:bg-[#F7F1F1] text-slate-500 hover:text-[#7B1315]'}`}>
                       {isCatalogUploading ? (
                         <span>מעלה... {catalogUploadProgress}%</span>
                       ) : (
@@ -6178,14 +6202,14 @@ export default function App() {
                     />
                   </label>
                   {catalogUploadProgress !== null && (
-                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-indigo-500 h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
+                    <div className="mt-2 w-full bg-slate-200 rounded-full h-1.5"><div className="bg-[#7B1315] h-1.5 rounded-full transition-all" style={{ width: `${catalogUploadProgress}%` }}/></div>
                   )}
                 </div>
               )}
               {!supplierEditingData.id && <p className="text-xs text-slate-400 border-t pt-3">שמור את הספק תחילה כדי להעלות קטלוג.</p>}
 
               <div className="flex gap-2 pt-4 border-t">
-                <button type="submit" disabled={isSaving} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור ספק'}</button>
+                <button type="submit" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold hover:bg-[#651011] disabled:opacity-50">{isSaving ? 'שומר...' : 'שמור ספק'}</button>
                 <button type="button" onClick={() => setIsSupplierModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
               </div>
             </form>
@@ -6209,7 +6233,7 @@ export default function App() {
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[88vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
-              <h3 className="text-lg font-bold flex items-center gap-2"><Building2 className="w-5 h-5 text-indigo-600"/> {selectedSupplier.name}</h3>
+              <h3 className="text-lg font-bold flex items-center gap-2"><Building2 className="w-5 h-5 text-[#7B1315]"/> {selectedSupplier.name}</h3>
               <button onClick={() => setIsSupplierOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
 
@@ -6217,7 +6241,7 @@ export default function App() {
               {/* Sidebar */}
               <div className="w-full md:w-64 border-b md:border-b-0 md:border-l border-slate-200 bg-slate-50 p-5 shrink-0 md:overflow-y-auto space-y-4">
                 <div className="text-center">
-                  <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-2"><Building2 className="w-7 h-7 text-indigo-600"/></div>
+                  <div className="w-14 h-14 bg-[#EDDEDE] rounded-full flex items-center justify-center mx-auto mb-2"><Building2 className="w-7 h-7 text-[#7B1315]"/></div>
                   <p className="font-bold text-slate-800">{selectedSupplier.name}</p>
                   {selectedSupplier.contactName && <p className="text-xs text-slate-500">{selectedSupplier.contactName}</p>}
                   {selectedSupplier.city && <p className="text-xs text-slate-400 flex items-center justify-center gap-1"><MapPin className="w-3 h-3"/> {selectedSupplier.city}</p>}
@@ -6249,7 +6273,7 @@ export default function App() {
               <div className="flex-1 flex flex-col min-w-0">
                 <div className="flex border-b border-slate-200 bg-slate-50/50 shrink-0">
                   {[{id:'details',label:'פרטים וקטלוג'},{id:'orders',label:`הזמנות (${supplierShipments.length})`},{id:'notes',label:'הערות'}].map(tab => (
-                    <button key={tab.id} onClick={() => setActiveSupplierTab(tab.id as any)} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeSupplierTab === tab.id ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>{tab.label}</button>
+                    <button key={tab.id} onClick={() => setActiveSupplierTab(tab.id as any)} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeSupplierTab === tab.id ? 'border-[#7B1315] text-[#651011] bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>{tab.label}</button>
                   ))}
                 </div>
 
@@ -6260,16 +6284,16 @@ export default function App() {
 
                     {/* קטלוג קובץ */}
                     <div>
-                      <p className="font-bold text-slate-700 text-sm mb-2 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-500"/> קטלוג מוצרים</p>
+                      <p className="font-bold text-slate-700 text-sm mb-2 flex items-center gap-2"><FileText className="w-4 h-4 text-[#7B1315]"/> קטלוג מוצרים</p>
                       {selectedSupplier.catalogFileUrl ? (
-                        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center justify-between">
+                        <div className="bg-[#F7F1F1] border border-[#DABDBD] rounded-lg p-3 flex items-center justify-between">
                           <div>
-                            <p className="text-sm font-medium text-indigo-800 truncate max-w-[200px]">{selectedSupplier.catalogFileName || 'קטלוג'}</p>
-                            {selectedSupplier.catalogUploadedAt && <p className="text-[10px] text-indigo-500 mt-0.5">עודכן: {new Date(selectedSupplier.catalogUploadedAt).toLocaleDateString('he-IL')}</p>}
+                            <p className="text-sm font-medium text-[#4E2426] truncate max-w-[200px]">{selectedSupplier.catalogFileName || 'קטלוג'}</p>
+                            {selectedSupplier.catalogUploadedAt && <p className="text-[10px] text-[#7B1315] mt-0.5">עודכן: {new Date(selectedSupplier.catalogUploadedAt).toLocaleDateString('he-IL')}</p>}
                           </div>
                           <div className="flex gap-2">
-                            <a href={selectedSupplier.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-md font-medium hover:bg-indigo-700 flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
-                            <a href={selectedSupplier.catalogFileUrl} download className="text-xs bg-white border border-indigo-300 text-indigo-700 px-3 py-1.5 rounded-md font-medium hover:bg-indigo-50 flex items-center gap-1"><Download className="w-3.5 h-3.5"/> הורד</a>
+                            <a href={selectedSupplier.catalogFileUrl} target="_blank" rel="noopener noreferrer" className="text-xs bg-[#7B1315] text-white px-3 py-1.5 rounded-md font-medium hover:bg-[#651011] flex items-center gap-1"><Eye className="w-3.5 h-3.5"/> פתח</a>
+                            <a href={selectedSupplier.catalogFileUrl} download className="text-xs bg-white border border-[#C49596] text-[#651011] px-3 py-1.5 rounded-md font-medium hover:bg-[#F7F1F1] flex items-center gap-1"><Download className="w-3.5 h-3.5"/> הורד</a>
                           </div>
                         </div>
                       ) : (
@@ -6296,7 +6320,7 @@ export default function App() {
                                 <div>
                                   <p className="font-bold text-slate-800">{c.model}</p>
                                   <p className="text-xs text-slate-500">מחיר מוצע בקטלוג: ${c.unitCostUSD}</p>
-                                  {history.length > 0 && <p className="text-xs text-indigo-600 mt-0.5">מחיר הזמנה אחרונה: ${lastShipmentPrice}</p>}
+                                  {history.length > 0 && <p className="text-xs text-[#7B1315] mt-0.5">מחיר הזמנה אחרונה: ${lastShipmentPrice}</p>}
                                 </div>
                                 {priceChange !== null && (
                                   <div className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-md ${priceChange > 0 ? 'bg-red-50 text-red-600' : priceChange < 0 ? 'bg-green-50 text-green-600' : 'bg-slate-50 text-slate-500'}`}>
@@ -6346,11 +6370,11 @@ export default function App() {
                                 <p className="font-bold text-slate-800">{s.name}</p>
                                 <p className="text-xs text-slate-500 mt-0.5">{new Date(s.date).toLocaleDateString('he-IL')} {s.arrivalDate && `← הגיע: ${new Date(s.arrivalDate).toLocaleDateString('he-IL')}`}</p>
                                 <div className="flex gap-1 mt-1 flex-wrap">
-                                  {s.myLines.map((l: any, i: number) => <span key={i} className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{l.model} ×{l.qty} @ ${l.unitCostUSD}</span>)}
+                                  {s.myLines.map((l: any, i: number) => <span key={i} className="text-[10px] bg-[#F7F1F1] text-[#651011] px-2 py-0.5 rounded-full">{l.model} ×{l.qty} @ ${l.unitCostUSD}</span>)}
                                 </div>
                               </div>
                               <div className="text-left shrink-0 ml-3">
-                                <p className="font-bold text-indigo-700">${Math.round(s.totalUSD).toLocaleString()}</p>
+                                <p className="font-bold text-[#651011]">${Math.round(s.totalUSD).toLocaleString()}</p>
                                 <p className="text-xs text-slate-400">₪{Math.round(s.totalILS).toLocaleString()}</p>
                               </div>
                             </div>
@@ -6358,7 +6382,7 @@ export default function App() {
                         ))}
                         <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold flex justify-between">
                           <span>סה"כ כל ההזמנות:</span>
-                          <span className="text-indigo-700">${Math.round(stats.totalPaidUSD).toLocaleString()} / ₪{Math.round(stats.totalPaidILS).toLocaleString()}</span>
+                          <span className="text-[#651011]">${Math.round(stats.totalPaidUSD).toLocaleString()} / ₪{Math.round(stats.totalPaidILS).toLocaleString()}</span>
                         </div>
                       </div>
                     )}
@@ -6372,10 +6396,10 @@ export default function App() {
                       {(!selectedSupplier.interactionLogs || selectedSupplier.interactionLogs.length === 0) ? (
                         <div className="text-center text-slate-400 py-12"><MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-20"/><p>אין עדיין תיעוד.</p></div>
                       ) : (
-                        <div className="relative border-r-2 border-indigo-100 pr-4 ml-2 space-y-4">
+                        <div className="relative border-r-2 border-[#EDDEDE] pr-4 ml-2 space-y-4">
                           {[...selectedSupplier.interactionLogs].reverse().map((log: any, idx: number) => (
                             <div key={idx} className="relative">
-                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-indigo-500 rounded-full border-4 border-white shadow-sm"></div>
+                              <div className="absolute -right-[23px] top-1 w-3 h-3 bg-[#7B1315] rounded-full border-4 border-white shadow-sm"></div>
                               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                                 <div className="flex justify-between items-center mb-1">
                                   <span className="text-xs font-bold text-slate-500">{new Date(log.date).toLocaleString('he-IL')}</span>
@@ -6389,9 +6413,9 @@ export default function App() {
                       )}
                     </div>
                     <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
-                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" rows={3} placeholder="תאר שיחה, עסקה, הסכמה עם הספק..." value={supplierNoteText} onChange={e => setSupplierNoteText(e.target.value)}/>
+                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none resize-none" rows={3} placeholder="תאר שיחה, עסקה, הסכמה עם הספק..." value={supplierNoteText} onChange={e => setSupplierNoteText(e.target.value)}/>
                       <div className="flex justify-end mt-2">
-                        <button onClick={addSupplierNote} disabled={!supplierNoteText.trim() || isSaving} className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 disabled:opacity-50">שמור הערה</button>
+                        <button onClick={addSupplierNote} disabled={!supplierNoteText.trim() || isSaving} className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50">שמור הערה</button>
                       </div>
                     </div>
                   </div>
@@ -6422,7 +6446,7 @@ export default function App() {
                       <div key={idx} className="bg-slate-50 p-4 rounded-lg border border-slate-200 space-y-4">
                           <div className="flex justify-between items-center border-b border-slate-200 pb-2">
                               <h4 className="font-bold text-slate-800">דגם: {item.model}</h4>
-                              <span className="bg-indigo-100 text-indigo-800 text-xs font-bold px-2 py-1 rounded">כמות לגריעה: {item.qty} יח'</span>
+                              <span className="bg-[#EDDEDE] text-[#4E2426] text-xs font-bold px-2 py-1 rounded">כמות לגריעה: {item.qty} יח'</span>
                           </div>
                           
                           <div className="grid grid-cols-2 gap-4">
@@ -6489,7 +6513,7 @@ export default function App() {
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-[1100px] h-[95vh] flex flex-col">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> מחולל הצעת מחיר / הסכם הזמנה</h3>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><FileText className="w-5 h-5 text-[#7B1315]"/> מחולל הצעת מחיר / הסכם הזמנה</h3>
               <button onClick={() => setIsQuoteModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             
@@ -6524,7 +6548,7 @@ export default function App() {
                 <div className="space-y-4 border-b border-slate-200 pb-4">
                   <div className="flex justify-between items-center">
                     <h4 className="font-bold text-slate-800">פריטים בהצעה</h4>
-                    <button onClick={addQuoteItem} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף פריט</button>
+                    <button onClick={addQuoteItem} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף פריט</button>
                   </div>
                   
                   {quoteData.items.map((item: any, index: number) => (
@@ -6556,7 +6580,7 @@ export default function App() {
                         <div>
                           <label className="block text-xs font-bold text-green-700 mb-1">מחיר סופי (₪)</label>
                           <div className="w-full border-green-300 rounded p-1.5 text-sm bg-green-50 text-green-800 font-black">
-                            {Number(item.finalPrice ?? item.price ?? 0).toLocaleString()}
+                            {getEffectivePrice(item).toLocaleString()}
                           </div>
                         </div>
                       </div>
@@ -6621,7 +6645,7 @@ export default function App() {
                   confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || new Date().toISOString().split('T')[0]); 
                   setArrivalPrompt({ isOpen: false, shipment: null, date: '' }); 
                 }} 
-                className="bg-indigo-600 text-white p-2 rounded flex-1"
+                className="bg-[#7B1315] text-white p-2 rounded flex-1"
               >
                 אישור
               </button>
@@ -6641,7 +6665,7 @@ export default function App() {
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package className="w-5 h-5 text-indigo-600"/> פירוט מלאי זמין</h3>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package className="w-5 h-5 text-[#7B1315]"/> פירוט מלאי זמין</h3>
               <button onClick={() => setIsStockBreakdownModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             <div className="p-6 overflow-y-auto">
@@ -6653,7 +6677,7 @@ export default function App() {
                     .map(([model, qty]) => (
                     <div key={model} className="flex justify-between items-center p-3 bg-white border border-slate-200 shadow-sm rounded-lg">
                       <span className="font-bold text-slate-700">{model}</span>
-                      <span className="bg-indigo-100 text-indigo-800 py-1 px-3 rounded-full font-bold text-sm">{String(qty)} יח'</span>
+                      <span className="bg-[#EDDEDE] text-[#4E2426] py-1 px-3 rounded-full font-bold text-sm">{String(qty)} יח'</span>
                     </div>
                   ))}
                 </div>
@@ -6700,7 +6724,7 @@ export default function App() {
               {/* Header */}
               <div className="p-5 border-b flex justify-between items-center rounded-t-2xl bg-slate-800">
                 <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Download className="w-5 h-5 text-indigo-300"/> הכנת PDF — {proj.name}
+                  <Download className="w-5 h-5 text-[#C49596]"/> הכנת PDF — {proj.name}
                 </h3>
                 <button onClick={() => setPdfExportModal(null)} className="text-slate-400 hover:text-white"><X className="w-5 h-5"/></button>
               </div>
@@ -6712,10 +6736,10 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       onClick={() => setPdfExportModal({...pdfExportModal, type: 'internal'})}
-                      className={`p-4 rounded-xl border-2 text-right transition-all ${!isCustomer ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                      className={`p-4 rounded-xl border-2 text-right transition-all ${!isCustomer ? 'border-[#7B1315] bg-[#F7F1F1]' : 'border-slate-200 bg-white hover:border-slate-300'}`}
                     >
                       <div className="flex items-center gap-2 mb-1">
-                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${!isCustomer ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300'}`}>
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${!isCustomer ? 'border-[#7B1315] bg-[#7B1315]' : 'border-slate-300'}`}>
                           {!isCustomer && <div className="w-2 h-2 bg-white rounded-full"/>}
                         </div>
                         <span className="font-bold text-sm text-slate-800">🔒 מסמך פנימי</span>
@@ -6835,7 +6859,7 @@ export default function App() {
 
                 {/* Actions */}
                 <div className="flex gap-3 pt-2 border-t items-center">
-                  <button onClick={generatePDF} className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-md">
+                  <button onClick={generatePDF} className="flex-1 bg-[#7B1315] text-white py-3 rounded-xl font-bold hover:bg-[#651011] flex items-center justify-center gap-2 shadow-md">
                     <Download className="w-4 h-4"/>
                     {isCustomer ? 'הפק הצעת מחיר ללקוח' : 'הפק מסמך פנימי'}
                   </button>
@@ -7019,10 +7043,10 @@ export default function App() {
       {excelMappingPreview && (
         <div className="fixed inset-0 z-[130] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4">
-            <div className="p-5 border-b flex justify-between items-center bg-indigo-600 rounded-t-2xl">
+            <div className="p-5 border-b flex justify-between items-center bg-[#7B1315] rounded-t-2xl">
               <div>
                 <h3 className="text-lg font-bold text-white flex items-center gap-2"><Layers className="w-5 h-5"/> מיפוי שדות מהקובץ</h3>
-                <p className="text-xs text-indigo-200 mt-0.5">{excelMappingPreview.fileName} · {excelMappingPreview.rowCount} שורות מוצר זוהו</p>
+                <p className="text-xs text-[#DABDBD] mt-0.5">{excelMappingPreview.fileName} · {excelMappingPreview.rowCount} שורות מוצר זוהו</p>
               </div>
               <button onClick={() => setExcelMappingPreview(null)} className="text-white/70 hover:text-white" aria-label="בטל ייבוא"><X className="w-5 h-5"/></button>
             </div>
@@ -7062,7 +7086,7 @@ export default function App() {
                 <button
                   onClick={confirmExcelMappingImport}
                   disabled={excelMappingPreview.rowCount === 0}
-                  className="flex-1 bg-indigo-600 text-white py-2.5 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold hover:bg-[#651011] disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   <CheckCircle className="w-4 h-4" aria-hidden="true"/> אשר וייבא {excelMappingPreview.rowCount} מוצרים
                 </button>
@@ -7122,7 +7146,7 @@ export default function App() {
               <div>
                 <div className="flex justify-between items-center mb-2">
                   <label className="block text-sm font-medium text-slate-700">פריטים לרכישה</label>
-                  <button type="button" onClick={() => setLocalStockForm({...localStockForm, lines: [...localStockForm.lines, { model: modelsList[0] || '', qty: 1, unitCost: 0 }]})} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ הוסף שורה</button>
+                  <button type="button" onClick={() => setLocalStockForm({...localStockForm, lines: [...localStockForm.lines, { model: modelsList[0] || '', qty: 1, unitCost: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
                 </div>
                 <div className="space-y-2">
                   {localStockForm.lines.map((line: any, idx: number) => (
@@ -7210,15 +7234,15 @@ export default function App() {
       {showAiModal && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-5 border-b border-indigo-100 bg-indigo-50/50 flex justify-between items-center">
-              <h3 className="text-lg font-bold text-indigo-900 flex items-center gap-2"><Sparkles className="w-5 h-5 text-indigo-600"/> העוזר האישי שלך מבית Gemini</h3>
+            <div className="p-5 border-b border-[#EDDEDE] bg-[#F7F1F1]/50 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-[#2A3134] flex items-center gap-2"><Sparkles className="w-5 h-5 text-[#7B1315]"/> העוזר האישי שלך מבית Gemini</h3>
               <button onClick={() => setShowAiModal(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             <div className="p-6 overflow-y-auto whitespace-pre-wrap text-slate-700 leading-relaxed font-medium">
               {isGeneratingAI ? (
                 <div className="flex flex-col items-center justify-center py-12 space-y-4">
-                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
-                  <p className="text-indigo-600 font-medium animate-pulse">מנתח נתונים ומפיק תובנות...</p>
+                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#7B1315]"></div>
+                  <p className="text-[#7B1315] font-medium animate-pulse">מנתח נתונים ומפיק תובנות...</p>
                 </div>
               ) : (
                 <div className="prose prose-sm md:prose-base prose-indigo rtl">{aiInsight || "לא התקבל מידע."}</div>
@@ -7305,7 +7329,7 @@ export default function App() {
                   <div className="space-y-1.5">
                     {modelsList.filter(m => settings?.models?.[m]?.videoUrl).map(m => (
                       <label key={m} className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-slate-50 border border-transparent hover:border-slate-200">
-                        <input type="checkbox" className="w-4 h-4 text-indigo-600 rounded accent-indigo-600"
+                        <input type="checkbox" className="w-4 h-4 text-[#7B1315] rounded accent-[#7B1315]"
                           checked={catalogSelectedModels.includes(m)}
                           onChange={e => setCatalogSelectedModels(prev => e.target.checked ? [...prev, m] : prev.filter(x => x !== m))}/>
                         <span className="font-medium text-slate-700 text-sm">🎥 {m}</span>
