@@ -523,6 +523,28 @@ const defaultSettings: any = {
   },
 };
 
+// מסיר את שדות התמונה (itemImgUrl/blueprintUrl) מכל דגם באובייקט models.
+// משמש לכל כתיבה של general_settings כדי לשמור אותו רזה (התמונות חיות ב-crm_model_images).
+const stripModelImages = (models: any): any => {
+  const out: any = {};
+  Object.entries(models || {}).forEach(([name, m]: [string, any]) => {
+    const { itemImgUrl, blueprintUrl, ...rest } = (m || {});
+    out[name] = rest;
+  });
+  return out;
+};
+
+// מפריד תמונות inline מתוך אובייקט models: מחזיר את התמונות בלבד (לזריעה ל-crm_model_images).
+const extractInlineModelImages = (models: any): Record<string, { itemImgUrl: string; blueprintUrl: string }> => {
+  const imgs: Record<string, { itemImgUrl: string; blueprintUrl: string }> = {};
+  Object.entries(models || {}).forEach(([name, m]: [string, any]) => {
+    const item = (m && m.itemImgUrl) || '';
+    const blue = (m && m.blueprintUrl) || '';
+    if (item || blue) imgs[name] = { itemImgUrl: item, blueprintUrl: blue };
+  });
+  return imgs;
+};
+
 const QUICK_IMPORT_KEYWORDS = [
   'שם איש הקשר', 'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'שם הבר/מסעדה', 'שם הבר\\מסעדה', 
   'שם הבר / מסעדה', 'שם הבר \\ מסעדה', 'שם הבר', 'שם המסעדה', 'שם העסק', 'שם עסק',
@@ -805,6 +827,10 @@ export default function App() {
   // כדי שלא "יטרמפ" בטעות בתוך כל setDoc({...settings}) שכפתורי שמירה אחרים מבצעים על general_settings,
   // שכבר קרוב למגבלת 1MB למסמך בגלל תמונות המודלים.
   const [companyLogoUrl, setCompanyLogoUrl] = useState<string>('');
+  // תמונות הדגמים (itemImgUrl + blueprintUrl) נשמרות ונטענות ב-collection נפרד: crm_model_images —
+  // מסמך אחד לכל דגם. זאת כדי לא לנפח את general_settings בתמונות בייס64 ולחרוג ממגבלת 1MB למסמך
+  // ב-Firestore (הבאג שגרם לכשל שקט בשמירת דגמים). general_settings נשאר עם מטא-דאטה טקסטואלית בלבד.
+  const [modelImages, setModelImages] = useState<Record<string, { itemImgUrl?: string; blueprintUrl?: string }>>({});
   const [shipments, setShipments] = useState<any[]>([]);
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -836,6 +862,11 @@ export default function App() {
   const [autosaveStatus, setAutosaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({}); // debounce key -> status
   const autosaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  // מחזיק תמונות דגמים ישנות שנמצאו "תקועות" בתוך general_settings (המבנה הישן), עד שייזרעו ל-crm_model_images.
+  // מאפשר מיגרציה חד-פעמית ובטוחה: זריעה תחילה ל-collection החדש, ורק אחר כך ניקוי general_settings בכתיבה הבאה.
+  const pendingInlineModelImagesRef = useRef<Record<string, { itemImgUrl?: string; blueprintUrl?: string }>>({});
+  const modelImageMigrationDoneRef = useRef(false);
+
   // --- Custom Projects: Excel column-mapping preview (shown right after parsing, before data enters the form) ---
   const [excelMappingPreview, setExcelMappingPreview] = useState<{
     fileName: string;
@@ -863,6 +894,21 @@ export default function App() {
   const [catalogSending, setCatalogSending] = useState(false);
 
   const modelsList = useMemo(() => Object.keys(settings?.models || {}), [settings]);
+
+  // מיזוג לתצוגה בלבד: מאחד את מטא-הדאטה של הדגם (מ-settings) עם התמונות שלו (מ-modelImages, collection נפרד).
+  // כל מקום בקוד שקורא settings?.models?.[X]?.itemImgUrl/blueprintUrl יעבור לקרוא מ-settingsWithImages,
+  // וכך ממשיך לעבוד בדיוק כמו קודם בלי שהתמונות יושבות בפועל בתוך מסמך general_settings.
+  const settingsWithImages = useMemo(() => {
+    const mergedModels: any = {};
+    Object.keys(settings?.models || {}).forEach((m) => {
+      mergedModels[m] = {
+        ...(settings.models[m] || {}),
+        itemImgUrl: modelImages[m]?.itemImgUrl ?? settings.models[m]?.itemImgUrl ?? '',
+        blueprintUrl: modelImages[m]?.blueprintUrl ?? settings.models[m]?.blueprintUrl ?? '',
+      };
+    });
+    return { ...settings, models: mergedModels };
+  }, [settings, modelImages]);
 
   // Modal & UI States
   const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
@@ -955,6 +1001,33 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
+    // מיגרציה חד-פעמית ובטוחה של תמונות דגמים ישנות מ-general_settings אל crm_model_images.
+    // עצמאית ולא תלויה בסדר ה-listeners: קוראת פעם אחת את המצב הקיים ב-getDocs, וזורעת רק מה שחסר.
+    // לא-הרסני — לעולם לא דורסת תמונה שכבר קיימת ב-collection החדש.
+    const runModelImageMigration = async (inlineImgs: Record<string, { itemImgUrl?: string; blueprintUrl?: string }>) => {
+      if (modelImageMigrationDoneRef.current) return;
+      if (!inlineImgs || Object.keys(inlineImgs).length === 0) return;
+      modelImageMigrationDoneRef.current = true;
+      try {
+        const existingSnap = await getDocs(collection(db, 'crm_model_images'));
+        const existing: Record<string, any> = {};
+        existingSnap.docs.forEach(d => { existing[d.id] = d.data(); });
+        for (const [model, imgs] of Object.entries(inlineImgs)) {
+          const cur = existing[model];
+          const hasSeparate = !!(cur && (cur.itemImgUrl || cur.blueprintUrl));
+          if (!hasSeparate && (imgs.itemImgUrl || imgs.blueprintUrl)) {
+            await setDoc(doc(db, 'crm_model_images', model), {
+              itemImgUrl: imgs.itemImgUrl || '',
+              blueprintUrl: imgs.blueprintUrl || '',
+            });
+          }
+        }
+      } catch (err) {
+        console.error('מיגרציית תמונות דגמים נכשלה:', err);
+        modelImageMigrationDoneRef.current = false; // מאפשר ניסיון חוזר בטעינה הבאה
+      }
+    };
+
     const unsubSettings = onSnapshot(collection(db, 'crm_settings'), (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
       const settingsDoc = docs.find((d: any) => d.id === 'general_settings');
@@ -967,6 +1040,10 @@ export default function App() {
         // מנקה שדה companyLogoUrl ישן אם נשאר במסמך general_settings מגרסה קודמת —
         // כדי שהוא לא ימשיך "לטרמפ" על כל setDoc({...settings}) עתידי מכפתורי שמירה אחרים
         const { companyLogoUrl: _legacyLogo, ...settingsDocClean } = settingsDoc;
+        // לוכד תמונות דגמים ישנות שעדיין יושבות בתוך general_settings, ומריץ מיגרציה חד-פעמית ל-crm_model_images
+        const inlineImgs = extractInlineModelImages(settingsDocClean.models);
+        pendingInlineModelImagesRef.current = inlineImgs;
+        runModelImageMigration(inlineImgs);
         // שמירת API Key אוטומטית אם עדיין לא קיים
         if (!settingsDocClean.finbotApiKey) {
           const FINBOT_KEY = atob('ZmI4NWM3NDEtY2IzMC00NWY0LWFjYzMtNTQxZWNkMDAyMjM0');
@@ -983,9 +1060,19 @@ export default function App() {
                  if (!updatedModels[key].blueprintUrl) updatedModels[key].blueprintUrl = '';
                  if (!updatedModels[key].itemImgUrl) updatedModels[key].itemImgUrl = '';
              });
+             const inlineImgs = extractInlineModelImages(updatedModels);
+             pendingInlineModelImagesRef.current = inlineImgs;
+             runModelImageMigration(inlineImgs);
              setSettings({ models: updatedModels });
          }
       }
+    });
+
+    // מאזין לתמונות הדגמים ב-collection הנפרד. שומר את modelImages מסונכרן (כולל מה שנזרע במיגרציה).
+    const unsubModelImages = onSnapshot(collection(db, 'crm_model_images'), (snap) => {
+      const imageMap: Record<string, { itemImgUrl?: string; blueprintUrl?: string }> = {};
+      snap.docs.forEach(d => { imageMap[d.id] = d.data() as any; });
+      setModelImages(imageMap);
     });
 
     const unsubShipments = onSnapshot(collection(db, 'crm_shipments'), (snap) => {
@@ -1041,7 +1128,7 @@ export default function App() {
       setCustomProjects(data);
     });
 
-    return () => { unsubSettings(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); unsubCustomProjects(); };
+    return () => { unsubSettings(); unsubModelImages(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); unsubCustomProjects(); };
   }, [user]);
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
@@ -1550,10 +1637,15 @@ export default function App() {
     e.preventDefault();
     if (!newModelName.trim()) return;
     try {
-      const newSettings = { ...settings, models: { ...settings.models, [newModelName.trim()]: { cbm: 0, blueprintUrl: '', itemImgUrl: '', listPrice: 0, videoUrl: '' } } };
+      // כותב general_settings רזה: התמונות של הדגמים לא נכללות (הן ב-crm_model_images). דגם חדש נפתח ללא תמונות.
+      const leanModels = stripModelImages(settings.models);
+      const newSettings = { ...settings, models: { ...leanModels, [newModelName.trim()]: { cbm: 0, listPrice: 0, videoUrl: '' } } };
       await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setNewModelName('');
-    } catch(err) { console.error(err); }
+    } catch(err: any) {
+      console.error('שגיאה בהוספת דגם:', err);
+      alert(`שגיאה בהוספת דגם: ${err?.message || 'שגיאה לא ידועה'}`);
+    }
   };
   
   const renameModel = async (oldName: string, newName: string) => {
@@ -1581,13 +1673,29 @@ export default function App() {
 
     setIsSaving(true);
     try {
-      // 1. settings.models — מפתח חדש, מחיקת ישן
+      // מקור התמונות של הדגם הישן (ממוזג: מסמך נפרד אם קיים, אחרת נפילה ל-inline ישן) — לפני כל כתיבה, כדי לא לאבד תמונות
+      const oldImages = {
+        itemImgUrl: settingsWithImages.models?.[oldName]?.itemImgUrl || '',
+        blueprintUrl: settingsWithImages.models?.[oldName]?.blueprintUrl || '',
+      };
+
+      // 1. settings.models — מפתח חדש, מחיקת ישן. נכתב רזה (ללא תמונות; הן ב-crm_model_images)
       const newModels = { ...settings.models };
       newModels[trimmed] = { ...newModels[oldName] };
       delete newModels[oldName];
-      const newSettings = { ...settings, models: newModels };
+      const newSettings = { ...settings, models: stripModelImages(newModels) };
       await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setSettings(newSettings);
+
+      // 1ב. crm_model_images — העברת מסמך התמונות לשם החדש ומחיקת הישן
+      await setDoc(doc(db, 'crm_model_images', trimmed), oldImages);
+      await deleteDoc(doc(db, 'crm_model_images', oldName)).catch(() => {});
+      setModelImages(prev => {
+        const next = { ...prev };
+        next[trimmed] = oldImages;
+        delete next[oldName];
+        return next;
+      });
 
       // 2. crm_items
       for (const item of affectedItems) {
@@ -1631,11 +1739,15 @@ export default function App() {
       if (!newModelData.name.trim()) return;
       setIsSaving(true);
       try {
-        const newSettings = { ...settings, models: { ...settings.models, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0, blueprintUrl: '', itemImgUrl: '' } } };
+        const leanModels = stripModelImages(settings.models);
+        const newSettings = { ...settings, models: { ...leanModels, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0 } } };
         await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
         setNewModelData({ name: '', cbm: 0 });
         setIsModelModalOpen(false);
-      } catch(err) { alert("שגיאה בהוספת דגם"); }
+      } catch(err: any) {
+        console.error('שגיאה בהוספת דגם:', err);
+        alert(`שגיאה בהוספת דגם: ${err?.message || 'שגיאה לא ידועה'}`);
+      }
       setIsSaving(false);
   };
 
@@ -2407,10 +2519,26 @@ export default function App() {
   };
 
   const saveSettings = async () => {
+    setIsSaving(true);
     try {
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), settings);
+      // 1. general_settings — ללא תמונות הדגמים (רזה, הרחק ממגבלת 1MB)
+      const leanSettings = { ...settings, models: stripModelImages(settings.models) };
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), leanSettings);
+
+      // 2. תמונות הדגמים — מסמך נפרד לכל דגם ב-crm_model_images (מקור האמת: settingsWithImages הממוזג)
+      for (const model of modelsList) {
+        const merged = settingsWithImages.models?.[model] || {};
+        await setDoc(doc(db, 'crm_model_images', model), {
+          itemImgUrl: merged.itemImgUrl || '',
+          blueprintUrl: merged.blueprintUrl || '',
+        });
+      }
       alert("הגדרות נשמרו בהצלחה!");
-    } catch (err) { alert("שגיאה בשמירה"); }
+    } catch (err: any) {
+      console.error('שגיאה בשמירת הגדרות:', err);
+      alert(`שגיאה בשמירה: ${err?.message || 'שגיאה לא ידועה'}`);
+    }
+    setIsSaving(false);
   };
 
   const deleteDocHandler = async (collectionName: string, id: string) => {
@@ -3730,8 +3858,8 @@ export default function App() {
               <div className="space-y-6">
                 {modelsList.map(model => {
                   const modelCbm = settings.models?.[model]?.cbm || '';
-                  const itemImgUrl = settings.models?.[model]?.itemImgUrl || '';
-                  const blueprintUrl = settings.models?.[model]?.blueprintUrl || '';
+                  const itemImgUrl = settingsWithImages.models?.[model]?.itemImgUrl || '';
+                  const blueprintUrl = settingsWithImages.models?.[model]?.blueprintUrl || '';
                   
                   return (
                   <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
@@ -3803,15 +3931,15 @@ export default function App() {
                           label="העלה תמונת הדמיה" 
                           icon={ImageIcon} 
                           imageUrl={itemImgUrl} 
-                          onUpload={(e: any) => handleImageUpload(e, (base64) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], itemImgUrl: base64 } } }))} 
-                          onRemove={() => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], itemImgUrl: '' } } })}
+                          onUpload={(e: any) => handleImageUpload(e, (base64) => setModelImages(prev => ({...prev, [model]: { ...prev[model], itemImgUrl: base64 } })))} 
+                          onRemove={() => setModelImages(prev => ({...prev, [model]: { ...prev[model], itemImgUrl: '' } }))}
                         />
                         <ModelAssetUploader 
                           label="העלה סרטוט טכני" 
                           icon={FileText} 
                           imageUrl={blueprintUrl} 
-                          onUpload={(e: any) => handleImageUpload(e, (base64) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], blueprintUrl: base64 } } }))} 
-                          onRemove={() => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], blueprintUrl: '' } } })}
+                          onUpload={(e: any) => handleImageUpload(e, (base64) => setModelImages(prev => ({...prev, [model]: { ...prev[model], blueprintUrl: base64 } })))} 
+                          onRemove={() => setModelImages(prev => ({...prev, [model]: { ...prev[model], blueprintUrl: '' } }))}
                         />
                     </div>
                   </div>
@@ -5765,7 +5893,7 @@ export default function App() {
 
                 {/* PDF Preview Area (Using Reusable Component) */}
                 <div className="mt-8 w-full bg-slate-800 p-4 sm:p-8 flex justify-center items-start rounded-lg overflow-x-auto">
-                  <QuoteDocument quote={selectedQuote} customer={selectedQuote.customerInfo || {}} settings={{...settings, companyLogoUrl}} />
+                  <QuoteDocument quote={selectedQuote} customer={selectedQuote.customerInfo || {}} settings={{...settingsWithImages, companyLogoUrl}} />
                 </div>
               </div>
             </div>
@@ -6623,7 +6751,7 @@ export default function App() {
 
               {/* PDF Preview Area (Using Reusable Component) */}
               <div className="w-full lg:flex-1 bg-slate-800 p-4 sm:p-8 lg:overflow-y-auto flex justify-center items-start">
-                <QuoteDocument quote={quoteData} customer={currentCustomer} settings={{...settings, companyLogoUrl}} innerRef={quoteRef} />
+                <QuoteDocument quote={quoteData} customer={currentCustomer} settings={{...settingsWithImages, companyLogoUrl}} innerRef={quoteRef} />
               </div>
 
             </div>
