@@ -489,6 +489,7 @@ const QUOTE_STATUS_MAP: Record<string, string> = {
   'pending': 'ממתינה לאישור', 
   'approved': 'מאושרת (מלאי נגרע)', 
   'approved_no_stock': 'מאושרת (ללא גריעת מלאי)',
+  'approved_test': 'מאושרת (בדיקה בלבד)',
   'rejected': 'נדחתה' 
 };
 
@@ -2885,6 +2886,47 @@ export default function App() {
   };
 
   const handleQuoteStatusChange = async (quote: any, newStatus: string) => {
+    // נתיב 0: אישור בדיקה בלבד — לא נוגע במלאי (crm_items) ולא בלקוח (crm_customers).
+    // רק שולח קריאה ל-Morning (עם קידומת [TEST] לשם הלקוח) ומעדכן את סטטוס ההצעה עצמה.
+    // מקדים במפורש את נתיב 1/2 כדי שלעולם לא ייכנס בטעות ללוגיקת האישור/ביטול המלאה.
+    if (newStatus === 'approved_test') {
+      setIsSaving(true);
+      try {
+        const testItems = quote.items.map((item: any) => ({
+          model: item.model, qty: item.qty, price: getEffectivePrice(item)
+        }));
+        const baseCustomer = customers.find((c: any) => c.id === quote.customerId) || {};
+        const testCustomerName = `[TEST] ${baseCustomer.companyName || baseCustomer.businessName || baseCustomer.contactName || ''}`.trim();
+        const testCustomer = { ...baseCustomer, companyName: testCustomerName };
+
+        const { url: invoiceUrl, error: morningErr } = await sendToMorning(
+          testItems,
+          Number(quote.shippingCost) || 0,
+          testCustomer
+        );
+
+        if (invoiceUrl) {
+          await updateDoc(doc(db, 'crm_quotes', quote.id), {
+            status: newStatus, morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null, updatedAt: new Date().toISOString()
+          });
+          alert('✓ בדיקת Morning בוצעה בהצלחה! דרישת תשלום נוצרה. שום דבר אחר ב-CRM לא השתנה (המלאי והלקוח לא נגעו).');
+        } else {
+          await updateDoc(doc(db, 'crm_quotes', quote.id), {
+            status: newStatus, morningError: morningErr, morningSentAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+          });
+          alert('⚠️ הסטטוס עודכן ל"בדיקה בלבד", אך השליחה ל-Morning נכשלה. פרטי השגיאה יופיעו בדף הלקוח.');
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || 'שגיאת רשת.';
+        try {
+          await updateDoc(doc(db, 'crm_quotes', quote.id), { status: newStatus, morningError: errMsg, morningSentAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+        } catch {}
+        alert('⚠️ שגיאה: ' + errMsg);
+      }
+      setIsSaving(false);
+      return;
+    }
+
     // נתיב 1: אישור עם גריעת מלאי (מכל סטטוס שאינו approved)
     if (newStatus === 'approved') {
       const itemsToProcess = quote.items.map((item: any) => ({
@@ -3612,6 +3654,7 @@ export default function App() {
                 { val: 'pending', label: `ממתינות (${quotes.filter(q=>q.status==='pending'||!q.status).length})` },
                 { val: 'approved', label: `אושרו עם מלאי (${quotes.filter(q=>q.status==='approved').length})` },
                 { val: 'approved_no_stock', label: `אושרו ללא מלאי (${quotes.filter(q=>q.status==='approved_no_stock').length})` },
+                { val: 'approved_test', label: `בדיקות בלבד (${quotes.filter(q=>q.status==='approved_test').length})` },
                 { val: 'rejected', label: `נדחו (${quotes.filter(q=>q.status==='rejected').length})` },
               ].map(f => (
                 <button
@@ -3650,13 +3693,14 @@ export default function App() {
                         <td className="px-4 py-4 font-bold text-[#651011]">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
                           <select 
-                            className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
+                            className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800 border-indigo-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
                             value={q.status ? q.status : 'pending'} 
                             onChange={(e) => handleQuoteStatusChange(q, e.target.value)}
                           >
                             <option value="pending">ממתינה לאישור</option>
                             <option value="approved">מאושרת (יגרא מלאי)</option>
                             <option value="approved_no_stock">מאושרת (ללא גריעת מלאי)</option>
+                            <option value="approved_test">מאושרת (בדיקה בלבד — Morning בלבד)</option>
                             <option value="rejected">נדחתה</option>
                           </select>
                         </td>
@@ -5841,7 +5885,7 @@ export default function App() {
                   </div>
                   <div className="text-left">
                      <div className="text-3xl font-black text-[#651011] mb-1">₪{Math.round(grandTotal).toLocaleString()}</div>
-                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
+                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
                        סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status ? selectedQuote.status : 'pending']}
                      </span>
                   </div>
@@ -6172,7 +6216,7 @@ export default function App() {
                         {customerQuotes.map((q: any) => {
                           const total = (q.items || []).reduce((s: number, i: any) => s + (getEffectivePrice(i) * Number(i.qty)), 0) + Number(q.shippingCost || 0);
                           const statusLabel = QUOTE_STATUS_MAP[q.status] || q.status;
-                          const statusColor = q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-700' : q.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600';
+                          const statusColor = q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-700' : q.status === 'approved_test' ? 'bg-indigo-100 text-indigo-700' : q.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600';
                           return (
                             <div key={q.id} className="bg-white border border-slate-200 rounded-lg p-4">
                               <div className="flex justify-between items-start">
@@ -6196,6 +6240,22 @@ export default function App() {
                                    className="mt-1 text-xs text-green-700 hover:text-green-900 font-medium flex items-center gap-1">
                                   <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Morning
                                 </a>
+                              )}
+                              {q.status === 'approved_test' && (
+                                <div className="mt-2 space-y-1">
+                                  {q.morningError && (
+                                    <div className="bg-red-50 border border-red-200 rounded p-2 text-[10px] text-red-700 font-mono leading-relaxed">
+                                      <span className="font-bold block mb-0.5">שגיאת Morning (בדיקה):</span>
+                                      {q.morningError}
+                                    </div>
+                                  )}
+                                  <button
+                                    onClick={() => handleQuoteStatusChange(q, 'approved_test')}
+                                    className="text-xs text-indigo-700 hover:text-indigo-900 font-medium flex items-center gap-1 bg-indigo-50 border border-indigo-200 rounded px-2 py-1"
+                                  >
+                                    <ArrowUpRight className="w-3.5 h-3.5"/> הרץ בדיקת Morning שוב
+                                  </button>
+                                </div>
                               )}
                               {q.status === 'approved' && !q.morningInvoiceUrl && settings?.morningApiKeyId && settings?.morningApiKeySecret && (
                                 <div className="mt-2 space-y-1">
