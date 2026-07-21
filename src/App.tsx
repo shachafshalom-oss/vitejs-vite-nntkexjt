@@ -1044,14 +1044,7 @@ export default function App() {
         const inlineImgs = extractInlineModelImages(settingsDocClean.models);
         pendingInlineModelImagesRef.current = inlineImgs;
         runModelImageMigration(inlineImgs);
-        // שמירת API Key אוטומטית אם עדיין לא קיים
-        if (!settingsDocClean.finbotApiKey) {
-          const FINBOT_KEY = atob('ZmI4NWM3NDEtY2IzMC00NWY0LWFjYzMtNTQxZWNkMDAyMjM0');
-          setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settingsDocClean, finbotApiKey: FINBOT_KEY }, { merge: true });
-          setSettings({ ...settingsDocClean, finbotApiKey: FINBOT_KEY });
-        } else {
-          setSettings(settingsDocClean);
-        }
+        setSettings(settingsDocClean);
       } else {
          const oldSettingsDoc = docs.find((d: any) => d.id === 'general_cbm');
          if(oldSettingsDoc && oldSettingsDoc.models) {
@@ -2592,25 +2585,25 @@ export default function App() {
     setIsSaving(false);
   };
 
-  const retryFinbot = async (quote: any, customer: any) => {
-    if (!settings?.finbotApiKey) { alert('אין מפתח API של Finbot בהגדרות.'); return; }
+  const retryMorning = async (quote: any, customer: any) => {
+    if (!settings?.morningApiKeyId || !settings?.morningApiKeySecret) { alert('אין מפתחות API של Morning בהגדרות.'); return; }
     if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
     try {
-      const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
+      const { url: invoiceUrl, error: morningErr } = await sendToMorning(
         (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: getEffectivePrice(i) })),
         Number(quote.approvedShippingCost) || 0,
         customer
       );
       if (invoiceUrl) {
-        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
-        alert('✓ דרישת תשלום נוצרה ב-Finbot בהצלחה!');
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
+        alert('✓ דרישת תשלום נוצרה ב-Morning בהצלחה!');
       } else {
-        await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: finbotErr, finbotSentAt: new Date().toISOString() });
-        alert('⚠️ שליחה ל-Finbot נכשלה שוב. ראה הודעת שגיאה בדף הלקוח.');
+        await updateDoc(doc(db, 'crm_quotes', quote.id), { morningError: morningErr, morningSentAt: new Date().toISOString() });
+        alert('⚠️ שליחה ל-Morning נכשלה שוב. ראה הודעת שגיאה בדף הלקוח.');
       }
     } catch(err: any) {
       const errMsg = err?.message || 'שגיאת רשת.';
-      await updateDoc(doc(db, 'crm_quotes', quote.id), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
+      await updateDoc(doc(db, 'crm_quotes', quote.id), { morningError: errMsg, morningSentAt: new Date().toISOString() });
       alert('⚠️ שגיאה: ' + errMsg);
     }
   };
@@ -2750,52 +2743,55 @@ export default function App() {
     setCatalogSending(false);
   };
 
-  // --- Finbot Integration ---
-  const sendToFinbot = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
-    const apiKey = settings?.finbotApiKey;
-    if (!apiKey) return { url: null, error: 'אין מפתח API מוגדר בהגדרות.' };
+  // --- Morning (חשבונית ירוקה) Integration ---
+  // מפיק מסמך "חשבון עסקה" (type 300) — זהו מסמך "דרישת תשלום" הלא-מחייב, המקביל למה ש-Finbot הפיק.
+  // מקור המיפוי: תיעוד API הרשמי של Morning (Apiary). type=300 אושר מול שחף כמסמך הנכון (לא חשבונית מס).
+  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
+    const keyId = settings?.morningApiKeyId;
+    const keySecret = settings?.morningApiKeySecret;
+    if (!keyId || !keySecret) return { url: null, error: 'אין מפתחות API של Morning מוגדרים בהגדרות.' };
     const today = new Date();
     const dd = String(today.getDate()).padStart(2,'0');
     const mm = String(today.getMonth()+1).padStart(2,'0');
     const yyyy = today.getFullYear();
-    const dateStr = `${dd}/${mm}/${yyyy}`;
+    const dateStr = `${yyyy}-${mm}-${dd}`; // Morning מצפה לתאריך בפורמט ISO (YYYY-MM-DD), לא DD/MM/YYYY כמו ב-Finbot
 
-    const items = quoteItems.map((item: any) => ({
-      name: `עמדת נירוסטה דגם ${item.model}`,
-      amount: Number(item.qty),
+    // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט
+    const income = quoteItems.map((item: any) => ({
+      description: `עמדת נירוסטה דגם ${item.model}`,
+      quantity: Number(item.qty),
       price: Number(item.price ?? 0),
-      save: false
     }));
     if (Number(shippingCost) > 0) {
-      items.push({ name: 'הובלה', amount: 1, price: Number(shippingCost), save: false });
+      income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
     }
 
     const taxRaw = (customer.hp || '').toString().replace(/\D/g, '').slice(0, 9);
+    const emails = customer.email ? [customer.email.slice(0, 50)] : [];
 
     const body: any = {
-      type: '3',
+      type: 300, // חשבון עסקה (דרישת תשלום) — אושר מול שחף ב-20.7.2026
       date: dateStr,
-      language: 'HE',
+      lang: 'he',
       currency: 'ILS',
-      vatType: true,
+      vatType: 0, // ברירת מחדל: המערכת מחשבת מע"מ אוטומטית לפי סוג העסק הרשום ב-Morning
       rounding: true,
-      confirmationNumber: false,
-      customer: {
+      client: {
         name: customer.companyName || customer.businessName || customer.contactName || '',
         phone: (customer.phone || '').slice(0, 20),
         address: (customer.address || '').slice(0, 100),
-        save: false,
-        ...(taxRaw ? { tax: taxRaw } : {}),
-        ...(customer.email ? { email: customer.email.slice(0, 50) } : {})
+        add: false, // לא יוצר לקוח קבוע ברשימת הלקוחות של Morning
+        ...(taxRaw ? { taxId: taxRaw } : {}),
+        ...(emails.length ? { emails } : {}),
       },
-      items
+      income,
     };
 
     try {
-      const res = await fetch('/.netlify/functions/finbot-proxy', {
+      const res = await fetch('/.netlify/functions/morning-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, secret: apiKey })
+        body: JSON.stringify({ body, keyId, keySecret })
       });
       const rawText = await res.text();
       let data: any = {};
@@ -2803,26 +2799,14 @@ export default function App() {
 
       if (data.error) return { url: null, error: `שגיאת proxy: ${data.error}` };
 
-      // הצלחה
+      // ה-proxy מנרמל תשובת הצלחה לאותה צורה ש-Finbot השתמש בה: { status: 1, data: <url> }
       if (data.status === 1 && data.data) {
         return { url: data.data, error: null };
       }
 
-      // Finbot מחזירה מערך שגיאות ישירות [{"code":X,"message":"..."}]
-      if (Array.isArray(data)) {
-        const errs = data.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
-        return { url: null, error: errs };
-      }
-
-      // שגיאה עם שדה errors
-      if (data.errors && Array.isArray(data.errors)) {
-        const errs = data.errors.map((e: any) => `[${e.code}] ${e.message}`).join(' | ');
-        return { url: null, error: errs };
-      }
-
-      return { url: null, error: `תגובה מ-Finbot: ${JSON.stringify(data)}` };
+      return { url: null, error: `תגובה מ-Morning: ${JSON.stringify(data)}` };
     } catch (err: any) {
-      return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Finbot'}` };
+      return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Morning'}` };
     }
   };
 
@@ -3013,25 +2997,25 @@ export default function App() {
 
         setIsQuoteApprovalModalOpen(false);
 
-        // --- Finbot Integration ---
-        if (settings?.finbotApiKey) {
+        // --- Morning Integration ---
+        if (settings?.morningApiKeyId && settings?.morningApiKeySecret) {
           try {
-            const { url: invoiceUrl, error: finbotErr } = await sendToFinbot(
+            const { url: invoiceUrl, error: morningErr } = await sendToMorning(
               quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
               quoteApprovalData.shippingCost || 0,
               customer
             );
             if (invoiceUrl) {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotInvoiceUrl: invoiceUrl, finbotSentAt: new Date().toISOString(), finbotError: null });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Finbot בהצלחה.');
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.');
             } else {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: finbotErr, finbotSentAt: new Date().toISOString() });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
+              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: morningErr, morningSentAt: new Date().toISOString() });
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
             }
           } catch(err: any) {
-            const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Finbot.';
-            await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { finbotError: errMsg, finbotSentAt: new Date().toISOString() });
-            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Finbot נכשלה — ניתן לנסות שוב מדף הלקוח.');
+            const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Morning.';
+            await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: errMsg, morningSentAt: new Date().toISOString() });
+            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
           }
         } else {
           alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.');
@@ -5166,40 +5150,53 @@ export default function App() {
               )}
             </div>
 
-            {/* Finbot Integration Settings */}
+            {/* Morning Integration Settings */}
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
               <h2 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                <ExternalLink className="w-5 h-5 text-[#7B1315]"/> חיבור ל-Finbot
+                <ExternalLink className="w-5 h-5 text-[#7B1315]"/> חיבור ל-Morning
               </h2>
-              <p className="text-sm text-slate-500 mb-4">מפתח ה-API ישמש להנפקת דרישת תשלום אוטומטית ב-Finbot בעת אישור הצעת מחיר.</p>
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">מפתח API של Finbot</label>
-                <div className="flex gap-2">
+              <p className="text-sm text-slate-500 mb-4">מפתחות ה-API ישמשו להנפקת דרישת תשלום אוטומטית ב-Morning בעת אישור הצעת מחיר. Morning דורש שני מפתחות (Key ID + Key Secret).</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Key ID</label>
                   <input
                     type="password"
                     dir="ltr"
-                    className="flex-1 border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
-                    placeholder="הדבק כאן את ה-API Key"
-                    value={settings?.finbotApiKey || ''}
-                    onChange={e => setSettings({...settings, finbotApiKey: e.target.value})}
+                    className="w-full border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
+                    placeholder="הדבק כאן את ה-Key ID"
+                    value={settings?.morningApiKeyId || ''}
+                    onChange={e => setSettings({...settings, morningApiKeyId: e.target.value})}
                   />
-                  <button
-                    onClick={async () => {
-                      try {
-                        await setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settings }, { merge: true });
-                        alert('✓ מפתח ה-API נשמר בהצלחה ב-Firebase.');
-                      } catch { alert('שגיאה בשמירת המפתח.'); }
-                    }}
-                    className="bg-[#7B1315] text-white px-4 py-2.5 rounded-md text-sm font-bold hover:bg-[#651011] whitespace-nowrap"
-                  >
-                    שמור
-                  </button>
                 </div>
-                <p className="text-xs text-slate-400 mt-1.5">Finbot: הגדרות עסק ← מפתח API להפקת הכנסות. המפתח נשמר ב-Firebase בלבד.</p>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Key Secret</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      dir="ltr"
+                      className="flex-1 border-slate-300 rounded-md p-2.5 border font-mono text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
+                      placeholder="הדבק כאן את ה-Key Secret"
+                      value={settings?.morningApiKeySecret || ''}
+                      onChange={e => setSettings({...settings, morningApiKeySecret: e.target.value})}
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          await setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settings }, { merge: true });
+                          alert('✓ מפתחות ה-API נשמרו בהצלחה ב-Firebase.');
+                        } catch { alert('שגיאה בשמירת המפתחות.'); }
+                      }}
+                      className="bg-[#7B1315] text-white px-4 py-2.5 rounded-md text-sm font-bold hover:bg-[#651011] whitespace-nowrap"
+                    >
+                      שמור
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5">Morning: הגדרות ← כלים למפתחים ← מפתחות API. המפתחות נשמרים ב-Firebase בלבד.</p>
               </div>
-              {settings?.finbotApiKey && (
+              {settings?.morningApiKeyId && settings?.morningApiKeySecret && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                  <CheckCircle className="w-3.5 h-3.5 shrink-0"/> מפתח API מוגדר — הנפקת דרישות תשלום פעילה
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0"/> מפתחות API מוגדרים — הנפקת דרישות תשלום פעילה
                 </div>
               )}
             </div>
@@ -6194,25 +6191,25 @@ export default function App() {
                               >
                                 <Eye className="w-3.5 h-3.5"/> צפה בהצעה
                               </button>
-                              {q.finbotInvoiceUrl && (
-                                <a href={q.finbotInvoiceUrl} target="_blank" rel="noopener noreferrer"
+                              {q.morningInvoiceUrl && (
+                                <a href={q.morningInvoiceUrl} target="_blank" rel="noopener noreferrer"
                                    className="mt-1 text-xs text-green-700 hover:text-green-900 font-medium flex items-center gap-1">
-                                  <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Finbot
+                                  <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Morning
                                 </a>
                               )}
-                              {q.status === 'approved' && !q.finbotInvoiceUrl && settings?.finbotApiKey && (
+                              {q.status === 'approved' && !q.morningInvoiceUrl && settings?.morningApiKeyId && settings?.morningApiKeySecret && (
                                 <div className="mt-2 space-y-1">
-                                  {q.finbotError && (
+                                  {q.morningError && (
                                     <div className="bg-red-50 border border-red-200 rounded p-2 text-[10px] text-red-700 font-mono leading-relaxed">
-                                      <span className="font-bold block mb-0.5">שגיאת Finbot:</span>
-                                      {q.finbotError}
+                                      <span className="font-bold block mb-0.5">שגיאת Morning:</span>
+                                      {q.morningError}
                                     </div>
                                   )}
                                   <button
-                                    onClick={() => retryFinbot(q, selectedCustomer)}
+                                    onClick={() => retryMorning(q, selectedCustomer)}
                                     className="text-xs text-amber-700 hover:text-amber-900 font-medium flex items-center gap-1 bg-amber-50 border border-amber-200 rounded px-2 py-1"
                                   >
-                                    <ArrowUpRight className="w-3.5 h-3.5"/> שלח שוב ל-Finbot
+                                    <ArrowUpRight className="w-3.5 h-3.5"/> שלח שוב ל-Morning
                                   </button>
                                 </div>
                               )}
