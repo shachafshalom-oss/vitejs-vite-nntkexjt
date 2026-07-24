@@ -769,14 +769,114 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
   );
 };
 
-// 2. רכיב כפתור מהיר לתפריט הראשי (FAB)
+// 2. רכיב תיבת חיפוש-עם-בחירה ללקוח (פיקליסט + השלמה אוטומטית + יצירת לקוח חדש)
+type ComboItem = { type: 'clear' } | { type: 'customer'; customer: any } | { type: 'create'; name: string };
+
+const CustomerCombobox = ({ customers, value, onChange, onCreateNew, placeholder }: { customers: any[], value: string, onChange: (id: string) => void, onCreateNew: (name: string) => void, placeholder?: string }) => {
+  const [query, setQuery] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selectedCustomer = customers.find(c => c.id === value);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const trimmedQuery = query.trim().toLowerCase();
+  const filtered = trimmedQuery
+    ? customers.filter(c => `${c.businessName || ''} ${c.contactName || ''} ${c.phone || ''}`.toLowerCase().includes(trimmedQuery))
+    : customers;
+  const showCreateNew = trimmedQuery.length > 0 && filtered.length === 0;
+
+  const items: ComboItem[] = [
+    { type: 'clear' },
+    ...filtered.map((c): ComboItem => ({ type: 'customer', customer: c })),
+    ...(showCreateNew ? [{ type: 'create', name: query.trim() } as ComboItem] : []),
+  ];
+
+  const selectItem = (item: ComboItem) => {
+    if (item.type === 'clear') onChange('');
+    else if (item.type === 'customer') onChange(item.customer.id);
+    else onCreateNew(item.name);
+    setQuery('');
+    setIsOpen(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'Enter') { setIsOpen(true); setQuery(''); setHighlightedIndex(0); }
+      return;
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedIndex(i => Math.min(i + 1, items.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedIndex(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); const item = items[highlightedIndex]; if (item) selectItem(item); }
+    else if (e.key === 'Escape') { setIsOpen(false); }
+  };
+
+  const displayValue = isOpen ? query : (selectedCustomer ? `${selectedCustomer.businessName || selectedCustomer.contactName || ''}${selectedCustomer.phone ? ' - ' + selectedCustomer.phone : ''}` : '');
+
+  return (
+    <div ref={containerRef} className="relative">
+      <input
+        type="text"
+        className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500"
+        placeholder={placeholder || 'הקלד לחיפוש או לחץ לבחירה מהרשימה...'}
+        value={displayValue}
+        onFocus={() => { setQuery(''); setIsOpen(true); setHighlightedIndex(0); }}
+        onChange={e => { setQuery(e.target.value); setIsOpen(true); setHighlightedIndex(0); }}
+        onKeyDown={handleKeyDown}
+      />
+      {isOpen && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-purple-200 rounded-md shadow-lg max-h-64 overflow-y-auto">
+          <div
+            className={`px-3 py-2 text-sm cursor-pointer text-slate-400 ${highlightedIndex === 0 ? 'bg-purple-50' : ''}`}
+            onMouseDown={() => selectItem({ type: 'clear' })}
+            onMouseEnter={() => setHighlightedIndex(0)}
+          >
+            -- בחר לקוח מהרשימה --
+          </div>
+          {filtered.map((c, i) => (
+            <div
+              key={c.id}
+              className={`px-3 py-2 text-sm cursor-pointer ${highlightedIndex === i + 1 ? 'bg-purple-50' : ''}`}
+              onMouseDown={() => selectItem({ type: 'customer', customer: c })}
+              onMouseEnter={() => setHighlightedIndex(i + 1)}
+            >
+              {c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}
+            </div>
+          ))}
+          {showCreateNew && (
+            <div
+              className={`px-3 py-2 text-sm cursor-pointer font-bold text-[#7B1315] flex items-center gap-1.5 border-t border-slate-100 ${highlightedIndex === items.length - 1 ? 'bg-purple-50' : ''}`}
+              onMouseDown={() => selectItem({ type: 'create', name: query.trim() })}
+              onMouseEnter={() => setHighlightedIndex(items.length - 1)}
+            >
+              <Plus className="w-3.5 h-3.5"/> צור לקוח חדש: "{query.trim()}"
+            </div>
+          )}
+          {!showCreateNew && filtered.length === 0 && (
+            <div className="px-3 py-2 text-sm text-slate-400">לא נמצאו לקוחות מתאימים</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// 3. רכיב כפתור מהיר לתפריט הראשי (FAB)
 const FabButton = ({ onClick, icon: Icon, iconColor, label }: any) => (
   <button onClick={onClick} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
     <Icon className={`w-4 h-4 ${iconColor}`}/> {label}
   </button>
 );
 
-// 3. רכיב העלאת תמונות לדגמים
+// 4. רכיב העלאת תמונות לדגמים
 const ModelAssetUploader = ({ label, icon: Icon, imageUrl, onUpload, onRemove }: any) => (
   <div className="bg-white p-3 rounded border border-slate-200">
     <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-1"><Icon className="w-4 h-4"/> {label}</label>
@@ -6743,10 +6843,17 @@ export default function App() {
                       <Plus className="w-3 h-3"/> הוסף לקוח
                     </button>
                   </div>
-                  <select className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500" value={quoteData.customerId || ''} onChange={e => setQuoteData({...quoteData, customerId: e.target.value})}>
-                    <option value="">-- בחר לקוח מהרשימה --</option>
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.businessName || c.contactName} {c.phone ? `- ${c.phone}` : ''}</option>)}
-                  </select>
+                  <CustomerCombobox
+                    customers={customers}
+                    value={quoteData.customerId || ''}
+                    onChange={(id) => setQuoteData({...quoteData, customerId: id})}
+                    onCreateNew={(name) => {
+                      setShowQuickImport(false);
+                      setQuickImportText('');
+                      setCustomerEditingData({ contactName: '', phone: '', businessName: name, companyName: '', businessType: 'bar', hp: '', email: '', address: '', status: 'active', notes: '' });
+                      setIsCustomerModalOpen(true);
+                    }}
+                  />
                 </div>
 
                 <div className="space-y-4 border-b border-slate-200 pb-4">
