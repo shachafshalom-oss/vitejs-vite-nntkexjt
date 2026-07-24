@@ -524,6 +524,11 @@ const defaultSettings: any = {
   },
 };
 
+// ממיר שם דגם (טקסט חופשי, עלול להכיל "/" וכו') למזהה מסמך בטוח ל-Firestore.
+// חיוני כי document ID עם "/" מתפרש ע"י Firestore כמפריד נתיב וגורם לשגיאת "Invalid document reference".
+// שימוש: בכל מקום שבו שם דגם הופך למזהה מסמך ב-crm_model_images (כתיבה/מחיקה), ו-decodeURIComponent בקריאה חוזרת.
+const getModelImageDocId = (name: string): string => encodeURIComponent(name);
+
 // מסיר את שדות התמונה (itemImgUrl/blueprintUrl) מכל דגם באובייקט models.
 // משמש לכל כתיבה של general_settings כדי לשמור אותו רזה (התמונות חיות ב-crm_model_images).
 const stripModelImages = (models: any): any => {
@@ -1128,12 +1133,12 @@ export default function App() {
       try {
         const existingSnap = await getDocs(collection(db, 'crm_model_images'));
         const existing: Record<string, any> = {};
-        existingSnap.docs.forEach(d => { existing[d.id] = d.data(); });
+        existingSnap.docs.forEach(d => { existing[decodeURIComponent(d.id)] = d.data(); });
         for (const [model, imgs] of Object.entries(inlineImgs)) {
           const cur = existing[model];
           const hasSeparate = !!(cur && (cur.itemImgUrl || cur.blueprintUrl));
           if (!hasSeparate && (imgs.itemImgUrl || imgs.blueprintUrl)) {
-            await setDoc(doc(db, 'crm_model_images', model), {
+            await setDoc(doc(db, 'crm_model_images', getModelImageDocId(model)), {
               itemImgUrl: imgs.itemImgUrl || '',
               blueprintUrl: imgs.blueprintUrl || '',
             });
@@ -1181,7 +1186,7 @@ export default function App() {
     // מאזין לתמונות הדגמים ב-collection הנפרד. שומר את modelImages מסונכרן (כולל מה שנזרע במיגרציה).
     const unsubModelImages = onSnapshot(collection(db, 'crm_model_images'), (snap) => {
       const imageMap: Record<string, { itemImgUrl?: string; blueprintUrl?: string }> = {};
-      snap.docs.forEach(d => { imageMap[d.id] = d.data() as any; });
+      snap.docs.forEach(d => { imageMap[decodeURIComponent(d.id)] = d.data() as any; });
       setModelImages(imageMap);
     });
 
@@ -1797,9 +1802,9 @@ export default function App() {
       await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setSettings(newSettings);
 
-      // 1ב. crm_model_images — העברת מסמך התמונות לשם החדש ומחיקת הישן
-      await setDoc(doc(db, 'crm_model_images', trimmed), oldImages);
-      await deleteDoc(doc(db, 'crm_model_images', oldName)).catch(() => {});
+      // 1ב. crm_model_images — העברת מסמך התמונות לשם החדש ומחיקת הישן (מזהה מסמך בטוח בשני הכיוונים)
+      await setDoc(doc(db, 'crm_model_images', getModelImageDocId(trimmed)), oldImages);
+      await deleteDoc(doc(db, 'crm_model_images', getModelImageDocId(oldName))).catch(() => {});
       setModelImages(prev => {
         const next = { ...prev };
         next[trimmed] = oldImages;
@@ -2638,7 +2643,7 @@ export default function App() {
       // 2. תמונות הדגמים — מסמך נפרד לכל דגם ב-crm_model_images (מקור האמת: settingsWithImages הממוזג)
       for (const model of modelsList) {
         const merged = settingsWithImages.models?.[model] || {};
-        await setDoc(doc(db, 'crm_model_images', model), {
+        await setDoc(doc(db, 'crm_model_images', getModelImageDocId(model)), {
           itemImgUrl: merged.itemImgUrl || '',
           blueprintUrl: merged.blueprintUrl || '',
         });
