@@ -567,6 +567,34 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
   const listTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.listPrice ?? item.price ?? 0) * Number(item.qty)), 0) || 0;
   const grandTotal = itemsTotal + Number(quote?.shippingCost || 0);
 
+  // חודשי אחריות בפועל על ההזמנה. 0 (או ריק) = אין אחריות כלל, רלוונטי אך ורק למוצרי מדף קיימים במלאי -
+  // הזמנה אישית/קסטום תמיד כוללת אחריות, ולכן במצב הזה גם סעיפי האחריות למוצרי מדף/מוגבלת לא רלוונטיים.
+  const warrantyMonths = Number(quote?.warrantyMonths) || 0;
+  const hasWarranty = warrantyMonths > 0;
+
+  const legalClauses: { id: string; title: string; body: React.ReactNode; show?: boolean }[] = [
+    { id: 'price', title: 'מחיר ותנאי תשלום', body: 'מחיר ההזמנה הינו קבוע וסופי, ולא יחולו בו שינויים מכל סיבה שהיא, למעט עדכונים הנובעים משינויי מיסים החלים על פי דין. יש להסדיר את התשלום במלואו לפני מועד ההספקה.' },
+    { id: 'warranty', title: 'אחריות', body: `המוצר יימסר עם אחריות למשך ${warrantyMonths} חודשים ממועד אספקתו ללקוח, וזאת בכפוף ובכפוף מלא לתנאי האחריות כפי שנקבעו על ידי החברה. החברה לא תישא בכל אחריות לנזק, שבר, תקלה, פגם או אובדן שנגרמו למוצר, לציוד או לכל רכיב ממנו, במישרין או בעקיפין, עקב שימוש לא סביר, רשלנות, פעולה או מחדל של הלקוח ו/או מי מטעמו, לרבות שבר במוצר. במקרים כאמור, הלקוח יישא במלוא האחריות והעלויות הכרוכות בתיקון, החלפה או השבת המוצר לקדמותו, והחברה תהיה פטורה מכל טענה, דרישה או תביעה בקשר לכך.`, show: hasWarranty },
+    { id: 'repairs', title: 'שירותי תיקונים לאחר תקופת האחריות', body: 'עם תום תקופת האחריות, החברה תעמיד לרשות הלקוח שירותי תיקונים ותחזוקה בתשלום, בהתאם למחירים ותנאים שייקבעו על ידה מעת לעת.' },
+    { id: 'delivery_dates', title: 'מועדי אספקה', body: 'מועדי האספקה הנמסרים ללקוח ניתנים לצורכי הערכה בלבד, והם עשויים להשתנות בהתאם לנסיבות שונות. החברה לא תישא באחריות לכל דחייה או שינוי במועדי האספקה.' },
+    { id: 'breach', title: 'הפרת התחייבויות הלקוח', body: 'במקרה שהלקוח לא יעמוד בהתחייבויותיו על פי הסכם זה, לרבות אי-תשלום במועדים שנקבעו, החברה תהא רשאית לבטל את אספקת הסחורה ו/או לחייב את הלקוח בגין החלק מההזמנה שכבר בוצע, ולמנוע אספקת יתרת ההזמנה.' },
+    { id: 'ownership', title: 'שמירת בעלות', body: 'המוצר יישאר רכושה הבלעדי של חברת סטיל אנד ספיריט בע"מ עד לפרעון מלא וסופי של כלל התשלומים על ידי הלקוח. במידה והתשלומים לא יפרעו במועדם ועל פי ההזמנה, תהא רשאית סטיל אנד ספיריט בע"מ, או מי מטעמה, ליטול את המוצר חזרה עד לפרעון סופי של כלל התשלומים.' },
+    { id: 'order_supply', title: 'הזמנה ואספקה', body: 'החברה תספק ללקוח את המוצרים הקיימים במלאי, בתוך 10 ימי עסקים ממועד תשלום מלוא התמורה בגין המוצר. מועדי האספקה כפופים לשינויים בהתאם לנסיבות תפעוליות ובלתי צפויות, והחברה לא תישא באחריות לעיכובים כאמור.' },
+    { id: 'cancellation', title: 'ביטול והחזרה', body: 'הלקוח יהיה רשאי, בהתאם להוראות הדין, לבטל את ההזמנה או להחזיר מוצר מדף שלא נעשה בו שימוש ושנשמר באריזתו המקורית, בתוך 14 ימים ממועד קבלתו. במקרה של ביטול או החזרה, החברה תהיה רשאית לגבות דמי ביטול בשיעור של 10% ממחיר ההזמנה. עלויות הובלה ושינוע יחולו על הלקוח בלבד.' },
+    { id: 'shelf_warranty', title: 'אחריות למוצרי מדף', body: 'מוצרי מדף יימסרו כשהם חדשים, באריזתם במקורית, וללא פגמים נראים לעין. האחריות על מוצרי המדף תחול בהתאם לאמור בסעיף האחריות לעיל.', show: hasWarranty },
+    { id: 'limited_warranty', title: 'אחריות מוגבלת', body: 'האחריות למוצר בהזמנה אישית תחול בהתאם לסעיף האחריות לעיל, אולם לא תחול על פגמים, נזקים או סטיות הנובעים מהמפרט שנמסר על ידי הלקוח, מההדמיה שאושרה על ידו, או מהתאמות שבוצעו על פי בקשתו.', show: hasWarranty },
+    { id: 'transport', title: 'הובלה ואיסוף עצמי', body: 'החברה מציעה ללקוח שירותי הובלה באמצעות מובילים חיצוניים, כמחווה שירותית בלבד. מובהר כי המוביל אינו עובד של חברת סטיל אנד ספיריט בע"מ ואינו פועל מטעמה, ועל כן החברה לא תישא בכל אחריות לנזקים או איחורים הנובעים מפעולות המוביל. עלות ההובלה תחול על הלקוח ותיקבע בהתאם למרחק ומיקום ההובלה. הלקוח רשאי לבחור באיסוף עצמי ממחסני החברה.' },
+    { id: 'interim_bar', title: 'אספקת בר ביניים (פתרון זמני)', body: 'כחלק מהשירות ללקוח, החברה רשאית לספק ללקוח בר ביניים שלם לשימוש זמני, עד לאספקת הבר המוזמן בייצור אישי. השימוש בבר הביניים ניתן ללא עלות נוספת בגין המוצר עצמו, אולם עלויות ההובלה והשינוע של בר זה יחולו על הלקוח בלבד. הלקוח מצהיר ומתחייב כי כל נזק שייגרם לבר הביניים במהלך תקופת השימוש בו יהיה באחריותו הבלעדית. עם הגעת הבר המוזמן, מתחייב הלקוח להשיב לחברה את בר הביניים באופן מיידי כשהוא תקין.' },
+    { id: 'force_majeure', title: 'כוח עליון', body: 'החברה לא תישא באחריות לאי־קיום או לעיכוב בקיום התחייבויותיה עקב אירועים שאינם בשליטתה.' },
+    { id: 'jurisdiction', title: 'תחולת דין ושיפוט', body: 'הסכם זה וכל הנובע ממנו יפורשו ויפורטו לפי דיני מדינת ישראל בלבד. סמכות השיפוט הבלעדית תהא נתונה לבית המשפט המוסמך במחוז תל אביב-מרכז.' },
+    { id: 'confidentiality', title: 'סודיות ואי־גילוי', body: 'הצדדים מתחייבים לשמור בסודיות כל מידע עסקי, טכני או מסחרי שיתגלה להם.' },
+    { id: 'communication', title: 'תקשורת בין הצדדים', body: 'כל הודעה תימסר בכתב, באמצעות דוא"ל, דואר רשום, וואטסאפ או כל אמצעי תקשורת אחר שהוסכם.' },
+    { id: 'misc', title: 'שונות', body: <>א. כותרות הסעיפים נועדו לנוחות בלבד.<br/>ב. כל שינוי או תוספת ייעשו באישור שני הצדדים.</> },
+  ];
+  const visibleClauses = legalClauses.filter(c => c.show !== false);
+  const orderDetailsSectionNum = visibleClauses.length + 1;
+  const mockupsSectionNum = visibleClauses.length + 2;
+
   return (
     <div ref={innerRef} className="bg-[#eae5dd] shadow-2xl relative shrink-0" style={{ width: '210mm', minHeight: '297mm', padding: '20mm', boxSizing: 'border-box', direction: 'rtl', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' }}>
       {/* Header / Logo */}
@@ -580,8 +608,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
         </div>
         <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#7B1315', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
           <p style={{ margin: '3px 0' }}>050-2212880 | 054-8050870</p>
-          <p style={{ margin: '3px 0' }}>Dslogistics69@gmail.com</p>
-          <p style={{ margin: '3px 0', color: '#000' }}>ds-logistics.interaa.ai</p>
+          <p style={{ margin: '3px 0' }}>sales@steelandspirit.com</p>
         </div>
       </div>
 
@@ -618,28 +645,17 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
 
       {/* Sections */}
       <div style={{ fontSize: '13.5px', lineHeight: '1.4', textAlign: 'justify' }}>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>1. מחיר ותנאי תשלום</strong><br/>מחיר ההזמנה הינו קבוע וסופי, ולא יחולו בו שינויים מכל סיבה שהיא, למעט עדכונים הנובעים משינויי מיסים החלים על פי דין. יש להסדיר את התשלום במלואו לפני מועד ההספקה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>2. אחריות</strong><br/>המוצר יימסר עם אחריות למשך {quote?.warrantyMonths ? `${quote.warrantyMonths} חודשים` : '6 חודשים'} ממועד אספקתו ללקוח, וזאת בכפוף ובכפוף מלא לתנאי האחריות כפי שנקבעו על ידי החברה. החברה לא תישא בכל אחריות לנזק, שבר, תקלה, פגם או אובדן שנגרמו למוצר, לציוד או לכל רכיב ממנו, במישרין או בעקיפין, עקב שימוש לא סביר, רשלנות, פעולה או מחדל של הלקוח ו/או מי מטעמו, לרבות שבר במוצר. במקרים כאמור, הלקוח יישא במלוא האחריות והעלויות הכרוכות בתיקון, החלפה או השבת המוצר לקדמותו, והחברה תהיה פטורה מכל טענה, דרישה או תביעה בקשר לכך.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>3. שירותי תיקונים לאחר תקופת האחריות</strong><br/>עם תום תקופת האחריות, החברה תעמיד לרשות הלקוח שירותי תיקונים ותחזוקה בתשלום, בהתאם למחירים ותנאים שייקבעו על ידה מעת לעת.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>4. מועדי אספקה</strong><br/>מועדי האספקה הנמסרים ללקוח ניתנים לצורכי הערכה בלבד, והם עשויים להשתנות בהתאם לנסיבות שונות. החברה לא תישא באחריות לכל דחייה או שינוי במועדי האספקה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>5. הפרת התחייבויות הלקוח</strong><br/>במקרה שהלקוח לא יעמוד בהתחייבויותיו על פי הסכם זה, לרבות אי-תשלום במועדים שנקבעו, החברה תהא רשאית לבטל את אספקת הסחורה ו/או לחייב את הלקוח בגין החלק מההזמנה שכבר בוצע, ולמנוע אספקת יתרת ההזמנה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>6. שמירת בעלות</strong><br/>המוצר יישאר רכושה הבלעדי של חברת סטיל אנד ספיריט בע"מ עד לפרעון מלא וסופי של כלל התשלומים על ידי הלקוח. במידה והתשלומים לא יפרעו במועדם ועל פי ההזמנה, תהא רשאית סטיל אנד ספיריט בע"מ, או מי מטעמה, ליטול את המוצר חזרה עד לפרעון סופי של כלל התשלומים.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>7. הזמנה ואספקה</strong><br/>החברה תספק ללקוח את המוצרים הקיימים במלאי, בתוך 10 ימי עסקים ממועד תשלום מלוא התמורה בגין המוצר. מועדי האספקה כפופים לשינויים בהתאם לנסיבות תפעוליות ובלתי צפויות, והחברה לא תישא באחריות לעיכובים כאמור.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>8. ביטול והחזרה</strong><br/>הלקוח יהיה רשאי, בהתאם להוראות הדין, לבטל את ההזמנה או להחזיר מוצר מדף שלא נעשה בו שימוש ושנשמר באריזתו המקורית, בתוך 14 ימים ממועד קבלתו. במקרה של ביטול או החזרה, החברה תהיה רשאית לגבות דמי ביטול בשיעור של 10% ממחיר ההזמנה. עלויות הובלה ושינוע יחולו על הלקוח בלבד.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>9. אחריות למוצרי מדף</strong><br/>מוצרי מדף יימסרו כשהם חדשים, באריזתם במקורית, וללא פגמים נראים לעין. האחריות על מוצרי המדף תחול בהתאם לאמור בסעיף 2 לעיל.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>10. אחריות מוגבלת</strong><br/>האחריות למוצר בהזמנה אישית תחול בהתאם לסעיף 2 לעיל, אולם לא תחול על פגמים, נזקים או סטיות הנובעים מהמפרט שנמסר על ידי הלקוח, מההדמיה שאושרה על ידו, או מהתאמות שבוצעו על פי בקשתו.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>11. הובלה ואיסוף עצמי</strong><br/>החברה מציעה ללקוח שירותי הובלה באמצעות מובילים חיצוניים, כמחווה שירותית בלבד. מובהר כי המוביל אינו עובד של חברת סטיל אנד ספיריט בע"מ ואינו פועל מטעמה, ועל כן החברה לא תישא בכל אחריות לנזקים או איחורים הנובעים מפעולות המוביל. עלות ההובלה תחול על הלקוח ותיקבע בהתאם למרחק ומיקום ההובלה. הלקוח רשאי לבחור באיסוף עצמי ממחסני החברה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>12. אספקת בר ביניים (פתרון זמני)</strong><br/>כחלק מהשירות ללקוח, החברה רשאית לספק ללקוח בר ביניים שלם לשימוש זמני, עד לאספקת הבר המוזמן בייצור אישי. השימוש בבר הביניים ניתן ללא עלות נוספת בגין המוצר עצמו, אולם עלויות ההובלה והשינוע של בר זה יחולו על הלקוח בלבד. הלקוח מצהיר ומתחייב כי כל נזק שייגרם לבר הביניים במהלך תקופת השימוש בו יהיה באחריותו הבלעדית. עם הגעת הבר המוזמן, מתחייב הלקוח להשיב לחברה את בר הביניים באופן מיידי כשהוא תקין.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>13. כוח עליון</strong><br/>החברה לא תישא באחריות לאי־קיום או לעיכוב בקיום התחייבויותיה עקב אירועים שאינם בשליטתה.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>14. תחולת דין ושיפוט</strong><br/>הסכם זה וכל הנובע ממנו יפורשו ויפורטו לפי דיני מדינת ישראל בלבד. סמכות השיפוט הבלעדית תהא נתונה לבית המשפט המוסמך במחוז תל אביב-מרכז.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>15. סודיות ואי־גילוי</strong><br/>הצדדים מתחייבים לשמור בסודיות כל מידע עסקי, טכני או מסחרי שיתגלה להם.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>16. תקשורת בין הצדדים</strong><br/>כל הודעה תימסר בכתב, באמצעות דוא"ל, דואר רשום, וואטסאפ או כל אמצעי תקשורת אחר שהוסכם.</div>
-        <div style={{ marginBottom: '12px' }}><strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>17. שונות</strong><br/>א. כותרות הסעיפים נועדו לנוחות בלבד.<br/>ב. כל שינוי או תוספת ייעשו באישור שני הצדדים.</div>
+        {visibleClauses.map((clause, idx) => (
+          <div key={clause.id} style={{ marginBottom: '12px' }}>
+            <strong style={{ display: 'inline-block', marginBottom: '3px', fontSize: '14px' }}>{idx + 1}. {clause.title}</strong><br/>
+            {clause.body}
+          </div>
+        ))}
       </div>
 
       {/* Order Details */}
       <div style={{ marginTop: '25px', background: 'rgba(255,255,255,0.6)', padding: '15px', border: '1px solid #ddd', fontSize: '13.5px' }}>
-        <strong style={{ fontSize: '14px' }}>18. פירוט הזמנה</strong>
+        <strong style={{ fontSize: '14px' }}>{orderDetailsSectionNum}. פירוט הזמנה</strong>
         <ul style={{ margin: '10px 0', paddingRight: '20px' }}>
             {quote?.items?.map((item: any, idx: number) => {
               const effectivePrice = getItemEffectivePrice(item);
@@ -710,7 +726,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
       {/* Mockups */}
       {quote?.items?.some((item: any) => settings?.models?.[item.model]?.blueprintUrl || settings?.models?.[item.model]?.itemImgUrl) && (
         <div style={{ marginTop: '30px', fontSize: '13.5px', pageBreakInside: 'avoid' }}>
-          <strong style={{ fontSize: '14px' }}>19. הדמיות מאושרות</strong><br/>
+          <strong style={{ fontSize: '14px' }}>{mockupsSectionNum}. הדמיות מאושרות</strong><br/>
           להלן סרטוטים ותמונות הדמיה עבור הפריטים שהוזמנו:
           
           {quote?.items?.map((item: any, idx: number) => {
@@ -2872,7 +2888,10 @@ export default function App() {
     // recompute finalPrice when listPrice or discount changes
     if (field === 'listPrice' || field === 'discount') {
       const lp = field === 'listPrice' ? Number(value) : Number(item.listPrice || 0);
-      const disc = field === 'discount' ? Number(value) : Number(item.discount || 0);
+      // ההנחה לעולם לא תעלה על מחיר המחירון (גם אם המחירון ירד אחרי שההנחה כבר הוזנה) -
+      // אחרת "סה"כ הנחות" בהצעה לא יתאים למחיר הסופי בפועל.
+      const disc = Math.max(0, Math.min(field === 'discount' ? Number(value) : Number(item.discount || 0), lp));
+      item.discount = disc;
       item.finalPrice = Math.max(0, lp - disc);
       item.price = item.finalPrice; // keep price in sync for backward compat
     }
@@ -6760,7 +6779,7 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-2 mb-2">
                         <div>
                           <label className="block text-xs font-bold text-red-600 mb-1">הנחה (₪)</label>
-                          <input type="number" min="0" className="w-full border-red-200 rounded p-1.5 text-sm bg-red-50 text-red-700 font-bold" value={item.discount || 0} onChange={e => updateQuoteItem(index, 'discount', Number(e.target.value))} placeholder="0" />
+                          <input type="number" min="0" max={item.listPrice ?? item.price ?? 0} className="w-full border-red-200 rounded p-1.5 text-sm bg-red-50 text-red-700 font-bold" value={item.discount || 0} onChange={e => updateQuoteItem(index, 'discount', Number(e.target.value))} placeholder="0" />
                         </div>
                         <div>
                           <label className="block text-xs font-bold text-green-700 mb-1">מחיר סופי (₪)</label>
