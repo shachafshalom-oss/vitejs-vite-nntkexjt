@@ -54,6 +54,45 @@ const getProductSize = (pr: any): string => {
 };
 
 // =========================================================================
+// סטטוסים של פרויקט קוסטום
+// -------------------------------------------------------------------------
+// 'deposit_paid' ו-'completed' הם סטטוסי "טריגר": מעבר אליהם פותח חלון אישור
+// שממנו נשלחת דרישת תשלום ל-Morning. לעולם אין לכתוב אותם ישירות ל-Firestore
+// מחוץ ל-executeProjectMorningSend — אחרת ייווצר פרויקט שמסומן כשולם בלי מסמך.
+// =========================================================================
+const PROJECT_STATUS_ORDER = ['preparation', 'submitted', 'deposit_paid', 'completed'];
+const PROJECT_STATUS_LABELS: Record<string, string> = {
+  preparation: 'הכנה',
+  submitted: 'הוגש',
+  deposit_paid: 'מקדמה שולמה',
+  completed: 'הושלם',
+  approved: 'אושר (סטטוס ישן)', // פרויקטים שנוצרו לפני מודל המקדמה/יתרה
+};
+const PROJECT_STATUS_COLORS: Record<string, string> = {
+  preparation: 'bg-blue-100 text-blue-700 border-blue-300',
+  submitted: 'bg-amber-100 text-amber-700 border-amber-300',
+  deposit_paid: 'bg-indigo-100 text-indigo-800 border-indigo-300',
+  completed: 'bg-green-100 text-green-800 border-green-300',
+  approved: 'bg-slate-100 text-slate-600 border-slate-300',
+};
+const PROJECT_STATUS_BAR: Record<string, string> = {
+  preparation: 'bg-purple-400',
+  submitted: 'bg-amber-400',
+  deposit_paid: 'bg-indigo-400',
+  completed: 'bg-green-400',
+  approved: 'bg-slate-400',
+};
+// סטטוסים שמפעילים שידור ל-Morning ולכן חסומים לעריכה ישירה בטופס
+const PROJECT_PAYMENT_STATUSES = ['deposit_paid', 'completed'];
+
+// חישוב סכום המקדמה: לפי אחוז משווי המוצרים, או סכום קבוע בשקלים
+const calcDepositAmount = (type: string, value: number, productsTotal: number): number => {
+  const v = Number(value) || 0;
+  if (type === 'fixed') return Math.round(v);
+  return Math.round(productsTotal * (v / 100));
+};
+
+// =========================================================================
 // PDF וקטורי אמיתי (לא צילום מסך) עם עברית תקינה — לפרויקטים קוסטום
 // -------------------------------------------------------------------------
 // ל-jsPDF יש מנוע bidi מובנה, אבל הוא שובר טקסט שמערבב עברית עם מספרים
@@ -979,6 +1018,20 @@ export default function App() {
   const [inlineProductEdits, setInlineProductEdits] = useState<Record<string, any>>({}); // projId -> products[]
   const [inlineSalePrices, setInlineSalePrices] = useState<Record<string, Record<string, number>>>({}); // projId -> {idx: price}
   const [expandedInfoRows, setExpandedInfoRows] = useState<Record<string, boolean>>({}); // "projId:index" -> is the "Product Information" panel open
+
+  // חלון אישור שידור דרישת תשלום ל-Morning (מקדמה / יתרה) עבור פרויקט קוסטום.
+  // השורות והסכומים "מוקפאים" ברגע הפתיחה כדי שמה שמוצג יהיה בדיוק מה שנשלח.
+  const [projectPaymentModal, setProjectPaymentModal] = useState<{
+    proj: any;
+    kind: 'deposit' | 'balance';
+    lines: { description: string; qty: number; unitPrice: number; lineTotal: number }[];
+    productsTotal: number;
+    deliveryCost: number;
+    depositType: 'percent' | 'fixed';
+    depositValue: number;
+    sending: boolean;
+    result: { ok: boolean; url?: string; error?: string | null; isTest?: boolean } | null;
+  } | null>(null);
 
   // --- Custom Projects: autosave (no manual "save" click needed) ---
   const [autosaveStatus, setAutosaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({}); // debounce key -> status
@@ -2868,28 +2921,25 @@ export default function App() {
   // --- Morning (חשבונית ירוקה) Integration ---
   // מפיק מסמך "חשבון עסקה" (type 300) — זהו מסמך "דרישת תשלום" הלא-מחייב, המקביל למה ש-Finbot הפיק.
   // מקור המיפוי: תיעוד API הרשמי של Morning (Apiary). type=300 אושר מול שחף כמסמך הנכון (לא חשבונית מס).
-  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
+  // ליבה משותפת: מקבלת שורות income מוכנות ושולחת אותן ל-Morning.
+  // גם הצעות המחיר (sendToMorning) וגם פרויקטי הקוסטום עוברים דרך הפונקציה הזו,
+  // כדי שפרטי הלקוח, סוג המסמך והטיפול בשגיאות יהיו זהים בשני המסלולים.
+  const sendMorningDocument = async (
+    income: { description: string; quantity: number; price: number }[],
+    customer: any
+  ): Promise<{url: string|null, error: string|null}> => {
     const keyId = settings?.morningApiKeyId;
     const keySecret = settings?.morningApiKeySecret;
     if (!keyId || !keySecret) return { url: null, error: 'אין מפתחות API של Morning מוגדרים בהגדרות.' };
+    if (!income || income.length === 0) return { url: null, error: 'אין שורות לשידור — המסמך ריק.' };
     const today = new Date();
     const dd = String(today.getDate()).padStart(2,'0');
     const mm = String(today.getMonth()+1).padStart(2,'0');
     const yyyy = today.getFullYear();
     const dateStr = `${yyyy}-${mm}-${dd}`; // Morning מצפה לתאריך בפורמט ISO (YYYY-MM-DD), לא DD/MM/YYYY כמו ב-Finbot
 
-    // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט
-    const income = quoteItems.map((item: any) => ({
-      description: `עמדת נירוסטה דגם ${item.model}`,
-      quantity: Number(item.qty),
-      price: Number(item.price ?? 0),
-    }));
-    if (Number(shippingCost) > 0) {
-      income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
-    }
-
-    const taxRaw = (customer.hp || '').toString().replace(/\D/g, '').slice(0, 9);
-    const emails = customer.email ? [customer.email.slice(0, 50)] : [];
+    const taxRaw = (customer?.hp || '').toString().replace(/\D/g, '').slice(0, 9);
+    const emails = customer?.email ? [String(customer.email).slice(0, 50)] : [];
 
     const body: any = {
       type: 300, // חשבון עסקה (דרישת תשלום) — אושר מול שחף ב-20.7.2026
@@ -2899,9 +2949,9 @@ export default function App() {
       vatType: 0, // ברירת מחדל: המערכת מחשבת מע"מ אוטומטית לפי סוג העסק הרשום ב-Morning
       rounding: true,
       client: {
-        name: customer.companyName || customer.businessName || customer.contactName || '',
-        phone: (customer.phone || '').slice(0, 20),
-        address: (customer.address || '').slice(0, 100),
+        name: customer?.companyName || customer?.businessName || customer?.contactName || '',
+        phone: (customer?.phone || '').slice(0, 20),
+        address: (customer?.address || '').slice(0, 100),
         add: false, // לא יוצר לקוח קבוע ברשימת הלקוחות של Morning
         ...(taxRaw ? { taxId: taxRaw } : {}),
         ...(emails.length ? { emails } : {}),
@@ -2929,6 +2979,216 @@ export default function App() {
       return { url: null, error: `תגובה מ-Morning: ${JSON.stringify(data)}` };
     } catch (err: any) {
       return { url: null, error: `שגיאת רשת: ${err?.message || 'לא ניתן להגיע לשרת Morning'}` };
+    }
+  };
+
+  // מסלול הצעות המחיר — בונה את שורות ה-income בדיוק כפי שהיה קודם, ומעביר לליבה.
+  // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט.
+  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
+    const income = quoteItems.map((item: any) => ({
+      description: `עמדת נירוסטה דגם ${item.model}`,
+      quantity: Number(item.qty),
+      price: Number(item.price ?? 0),
+    }));
+    if (Number(shippingCost) > 0) {
+      income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
+    }
+    return sendMorningDocument(income, customer);
+  };
+
+  // =========================================================================
+  // פרויקטים קוסטום — שידור דרישות תשלום ל-Morning (מקדמה + יתרה)
+  // =========================================================================
+
+  // מקור אמת יחיד למחירי המכירה של פרויקט קוסטום.
+  // סדר עדיפויות זהה לזה של ייצוא ה-PDF וה-Excel, כדי שהסכום בדרישת התשלום
+  // יהיה בדיוק הסכום שהלקוח ראה בהצעה: 1) override שמור ב-Firestore
+  // 2) override שנערך במסך ועדיין לא נשמר 3) חישוב לפי המרווח.
+  const buildProjectSaleLines = (proj: any, paramsOverride?: any, productsOverride?: any[]) => {
+    const params = paramsOverride || proj.params || {};
+    const products = productsOverride || inlineProductEdits[proj.id] || proj.products || [];
+    const totals = calcProjectTotals({ ...proj, products, params });
+    const rate = Number(params.exchangeRate) || 3;
+    const customsPct = Number(params.customsPercent ?? 12) / 100;
+    const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
+
+    const lines = products.map((pr: any, i: number) => {
+      let unitPrice: number;
+      if (proj.salePriceOverrides?.[`${i}`] !== undefined) {
+        unitPrice = Number(proj.salePriceOverrides[`${i}`]);
+      } else if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
+        unitPrice = Number(inlineSalePrices[proj.id][`${i}`]);
+      } else {
+        const factoryILS = Number(pr.unitPriceUSD) * rate;
+        const shipILS = totals.shippingPerCBM * Number(pr.cbm);
+        const landedUnit = factoryILS + shipILS + (factoryILS * customsPct) + totals.overheadPerUnit;
+        unitPrice = Math.round(landedUnit * marginMult);
+      }
+      // תיאור לשורת המסמך: שם עברי אם קיים, אחרת אנגלי, ובתוספת מידה אם יש
+      const he = String(pr.itemHe || '').trim();
+      const en = String(pr.itemEn || '').trim();
+      const baseName = he || en || 'פריט';
+      const size = getProductSize(pr);
+      const description = (size ? `${baseName} (${size})` : baseName).slice(0, 90);
+      const qty = Number(pr.qty) || 0;
+      return { description, qty, unitPrice: Math.round(unitPrice), lineTotal: Math.round(unitPrice) * qty };
+    });
+
+    const productsTotal = lines.reduce((s: number, l: any) => s + l.lineTotal, 0);
+    return { lines, productsTotal, deliveryCost: Math.round(Number(proj.deliveryCost || 0)) };
+  };
+
+  // נקודת הכניסה היחידה לשינוי סטטוס פרויקט. סטטוסי תשלום לא נכתבים כאן —
+  // הם רק פותחים את חלון האישור, והכתיבה מתבצעת ב-executeProjectMorningSend.
+  const handleProjectStatusChange = (proj: any, newStatus: string, paramsOverride?: any) => {
+    const current = proj.status || 'preparation';
+    if (newStatus === current) return;
+
+    if (PROJECT_PAYMENT_STATUSES.includes(newStatus)) {
+      if (!settings?.morningApiKeyId || !settings?.morningApiKeySecret) {
+        alert('אין מפתחות API של Morning בהגדרות. יש להגדיר אותם לפני שידור דרישת תשלום.');
+        return;
+      }
+      if (!proj.customerId) {
+        alert('הפרויקט אינו מקושר ללקוח ב-CRM.\nלא ניתן להפיק דרישת תשלום בלי פרטי לקוח (טלפון, כתובת, ח.פ).\nיש לערוך את הפרויקט ולבחור לקוח בשדה "קישור ללקוח ב-CRM".');
+        return;
+      }
+      const linked = customers.find((c: any) => c.id === proj.customerId);
+      if (!linked) {
+        alert('הלקוח המקושר לפרויקט לא נמצא ברשימת הלקוחות (ייתכן שנמחק). יש לקשר לקוח קיים לפני שידור.');
+        return;
+      }
+      if (newStatus === 'completed' && !proj.depositMorningInvoiceUrl) {
+        alert('לא נשלחה עדיין דרישת מקדמה לפרויקט הזה.\nיש לעבור קודם לסטטוס "מקדמה שולמה" ולשדר את המקדמה.');
+        return;
+      }
+      const built = buildProjectSaleLines(proj, paramsOverride);
+      setProjectPaymentModal({
+        proj,
+        kind: newStatus === 'deposit_paid' ? 'deposit' : 'balance',
+        lines: built.lines,
+        productsTotal: built.productsTotal,
+        deliveryCost: built.deliveryCost,
+        depositType: proj.depositType || 'percent',
+        depositValue: proj.depositValue ?? 30,
+        sending: false,
+        result: null,
+      });
+      return;
+    }
+
+    // חזרה אחורה מסטטוס תשלום — מסמך ה-Morning שכבר הופק אינו מתבטל אוטומטית
+    if (PROJECT_PAYMENT_STATUSES.includes(current)) {
+      if (!window.confirm(
+        `שינוי הסטטוס מ"${PROJECT_STATUS_LABELS[current]}" ל"${PROJECT_STATUS_LABELS[newStatus] || newStatus}" משנה רק את הסימון ב-CRM.\n` +
+        'דרישות התשלום שכבר הופקו ב-Morning נשארות שם ואינן מבוטלות — יש לבטלן ידנית ב-Morning במידת הצורך.\n\nלהמשיך?'
+      )) return;
+    }
+
+    updateProjectField(proj.id, { status: newStatus }).catch(() => alert('שגיאה בעדכון סטטוס הפרויקט.'));
+  };
+
+  // מבצע בפועל את השידור ל-Morning עבור פרויקט קוסטום.
+  // isTest=true: מוסיף [TEST] לשם הלקוח, ולא נוגע בסטטוס הפרויקט, בסטטוס הלקוח או בשדות התשלום.
+  const executeProjectMorningSend = async (isTest: boolean) => {
+    if (!projectPaymentModal || projectPaymentModal.sending) return;
+    const { proj, kind, productsTotal, deliveryCost, depositType, depositValue } = projectPaymentModal;
+
+    const baseCustomer = customers.find((c: any) => c.id === proj.customerId);
+    if (!baseCustomer) { alert('לא נמצאה רשומת הלקוח המקושרת לפרויקט.'); return; }
+
+    // בניית שורות המסמך
+    let income: { description: string; quantity: number; price: number }[] = [];
+    let docTotal = 0;
+    let depositAmount = 0;
+
+    if (kind === 'deposit') {
+      depositAmount = calcDepositAmount(depositType, depositValue, productsTotal);
+      if (!(depositAmount > 0)) { alert('סכום המקדמה חייב להיות גדול מאפס.'); return; }
+      if (depositAmount > productsTotal) { alert(`סכום המקדמה (₪${depositAmount.toLocaleString()}) גבוה משווי המוצרים (₪${productsTotal.toLocaleString()}).`); return; }
+      income = [{ description: `מקדמה על חשבון פרויקט: ${String(proj.name || '').slice(0, 60)}`, quantity: 1, price: depositAmount }];
+      docTotal = depositAmount;
+    } else {
+      depositAmount = Math.round(Number(proj.depositAmount || 0));
+      const remaining = productsTotal - depositAmount;
+      if (remaining < 0) { alert('המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים לפני שידור היתרה.'); return; }
+      if (remaining > 0) {
+        income.push({ description: `יתרה לתשלום — פרויקט: ${String(proj.name || '').slice(0, 60)}`, quantity: 1, price: remaining });
+      }
+      if (deliveryCost > 0) {
+        income.push({ description: 'הובלה והתקנה', quantity: 1, price: deliveryCost });
+      }
+      docTotal = remaining + deliveryCost;
+      if (!(docTotal > 0)) { alert('סכום היתרה לתשלום הוא אפס — אין מה לשדר.'); return; }
+    }
+
+    const customerForDoc = isTest
+      ? { ...baseCustomer, companyName: `[TEST] ${baseCustomer.companyName || baseCustomer.businessName || baseCustomer.contactName || ''}`.trim() }
+      : baseCustomer;
+
+    setProjectPaymentModal((prev: any) => prev ? { ...prev, sending: true, result: null } : prev);
+
+    try {
+      const { url, error } = await sendMorningDocument(income, customerForDoc);
+      const nowIso = new Date().toISOString();
+
+      if (isTest) {
+        // בדיקה בלבד: לא נוגעים בסטטוס הפרויקט, בלקוח, או בשדות המקדמה/יתרה
+        try {
+          await updateProjectField(proj.id, url
+            ? { testMorningInvoiceUrl: url, testMorningSentAt: nowIso, testMorningError: null }
+            : { testMorningSentAt: nowIso, testMorningError: error });
+        } catch { /* שמירת תיעוד הבדיקה אינה קריטית — לא חוסמת את הצגת התוצאה */ }
+        setProjectPaymentModal((prev: any) => prev ? { ...prev, sending: false, result: url ? { ok: true, url, isTest: true } : { ok: false, error, isTest: true } } : prev);
+        return;
+      }
+
+      if (!url) {
+        // שידור נכשל — הסטטוס לא משתנה, השגיאה נשמרת לצפייה
+        try {
+          await updateProjectField(proj.id, kind === 'deposit'
+            ? { depositMorningSentAt: nowIso, depositMorningError: error }
+            : { balanceMorningSentAt: nowIso, balanceMorningError: error });
+        } catch { /* ignore */ }
+        setProjectPaymentModal((prev: any) => prev ? { ...prev, sending: false, result: { ok: false, error } } : prev);
+        return;
+      }
+
+      if (kind === 'deposit') {
+        await updateProjectField(proj.id, {
+          status: 'deposit_paid',
+          depositType, depositValue: Number(depositValue) || 0,
+          depositAmount,
+          depositProductsTotal: productsTotal,
+          depositMorningInvoiceUrl: url,
+          depositMorningSentAt: nowIso,
+          depositMorningError: null,
+        });
+        // הלקוח עובר מליד ללקוח פעיל — אישור + הזמנת עבודה + תשלום מקדמה
+        if (baseCustomer.status !== 'active') {
+          try {
+            await updateDoc(doc(db, 'crm_customers', proj.customerId), {
+              status: 'active',
+              previousStatusBeforeActive: baseCustomer.status || 'lead',
+              updatedAt: nowIso,
+            });
+          } catch { /* עדכון סטטוס הלקוח אינו חוסם — המסמך כבר הופק בהצלחה */ }
+        }
+      } else {
+        await updateProjectField(proj.id, {
+          status: 'completed',
+          balanceAmount: docTotal,
+          balanceDeliveryCost: deliveryCost,
+          balanceMorningInvoiceUrl: url,
+          balanceMorningSentAt: nowIso,
+          balanceMorningError: null,
+        });
+      }
+
+      setProjectPaymentModal((prev: any) => prev ? { ...prev, sending: false, result: { ok: true, url } } : prev);
+    } catch (err: any) {
+      const errMsg = err?.message || 'שגיאה לא צפויה בשידור.';
+      setProjectPaymentModal((prev: any) => prev ? { ...prev, sending: false, result: { ok: false, error: errMsg } } : prev);
     }
   };
 
@@ -4701,9 +4961,11 @@ export default function App() {
             <div className="flex gap-2 mb-5 flex-wrap">
               {[
                 { val: 'all', label: `הכל (${customProjects.length})` },
-                { val: 'preparation', label: `הכנה (${customProjects.filter(p=>p.status==='preparation').length})` },
-                { val: 'submitted', label: `הוגש (${customProjects.filter(p=>p.status==='submitted').length})` },
-                { val: 'approved', label: `אושר (${customProjects.filter(p=>p.status==='approved').length})` },
+                ...PROJECT_STATUS_ORDER.map(s => ({ val: s, label: `${PROJECT_STATUS_LABELS[s]} (${customProjects.filter(p => (p.status || 'preparation') === s).length})` })),
+                // מוצג רק אם קיימים פרויקטים ישנים עם הסטטוס שהוצא משימוש
+                ...(customProjects.some(p => p.status === 'approved')
+                  ? [{ val: 'approved', label: `${PROJECT_STATUS_LABELS.approved} (${customProjects.filter(p => p.status === 'approved').length})` }]
+                  : []),
               ].map(f => (
                 <button key={f.val} onClick={() => setCustomProjectStatusFilter(f.val)}
                   className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${customProjectStatusFilter === f.val ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'}`}>
@@ -4721,15 +4983,13 @@ export default function App() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {customProjects
-                  .filter(p => customProjectStatusFilter === 'all' || p.status === customProjectStatusFilter)
+                  .filter(p => customProjectStatusFilter === 'all' || (p.status || 'preparation') === customProjectStatusFilter)
                   .map((proj: any) => {
-                  const statusColors: any = { preparation: 'bg-blue-100 text-blue-700', submitted: 'bg-amber-100 text-amber-700', approved: 'bg-green-100 text-green-700' };
-                  const statusLabels: any = { preparation: 'הכנה', submitted: 'הוגש', approved: 'אושר' };
-                  const statusOrder = ['preparation', 'submitted', 'approved'];
+                  const projStatus = proj.status || 'preparation';
                   const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
                   return (
                     <div key={proj.id} className="bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => { setCustomProjectLiveParams(null); setCustomProjectView(proj); if (proj.salePriceOverrides) setInlineSalePrices(prev => ({...prev, [proj.id]: proj.salePriceOverrides})); }}>
-                      <div className={`h-1.5 rounded-t-xl ${proj.status === 'approved' ? 'bg-green-400' : proj.status === 'submitted' ? 'bg-amber-400' : 'bg-purple-400'}`}/>
+                      <div className={`h-1.5 rounded-t-xl ${PROJECT_STATUS_BAR[projStatus] || 'bg-purple-400'}`}/>
                       <div className="p-5">
                         <div className="flex justify-between items-start mb-3">
                           <div className="flex-1 min-w-0 ml-2">
@@ -4737,20 +4997,39 @@ export default function App() {
                             {proj.clientName && <p className="text-xs text-slate-500 mt-0.5">{proj.clientName}</p>}
                             {linkedCustomer && <p className="text-[10px] text-[#7B1315] mt-0.5 flex items-center gap-1"><User className="w-2.5 h-2.5"/>{linkedCustomer.businessName || linkedCustomer.contactName}</p>}
                           </div>
-                          {/* Clickable status badge */}
-                          <button
-                            className={`text-[10px] px-2.5 py-1 rounded-full font-bold border transition-colors shrink-0 ${statusColors[proj.status] || 'bg-slate-100 text-slate-600'}`}
-                            onClick={e => {
-                              e.stopPropagation();
-                              const idx = statusOrder.indexOf(proj.status);
-                              const next = statusOrder[(idx + 1) % statusOrder.length];
-                              updateProjectField(proj.id, { status: next }).catch(() => {});
-                            }}
-                            title="לחץ לשינוי סטטוס"
+                          {/* בחירת סטטוס — מעבר ל"מקדמה שולמה"/"הושלם" פותח חלון אישור שידור ל-Morning */}
+                          <select
+                            aria-label={`סטטוס הפרויקט ${proj.name}`}
+                            className={`text-[10px] px-2 py-1 rounded-full font-bold border shadow-sm cursor-pointer shrink-0 outline-none ${PROJECT_STATUS_COLORS[projStatus] || 'bg-slate-100 text-slate-600 border-slate-300'}`}
+                            value={projStatus}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => { e.stopPropagation(); handleProjectStatusChange(proj, e.target.value); }}
+                            title="שינוי סטטוס פרויקט"
                           >
-                            {statusLabels[proj.status] || proj.status} ↻
-                          </button>
+                            {!PROJECT_STATUS_ORDER.includes(projStatus) && (
+                              <option value={projStatus}>{PROJECT_STATUS_LABELS[projStatus] || projStatus}</option>
+                            )}
+                            {PROJECT_STATUS_ORDER.map(s => (
+                              <option key={s} value={s}>{PROJECT_STATUS_LABELS[s]}</option>
+                            ))}
+                          </select>
                         </div>
+                        {(proj.depositMorningInvoiceUrl || proj.balanceMorningInvoiceUrl) && (
+                          <div className="flex gap-1.5 flex-wrap mb-2">
+                            {proj.depositMorningInvoiceUrl && (
+                              <a href={proj.depositMorningInvoiceUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                                className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-full font-medium hover:bg-indigo-100 flex items-center gap-1">
+                                <ExternalLink className="w-2.5 h-2.5"/> מקדמה ₪{Math.round(proj.depositAmount || 0).toLocaleString()}
+                              </a>
+                            )}
+                            {proj.balanceMorningInvoiceUrl && (
+                              <a href={proj.balanceMorningInvoiceUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                                className="text-[10px] bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded-full font-medium hover:bg-green-100 flex items-center gap-1">
+                                <ExternalLink className="w-2.5 h-2.5"/> יתרה ₪{Math.round(proj.balanceAmount || 0).toLocaleString()}
+                              </a>
+                            )}
+                          </div>
+                        )}
                         <div className="grid grid-cols-3 gap-2 text-sm mt-3">
                           <div className="bg-slate-50 rounded-lg p-2.5 text-center">
                             <p className="text-[10px] text-slate-500 mb-0.5">מוצרים</p>
@@ -4818,7 +5097,23 @@ export default function App() {
                             {proj.notes && <span className="text-[11px] text-purple-300 italic">"{proj.notes}"</span>}
                           </div>
                         </div>
-                        <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="text-white/60 hover:text-white" aria-label="סגור חלון פרויקט"><X className="w-6 h-6"/></button>
+                        <div className="flex items-center gap-3 shrink-0">
+                          {/* סטטוס — מעבר ל"מקדמה שולמה"/"הושלם" פותח חלון אישור שידור ל-Morning */}
+                          <select
+                            aria-label="סטטוס הפרויקט"
+                            className={`text-xs font-bold rounded-lg border px-2 py-1.5 shadow-sm cursor-pointer outline-none ${PROJECT_STATUS_COLORS[proj.status || 'preparation'] || 'bg-slate-100 text-slate-600 border-slate-300'}`}
+                            value={proj.status || 'preparation'}
+                            onChange={e => handleProjectStatusChange(proj, e.target.value, liveParams)}
+                          >
+                            {!PROJECT_STATUS_ORDER.includes(proj.status || 'preparation') && (
+                              <option value={proj.status}>{PROJECT_STATUS_LABELS[proj.status] || proj.status}</option>
+                            )}
+                            {PROJECT_STATUS_ORDER.map(s => (
+                              <option key={s} value={s}>{PROJECT_STATUS_LABELS[s]}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => { setCustomProjectView(null); setCustomProjectLiveParams(null); }} className="text-white/60 hover:text-white" aria-label="סגור חלון פרויקט"><X className="w-6 h-6"/></button>
+                        </div>
                       </div>
                       {/* KPI bar */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
@@ -4837,6 +5132,57 @@ export default function App() {
                     </div>
 
                     <div className="p-6 space-y-6">
+                      {/* MORNING PAYMENTS STATUS */}
+                      {(proj.depositMorningInvoiceUrl || proj.balanceMorningInvoiceUrl || proj.depositMorningError || proj.balanceMorningError || proj.testMorningInvoiceUrl) && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                          <h3 className="text-sm font-bold text-slate-600 flex items-center gap-2 mb-3"><Receipt className="w-4 h-4 text-indigo-500"/> דרישות תשלום ב-Morning</h3>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="bg-white border border-indigo-200 rounded-lg p-3">
+                              <p className="text-[11px] text-slate-500 mb-1">מקדמה</p>
+                              {proj.depositMorningInvoiceUrl ? (
+                                <>
+                                  <p className="font-black text-indigo-700 text-lg">₪{Math.round(proj.depositAmount || 0).toLocaleString()}</p>
+                                  <p className="text-[10px] text-slate-400 mb-1.5">
+                                    {proj.depositType === 'fixed' ? 'סכום קבוע' : `${proj.depositValue}% משווי המוצרים`}
+                                    {proj.depositMorningSentAt ? ` · ${new Date(proj.depositMorningSentAt).toLocaleDateString('he-IL')}` : ''}
+                                  </p>
+                                  <a href={proj.depositMorningInvoiceUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"><ExternalLink className="w-3 h-3"/> פתח מסמך</a>
+                                </>
+                              ) : (
+                                <p className="text-xs text-slate-400">טרם נשלחה</p>
+                              )}
+                              {proj.depositMorningError && (
+                                <p className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded p-1.5 mt-2 break-words">שגיאה אחרונה: {proj.depositMorningError}</p>
+                              )}
+                            </div>
+                            <div className="bg-white border border-green-200 rounded-lg p-3">
+                              <p className="text-[11px] text-slate-500 mb-1">יתרה + הובלה והתקנה</p>
+                              {proj.balanceMorningInvoiceUrl ? (
+                                <>
+                                  <p className="font-black text-green-700 text-lg">₪{Math.round(proj.balanceAmount || 0).toLocaleString()}</p>
+                                  <p className="text-[10px] text-slate-400 mb-1.5">
+                                    כולל הובלה והתקנה ₪{Math.round(proj.balanceDeliveryCost || 0).toLocaleString()}
+                                    {proj.balanceMorningSentAt ? ` · ${new Date(proj.balanceMorningSentAt).toLocaleDateString('he-IL')}` : ''}
+                                  </p>
+                                  <a href={proj.balanceMorningInvoiceUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-green-600 hover:text-green-800 font-medium flex items-center gap-1"><ExternalLink className="w-3 h-3"/> פתח מסמך</a>
+                                </>
+                              ) : (
+                                <p className="text-xs text-slate-400">טרם נשלחה</p>
+                              )}
+                              {proj.balanceMorningError && (
+                                <p className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded p-1.5 mt-2 break-words">שגיאה אחרונה: {proj.balanceMorningError}</p>
+                              )}
+                            </div>
+                          </div>
+                          {proj.testMorningInvoiceUrl && (
+                            <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
+                              בדיקה אחרונה{proj.testMorningSentAt ? ` (${new Date(proj.testMorningSentAt).toLocaleDateString('he-IL')})` : ''}:
+                              <a href={proj.testMorningInvoiceUrl} target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-slate-700 underline">פתח מסמך בדיקה</a>
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* INLINE PARAMS EDITOR */}
                       <div>
                         <div className="flex items-center justify-between mb-3">
@@ -7189,6 +7535,229 @@ export default function App() {
         );
       })()}
 
+      {/* PROJECT PAYMENT → MORNING MODAL */}
+      {projectPaymentModal && (() => {
+        const { proj, kind, lines, productsTotal, deliveryCost, depositType, depositValue, sending, result } = projectPaymentModal;
+        const cust = customers.find((c: any) => c.id === proj.customerId) || {};
+        const isDeposit = kind === 'deposit';
+        const depositAmount = isDeposit ? calcDepositAmount(depositType, depositValue, productsTotal) : Math.round(Number(proj.depositAmount || 0));
+        const remaining = productsTotal - depositAmount;
+        const docTotal = isDeposit ? depositAmount : remaining + deliveryCost;
+        const invalid = isDeposit
+          ? (!(depositAmount > 0) || depositAmount > productsTotal)
+          : (remaining < 0 || !(docTotal > 0));
+        const close = () => setProjectPaymentModal(null);
+        return (
+          <div className="fixed inset-0 z-[130] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4">
+              <div className={`p-5 border-b flex justify-between items-center rounded-t-2xl ${isDeposit ? 'bg-indigo-600' : 'bg-green-600'}`}>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Receipt className="w-5 h-5"/> {isDeposit ? 'שידור דרישת מקדמה ל-Morning' : 'שידור דרישת יתרה ל-Morning'}
+                </h3>
+                <button onClick={close} className="text-white/70 hover:text-white" aria-label="סגור"><X className="w-5 h-5"/></button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                {/* פרטי הלקוח שיישלחו למסמך */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <p className="text-xs font-bold text-slate-500 mb-2">פרטי הלקוח שיישלחו למסמך</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-1 gap-x-4 text-sm">
+                    <p className="text-slate-700"><span className="text-slate-400">שם: </span><span className="font-bold">{cust.companyName || cust.businessName || cust.contactName || '—'}</span></p>
+                    <p className="text-slate-700"><span className="text-slate-400">טלפון: </span>{cust.phone || '—'}</p>
+                    <p className="text-slate-700"><span className="text-slate-400">ח.פ / ע.מ: </span>{cust.hp || '—'}</p>
+                    <p className="text-slate-700 truncate"><span className="text-slate-400">אימייל: </span>{cust.email || '—'}</p>
+                    <p className="text-slate-700 sm:col-span-2"><span className="text-slate-400">כתובת: </span>{cust.address || '—'}</p>
+                  </div>
+                  {(!cust.hp || !cust.address) && (
+                    <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mt-2 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px"/>
+                      <span>שדות חסרים בכרטיס הלקוח{!cust.hp ? ' (ח.פ)' : ''}{!cust.hp && !cust.address ? ' ו' : ''}{!cust.address ? '(כתובת)' : ''} — המסמך ייווצר בלעדיהם. ניתן להשלים בכרטיס הלקוח ולשדר מחדש.</span>
+                    </p>
+                  )}
+                </div>
+
+                {/* מקדמה: בחירת אחוז או סכום */}
+                {isDeposit && (
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+                    <p className="text-xs font-bold text-indigo-700 mb-3">אופן חישוב המקדמה</p>
+                    <div className="flex gap-2 mb-3">
+                      <button type="button" onClick={() => setProjectPaymentModal((p: any) => p ? { ...p, depositType: 'percent', result: null } : p)}
+                        className={`flex-1 py-2 rounded-lg text-sm font-bold border transition-colors ${depositType === 'percent' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                        אחוז משווי המוצרים
+                      </button>
+                      <button type="button" onClick={() => setProjectPaymentModal((p: any) => p ? { ...p, depositType: 'fixed', result: null } : p)}
+                        className={`flex-1 py-2 rounded-lg text-sm font-bold border transition-colors ${depositType === 'fixed' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}>
+                        סכום קבוע (₪)
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm text-slate-600 whitespace-nowrap" htmlFor="deposit-value-input">
+                        {depositType === 'percent' ? 'אחוז מקדמה:' : 'סכום מקדמה:'}
+                      </label>
+                      <div className="relative flex-1">
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">{depositType === 'percent' ? '%' : '₪'}</span>
+                        <input
+                          id="deposit-value-input"
+                          type="number" min="0" step={depositType === 'percent' ? '5' : '100'}
+                          max={depositType === 'percent' ? 100 : undefined}
+                          className="w-full border border-indigo-300 rounded-lg pr-8 pl-3 py-2 text-sm font-bold text-indigo-800 bg-white outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-300"
+                          value={depositValue}
+                          onChange={e => setProjectPaymentModal((p: any) => p ? { ...p, depositValue: Number(e.target.value), result: null } : p)}
+                        />
+                      </div>
+                    </div>
+                    {depositType === 'percent' && (
+                      <div className="flex gap-1.5 mt-2">
+                        {[20, 30, 40, 50, 70].map(pct => (
+                          <button key={pct} type="button" onClick={() => setProjectPaymentModal((p: any) => p ? { ...p, depositValue: pct, result: null } : p)}
+                            className="text-[11px] px-2 py-1 rounded-md border border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-100 font-medium">{pct}%</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* תצוגה מדויקת של שורות המסמך שיישלחו */}
+                <div>
+                  <p className="text-xs font-bold text-slate-500 mb-2">שורות המסמך שיישלחו ל-Morning</p>
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 text-[11px] text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 text-right font-medium">תיאור</th>
+                          <th className="px-3 py-2 text-center font-medium">כמות</th>
+                          <th className="px-3 py-2 text-center font-medium">מחיר</th>
+                          <th className="px-3 py-2 text-center font-medium">סה"כ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {isDeposit ? (
+                          <tr>
+                            <td className="px-3 py-2 text-slate-700">מקדמה על חשבון פרויקט: {proj.name}</td>
+                            <td className="px-3 py-2 text-center text-slate-600">1</td>
+                            <td className="px-3 py-2 text-center text-slate-600">₪{depositAmount.toLocaleString()}</td>
+                            <td className="px-3 py-2 text-center font-bold text-indigo-700">₪{depositAmount.toLocaleString()}</td>
+                          </tr>
+                        ) : (
+                          <>
+                            {remaining > 0 && (
+                              <tr>
+                                <td className="px-3 py-2 text-slate-700">יתרה לתשלום — פרויקט: {proj.name}</td>
+                                <td className="px-3 py-2 text-center text-slate-600">1</td>
+                                <td className="px-3 py-2 text-center text-slate-600">₪{remaining.toLocaleString()}</td>
+                                <td className="px-3 py-2 text-center font-bold text-green-700">₪{remaining.toLocaleString()}</td>
+                              </tr>
+                            )}
+                            {deliveryCost > 0 && (
+                              <tr className="bg-blue-50/50">
+                                <td className="px-3 py-2 text-slate-700">הובלה והתקנה</td>
+                                <td className="px-3 py-2 text-center text-slate-600">1</td>
+                                <td className="px-3 py-2 text-center text-slate-600">₪{deliveryCost.toLocaleString()}</td>
+                                <td className="px-3 py-2 text-center font-bold text-blue-700">₪{deliveryCost.toLocaleString()}</td>
+                              </tr>
+                            )}
+                          </>
+                        )}
+                      </tbody>
+                      <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                        <tr>
+                          <td colSpan={3} className="px-3 py-2.5 text-xs font-bold text-slate-600">סה"כ לפני מע"מ</td>
+                          <td className="px-3 py-2.5 text-center font-black text-slate-800">₪{Math.round(docTotal).toLocaleString()}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1.5">מע"מ מחושב אוטומטית ב-Morning לפי הגדרות העסק. סוג המסמך: חשבון עסקה (דרישת תשלום).</p>
+                </div>
+
+                {/* פירוט הבסיס לחישוב */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm space-y-1">
+                  <div className="flex justify-between"><span className="text-slate-500">שווי המוצרים בפרויקט ({lines.length} שורות)</span><span className="font-bold text-slate-700">₪{productsTotal.toLocaleString()}</span></div>
+                  {isDeposit ? (
+                    <>
+                      <div className="flex justify-between"><span className="text-slate-500">מקדמה לגבייה כעת</span><span className="font-bold text-indigo-700">₪{depositAmount.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">יתרה לגבייה בהמשך</span><span className="font-bold text-slate-500">₪{Math.max(0, remaining).toLocaleString()}</span></div>
+                      <div className="flex justify-between pt-1 border-t border-slate-200"><span className="text-slate-400 text-xs">הובלה והתקנה (₪{deliveryCost.toLocaleString()}) — תיגבה בדרישת היתרה בלבד</span></div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between"><span className="text-slate-500">בניכוי מקדמה שכבר נדרשה</span><span className="font-bold text-slate-500">− ₪{depositAmount.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">הובלה והתקנה</span><span className="font-bold text-blue-700">₪{deliveryCost.toLocaleString()}</span></div>
+                    </>
+                  )}
+                </div>
+
+                {!isDeposit && deliveryCost === 0 && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex items-start gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-px"/>
+                    <span>עלות הובלה והתקנה בפרויקט היא ₪0, ולכן לא תופיע שורה נפרדת במסמך. את הסכום מגדירים בכפתור "ייצא PDF" ← "הצעת מחיר ללקוח" ← שדה "עלות הובלה והתקנה".</span>
+                  </p>
+                )}
+
+                {invalid && (
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-start gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-px"/>
+                    <span>{isDeposit
+                      ? (depositAmount > productsTotal ? 'סכום המקדמה גבוה משווי המוצרים בפרויקט.' : 'סכום המקדמה חייב להיות גדול מאפס.')
+                      : (remaining < 0 ? 'המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים.' : 'אין סכום חיובי לגבייה.')}</span>
+                  </p>
+                )}
+
+                {/* תוצאת שידור */}
+                {result && (
+                  result.ok ? (
+                    <div className={`rounded-lg p-3 border ${result.isTest ? 'bg-slate-50 border-slate-300' : 'bg-green-50 border-green-300'}`}>
+                      <p className={`text-sm font-bold flex items-center gap-1.5 ${result.isTest ? 'text-slate-700' : 'text-green-800'}`}>
+                        <CheckCircle className="w-4 h-4"/>
+                        {result.isTest ? 'בדיקה עברה בהצלחה — נוצר מסמך [TEST]. הסטטוס והלקוח לא שונו.' : 'דרישת התשלום נוצרה ב-Morning בהצלחה.'}
+                      </p>
+                      <a href={result.url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#7B1315] hover:underline font-medium flex items-center gap-1 mt-1.5"><ExternalLink className="w-3 h-3"/> פתח את המסמך ב-Morning</a>
+                    </div>
+                  ) : (
+                    <div className="bg-red-50 border border-red-300 rounded-lg p-3">
+                      <p className="text-sm font-bold text-red-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/> השידור נכשל — הסטטוס לא שונה.</p>
+                      <p className="text-[11px] text-red-700 mt-1 break-words">{result.error}</p>
+                    </div>
+                  )
+                )}
+              </div>
+
+              <div className="p-5 border-t bg-slate-50 rounded-b-2xl flex flex-wrap justify-between items-center gap-2">
+                <button type="button" onClick={close} className="px-5 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-100">
+                  {result?.ok && !result.isTest ? 'סגור' : 'ביטול'}
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={sending || invalid || Boolean(result?.ok && !result.isTest)}
+                    onClick={() => executeProjectMorningSend(true)}
+                    className="px-4 py-2.5 bg-white border border-slate-400 text-slate-700 rounded-lg font-bold text-sm hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                    title="יוצר מסמך ב-Morning עם [TEST] לפני שם הלקוח. לא משנה סטטוס, לא נוגע בלקוח."
+                  >
+                    <ShieldCheck className="w-4 h-4"/> בדיקה בלבד
+                  </button>
+                  <button
+                    type="button"
+                    disabled={sending || invalid || Boolean(result?.ok && !result.isTest)}
+                    onClick={() => {
+                      if (!window.confirm(
+                        `לשדר ל-Morning דרישת תשלום על סך ₪${Math.round(docTotal).toLocaleString()} (לפני מע"מ)\n` +
+                        `עבור: ${cust.companyName || cust.businessName || cust.contactName || ''}?\n\n` +
+                        (isDeposit ? 'סטטוס הפרויקט יעבור ל"מקדמה שולמה" והלקוח יסומן כלקוח פעיל.' : 'סטטוס הפרויקט יעבור ל"הושלם".')
+                      )) return;
+                      executeProjectMorningSend(false);
+                    }}
+                    className={`px-6 py-2.5 text-white rounded-lg font-bold text-sm shadow-sm disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 ${isDeposit ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-green-600 hover:bg-green-700'}`}
+                  >
+                    {sending ? 'משדר...' : <><ArrowUpRight className="w-4 h-4"/> שדר ל-Morning</>}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* CUSTOM PROJECT MODAL */}
       {isCustomProjectModalOpen && (
         <div className="fixed inset-0 z-[115] flex items-start justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
@@ -7224,11 +7793,20 @@ export default function App() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס</label>
-                  <select className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.status} onChange={e => setCustomProjectForm({...customProjectForm, status: e.target.value})}>
-                    <option value="preparation">הכנה</option>
-                    <option value="submitted">הוגש</option>
-                    <option value="approved">אושר</option>
+                  <select className="w-full border-slate-300 rounded-lg p-2.5 border bg-slate-50 outline-none focus:ring-2 focus:ring-purple-400" value={customProjectForm.status || 'preparation'} onChange={e => setCustomProjectForm({...customProjectForm, status: e.target.value})}>
+                    {/* סטטוס נוכחי שאינו ברשימה (למשל 'approved' הישן) — נשמר כאפשרות כדי לא לאפס אותו בטעות */}
+                    {!PROJECT_STATUS_ORDER.includes(customProjectForm.status || 'preparation') && (
+                      <option value={customProjectForm.status}>{PROJECT_STATUS_LABELS[customProjectForm.status] || customProjectForm.status}</option>
+                    )}
+                    {PROJECT_STATUS_ORDER.map(s => (
+                      // סטטוסי תשלום חסומים כאן: הם מחייבים מעבר דרך חלון האישור והשידור ל-Morning.
+                      // הם מוצגים כבחירים רק אם זה כבר הסטטוס הנוכחי, כדי שהערך לא "יקפוץ" בשמירה.
+                      <option key={s} value={s} disabled={PROJECT_PAYMENT_STATUSES.includes(s) && customProjectForm.status !== s}>
+                        {PROJECT_STATUS_LABELS[s]}{PROJECT_PAYMENT_STATUSES.includes(s) && customProjectForm.status !== s ? ' — נקבע דרך שידור ל-Morning' : ''}
+                      </option>
+                    ))}
                   </select>
+                  <p className="text-[10px] text-slate-400 mt-1">סטטוסי התשלום נקבעים מתוך מסך הפרויקט, בעת שידור דרישת התשלום.</p>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">הערות</label>
