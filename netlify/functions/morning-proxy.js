@@ -23,6 +23,16 @@ const BASE_URL = 'https://api.greeninvoice.co.il/api/v1';
 
 const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' };
 
+// מחלץ קישור הורדה מהתשובה של Morning. אומת מול תשובה אמיתית ב-29.7.2026:
+// Morning מחזירה את הקישור תחת "url", כ-*אובייקט* (למשל {origin, he, en}) —
+// לא כמחרוזת פשוטה, וגם לא תחת "downloadLinks" כפי שהקוד הקודם ציפה.
+// downloadLinks נשאר כ-fallback נוסף בלבד, למקרה שסוג מסמך אחר יחזיר כך.
+const extractDocumentUrl = (val) => {
+  if (!val) return null;
+  if (typeof val === 'string') return val;
+  return val.he || val.en || val.origin || null;
+};
+
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers: CORS_HEADERS, body: 'Method Not Allowed' };
@@ -96,8 +106,8 @@ exports.handler = async function(event) {
       };
     }
 
-    // כתובת המסמך המוכן להורדה/צפייה — מוחזרת מ-Morning תחת downloadLinks
-    const url = (data && data.downloadLinks && (data.downloadLinks.he || data.downloadLinks.en)) || null;
+    // כתובת המסמך המוכן להורדה/צפייה
+    const url = extractDocumentUrl(data && data.url) || extractDocumentUrl(data && data.downloadLinks);
     if (!url) {
       return {
         statusCode: 200,
