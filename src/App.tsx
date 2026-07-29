@@ -2925,7 +2925,7 @@ export default function App() {
   // גם הצעות המחיר (sendToMorning) וגם פרויקטי הקוסטום עוברים דרך הפונקציה הזו,
   // כדי שפרטי הלקוח, סוג המסמך והטיפול בשגיאות יהיו זהים בשני המסלולים.
   const sendMorningDocument = async (
-    income: { description: string; quantity: number; price: number }[],
+    income: { description: string; quantity: number; price: number; catalogNum?: string }[],
     customer: any
   ): Promise<{url: string|null, error: string|null}> => {
     const keyId = settings?.morningApiKeyId;
@@ -3031,7 +3031,13 @@ export default function App() {
       const size = getProductSize(pr);
       const description = (size ? `${baseName} (${size})` : baseName).slice(0, 90);
       const qty = Number(pr.qty) || 0;
-      return { description, qty, unitPrice: Math.round(unitPrice), lineTotal: Math.round(unitPrice) * qty };
+      return {
+        catalogNum: String(pr.id || '').trim().slice(0, 30),
+        description,
+        qty,
+        unitPrice: Math.round(unitPrice),
+        lineTotal: Math.round(unitPrice) * qty,
+      };
     });
 
     const productsTotal = lines.reduce((s: number, l: any) => s + l.lineTotal, 0);
@@ -3088,6 +3094,41 @@ export default function App() {
     updateProjectField(proj.id, { status: newStatus }).catch(() => alert('שגיאה בעדכון סטטוס הפרויקט.'));
   };
 
+  // בונה את שורות המסמך בפועל. משמשת גם את התצוגה המקדימה בחלון האישור וגם את
+  // השידור עצמו — כדי שמה שמוצג על המסך יהיה בדיוק מה שנשלח ל-Morning, תמיד.
+  const buildProjectIncomeRows = (m: any) => {
+    const productRows = (m.lines || [])
+      .filter((l: any) => l.qty > 0 && l.unitPrice > 0)
+      .map((l: any) => ({ kind: 'product', catalogNum: l.catalogNum, description: l.description, quantity: l.qty, price: l.unitPrice }));
+
+    const rows: any[] = [...productRows];
+    let depositAmount = 0;
+    let docTotal = 0;
+    let invalidReason: string | null = null;
+
+    if (m.kind === 'deposit') {
+      depositAmount = calcDepositAmount(m.depositType, m.depositValue, m.productsTotal);
+      const notYetDue = m.productsTotal - depositAmount;
+      // המוצרים מפורטים במחיר מלא; שורת ניכוי שלילית מורידה את מה שלא נגבה כעת
+      if (notYetDue > 0) rows.push({ kind: 'deduction', description: 'בניכוי — יתרה שתשולם בגמר העבודה', quantity: 1, price: -notYetDue });
+      docTotal = depositAmount;
+      if (!(depositAmount > 0)) invalidReason = 'סכום המקדמה חייב להיות גדול מאפס.';
+      else if (depositAmount > m.productsTotal) invalidReason = 'סכום המקדמה גבוה משווי המוצרים בפרויקט.';
+      else if (productRows.length === 0) invalidReason = 'אין בפרויקט מוצרים עם כמות ומחיר — אין מה לשדר.';
+    } else {
+      depositAmount = Math.round(Number(m.proj?.depositAmount || 0));
+      const remaining = m.productsTotal - depositAmount;
+      if (depositAmount > 0) rows.push({ kind: 'deduction', description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -depositAmount });
+      if (m.deliveryCost > 0) rows.push({ kind: 'delivery', description: 'הובלה והתקנה', quantity: 1, price: m.deliveryCost });
+      docTotal = remaining + m.deliveryCost;
+      if (remaining < 0) invalidReason = 'המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים.';
+      else if (!(docTotal > 0)) invalidReason = 'אין סכום חיובי לגבייה.';
+      else if (rows.length === 0) invalidReason = 'אין שורות לשידור במסמך היתרה.';
+    }
+
+    return { rows, docTotal, depositAmount, invalidReason };
+  };
+
   // מבצע בפועל את השידור ל-Morning עבור פרויקט קוסטום.
   // isTest=true: מוסיף [TEST] לשם הלקוח, ולא נוגע בסטטוס הפרויקט, בסטטוס הלקוח או בשדות התשלום.
   const executeProjectMorningSend = async (isTest: boolean) => {
@@ -3097,30 +3138,15 @@ export default function App() {
     const baseCustomer = customers.find((c: any) => c.id === proj.customerId);
     if (!baseCustomer) { alert('לא נמצאה רשומת הלקוח המקושרת לפרויקט.'); return; }
 
-    // בניית שורות המסמך
-    let income: { description: string; quantity: number; price: number }[] = [];
-    let docTotal = 0;
-    let depositAmount = 0;
+    const { rows, docTotal, depositAmount, invalidReason } = buildProjectIncomeRows(projectPaymentModal);
+    if (invalidReason) { alert(invalidReason); return; }
 
-    if (kind === 'deposit') {
-      depositAmount = calcDepositAmount(depositType, depositValue, productsTotal);
-      if (!(depositAmount > 0)) { alert('סכום המקדמה חייב להיות גדול מאפס.'); return; }
-      if (depositAmount > productsTotal) { alert(`סכום המקדמה (₪${depositAmount.toLocaleString()}) גבוה משווי המוצרים (₪${productsTotal.toLocaleString()}).`); return; }
-      income = [{ description: `מקדמה על חשבון פרויקט: ${String(proj.name || '').slice(0, 60)}`, quantity: 1, price: depositAmount }];
-      docTotal = depositAmount;
-    } else {
-      depositAmount = Math.round(Number(proj.depositAmount || 0));
-      const remaining = productsTotal - depositAmount;
-      if (remaining < 0) { alert('המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים לפני שידור היתרה.'); return; }
-      if (remaining > 0) {
-        income.push({ description: `יתרה לתשלום — פרויקט: ${String(proj.name || '').slice(0, 60)}`, quantity: 1, price: remaining });
-      }
-      if (deliveryCost > 0) {
-        income.push({ description: 'הובלה והתקנה', quantity: 1, price: deliveryCost });
-      }
-      docTotal = remaining + deliveryCost;
-      if (!(docTotal > 0)) { alert('סכום היתרה לתשלום הוא אפס — אין מה לשדר.'); return; }
-    }
+    const income = rows.map((r: any) => ({
+      ...(r.catalogNum ? { catalogNum: r.catalogNum } : {}),
+      description: r.description,
+      quantity: r.quantity,
+      price: r.price,
+    }));
 
     const customerForDoc = isTest
       ? { ...baseCustomer, companyName: `[TEST] ${baseCustomer.companyName || baseCustomer.businessName || baseCustomer.contactName || ''}`.trim() }
@@ -7540,12 +7566,10 @@ export default function App() {
         const { proj, kind, lines, productsTotal, deliveryCost, depositType, depositValue, sending, result } = projectPaymentModal;
         const cust = customers.find((c: any) => c.id === proj.customerId) || {};
         const isDeposit = kind === 'deposit';
-        const depositAmount = isDeposit ? calcDepositAmount(depositType, depositValue, productsTotal) : Math.round(Number(proj.depositAmount || 0));
+        // אותה פונקציה בדיוק שמשמשת את השידור עצמו — אין דרך שהתצוגה תתפצל מהמסמך בפועל
+        const { rows: previewRows, docTotal, depositAmount, invalidReason } = buildProjectIncomeRows(projectPaymentModal);
         const remaining = productsTotal - depositAmount;
-        const docTotal = isDeposit ? depositAmount : remaining + deliveryCost;
-        const invalid = isDeposit
-          ? (!(depositAmount > 0) || depositAmount > productsTotal)
-          : (remaining < 0 || !(docTotal > 0));
+        const invalid = Boolean(invalidReason);
         const close = () => setProjectPaymentModal(null);
         return (
           <div className="fixed inset-0 z-[130] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
@@ -7631,33 +7655,21 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {isDeposit ? (
-                          <tr>
-                            <td className="px-3 py-2 text-slate-700">מקדמה על חשבון פרויקט: {proj.name}</td>
-                            <td className="px-3 py-2 text-center text-slate-600">1</td>
-                            <td className="px-3 py-2 text-center text-slate-600">₪{depositAmount.toLocaleString()}</td>
-                            <td className="px-3 py-2 text-center font-bold text-indigo-700">₪{depositAmount.toLocaleString()}</td>
+                        {previewRows.length === 0 ? (
+                          <tr><td colSpan={4} className="px-3 py-4 text-center text-slate-400 text-xs">אין שורות לשידור</td></tr>
+                        ) : previewRows.map((r: any, i: number) => (
+                          <tr key={i} className={r.kind === 'deduction' ? 'bg-red-50/50' : r.kind === 'delivery' ? 'bg-blue-50/50' : ''}>
+                            <td className="px-3 py-2 text-slate-700">
+                              {r.description}
+                              {r.catalogNum && <span className="text-[10px] text-slate-400 block">מק"ט {r.catalogNum}</span>}
+                            </td>
+                            <td className="px-3 py-2 text-center text-slate-600">{r.quantity}</td>
+                            <td className="px-3 py-2 text-center text-slate-600">₪{r.price.toLocaleString()}</td>
+                            <td className={`px-3 py-2 text-center font-bold ${r.kind === 'deduction' ? 'text-red-600' : r.kind === 'delivery' ? 'text-blue-700' : isDeposit ? 'text-indigo-700' : 'text-green-700'}`}>
+                              ₪{(r.price * r.quantity).toLocaleString()}
+                            </td>
                           </tr>
-                        ) : (
-                          <>
-                            {remaining > 0 && (
-                              <tr>
-                                <td className="px-3 py-2 text-slate-700">יתרה לתשלום — פרויקט: {proj.name}</td>
-                                <td className="px-3 py-2 text-center text-slate-600">1</td>
-                                <td className="px-3 py-2 text-center text-slate-600">₪{remaining.toLocaleString()}</td>
-                                <td className="px-3 py-2 text-center font-bold text-green-700">₪{remaining.toLocaleString()}</td>
-                              </tr>
-                            )}
-                            {deliveryCost > 0 && (
-                              <tr className="bg-blue-50/50">
-                                <td className="px-3 py-2 text-slate-700">הובלה והתקנה</td>
-                                <td className="px-3 py-2 text-center text-slate-600">1</td>
-                                <td className="px-3 py-2 text-center text-slate-600">₪{deliveryCost.toLocaleString()}</td>
-                                <td className="px-3 py-2 text-center font-bold text-blue-700">₪{deliveryCost.toLocaleString()}</td>
-                              </tr>
-                            )}
-                          </>
-                        )}
+                        ))}
                       </tbody>
                       <tfoot className="bg-slate-100 border-t-2 border-slate-300">
                         <tr>
@@ -7697,9 +7709,7 @@ export default function App() {
                 {invalid && (
                   <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-start gap-1.5">
                     <AlertTriangle className="w-4 h-4 shrink-0 mt-px"/>
-                    <span>{isDeposit
-                      ? (depositAmount > productsTotal ? 'סכום המקדמה גבוה משווי המוצרים בפרויקט.' : 'סכום המקדמה חייב להיות גדול מאפס.')
-                      : (remaining < 0 ? 'המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים.' : 'אין סכום חיובי לגבייה.')}</span>
+                    <span>{invalidReason}</span>
                   </p>
                 )}
 
