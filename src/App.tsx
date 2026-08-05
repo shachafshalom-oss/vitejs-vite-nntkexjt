@@ -499,7 +499,7 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
 // 1. הגדרות FIREBASE פרטיות (עם גיבוי אוטומטי)
 // ==========================================
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || ("AIzaSy" + "DpXEMAmwEGzp4AqxRH72ijm1dVcANfIkU"),
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "ds-logistics-crm.firebaseapp.com",
   projectId: "ds-logistics-crm",
   storageBucket: "ds-logistics-crm.firebasestorage.app",
