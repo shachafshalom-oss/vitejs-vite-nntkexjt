@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -1184,6 +1185,86 @@ export default function App() {
     setActiveSpace(space);
     setActiveTab(tab);
   };
+
+  // ==========================================
+  // התראות Push (FCM)
+  // ==========================================
+  // 'unsupported' = הדפדפן לא תומך, 'default' = טרם נשאל, 'granted'/'denied' = החלטת המשתמש.
+  const [pushState, setPushState] = useState<'unsupported' | 'default' | 'granted' | 'denied'>('default');
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    isMessagingSupported().then((ok) => {
+      if (!ok || !('Notification' in window)) { setPushState('unsupported'); return; }
+      setPushState(Notification.permission as 'default' | 'granted' | 'denied');
+    }).catch(() => setPushState('unsupported'));
+  }, []);
+
+  // רושם את ה-Service Worker ושומר את טוקן המכשיר מול המייל של הנציג.
+  // כל מכשיר מקבל טוקן משלו, ולכן הטוקן עצמו הוא מזהה המסמך —
+  // כך שחף ודניאל יכולים לקבל התראות גם מטלפון וגם ממחשב במקביל.
+  const registerPushToken = async (): Promise<boolean> => {
+    if (!user?.email) return false;
+    const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
+    if (!vapidKey) { console.warn('חסר VITE_FIREBASE_VAPID_KEY — התראות Push לא יפעלו'); return false; }
+    try {
+      const registration = await navigator.serviceWorker.register(
+        `/firebase-messaging-sw.js?apiKey=${encodeURIComponent(firebaseConfig.apiKey || '')}`
+      );
+      await navigator.serviceWorker.ready;
+      const messaging = getMessaging(app);
+      const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: registration });
+      if (!token) return false;
+      await setDoc(doc(db, 'crm_push_tokens', token), {
+        email: user.email,
+        userAgent: navigator.userAgent.slice(0, 300),
+        updatedAt: new Date().toISOString(),
+      });
+      return true;
+    } catch (err) {
+      console.error('registerPushToken error', err);
+      return false;
+    }
+  };
+
+  const enablePush = async () => {
+    setPushBusy(true);
+    try {
+      const permission = await Notification.requestPermission();
+      setPushState(permission as 'default' | 'granted' | 'denied');
+      if (permission === 'granted') {
+        const ok = await registerPushToken();
+        if (!ok) alert('ההרשאה אושרה אבל רישום המכשיר נכשל. בדוק שמפתח ה-VAPID מוגדר ב-Netlify.');
+      } else if (permission === 'denied') {
+        alert('ההתראות נחסמו. אפשר להפעיל מחדש דרך הגדרות האתר בדפדפן.');
+      }
+    } catch (err) {
+      console.error('enablePush error', err);
+    }
+    setPushBusy(false);
+  };
+
+  // רענון הטוקן בכל התחברות. טוקני FCM מתחלפים מדי פעם מיוזמת הדפדפן,
+  // ובלי הרענון הזה ההתראות פשוט יפסיקו להגיע בשקט אחרי כמה שבועות.
+  useEffect(() => {
+    if (user?.email && pushState === 'granted') { registerPushToken(); }
+  }, [user?.email, pushState]);
+
+  // הודעה שמגיעה כשה-CRM פתוח ובפוקוס — הדפדפן לא מציג אותה לבד.
+  useEffect(() => {
+    if (pushState !== 'granted') return;
+    let unsub: (() => void) | undefined;
+    isMessagingSupported().then((ok) => {
+      if (!ok) return;
+      unsub = onMessage(getMessaging(app), (payload) => {
+        const d: any = payload.data || {};
+        if (Notification.permission === 'granted') {
+          new Notification(d.title || 'Steel & Spirit CRM', { body: d.body || '', icon: '/icon-192.png' });
+        }
+      });
+    }).catch(() => {});
+    return () => { if (unsub) unsub(); };
+  }, [pushState]);
 
   // סגירת תיק לקוח. ליד שעדיין בשלב "חדש" סימן שנפתח ולא נגעו בו —
   // מזכיר לעדכן, אבל לא חוסם. ליד בשלב מתקדם נסגר בלי הפרעה.
@@ -3638,6 +3719,16 @@ export default function App() {
           {/* שמאל - יציאה */}
           <div className="flex items-center gap-3 flex-shrink-0">
             <span className="text-sm text-slate-500 hidden md:inline">{user?.email || ''}</span>
+            {pushState !== 'unsupported' && (
+              <button
+                onClick={pushState === 'granted' ? undefined : enablePush}
+                disabled={pushBusy || pushState === 'granted'}
+                title={pushState === 'granted' ? 'התראות פעילות במכשיר הזה' : pushState === 'denied' ? 'ההתראות חסומות — יש לאפשר בהגדרות הדפדפן' : 'הפעל התראות במכשיר הזה'}
+                className={`flex items-center gap-1.5 text-sm transition-colors ${pushState === 'granted' ? 'text-green-600 cursor-default' : 'text-slate-600 hover:text-[#7B1315]'}`}>
+                {pushState === 'denied' ? <BellOff className="w-4 h-4"/> : <Bell className="w-4 h-4"/>}
+                <span className="hidden sm:inline">{pushState === 'granted' ? 'התראות פעילות' : 'הפעל התראות'}</span>
+              </button>
+            )}
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> <span className="hidden sm:inline">יציאה</span></button>
           </div>
         </div>
