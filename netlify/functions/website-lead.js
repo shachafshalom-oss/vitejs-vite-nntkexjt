@@ -4,20 +4,28 @@
 // ל-crm_customers ב-Firestore, כולל שיוך נציג round-robin מאוזן.
 //
 // משתני סביבה נדרשים ב-Netlify:
-//   FIREBASE_SA_LEADS        - תוכן קובץ ה-JSON של Service Account (מחרוזת אחת)
+//   FIREBASE_SERVICE_ACCOUNT  - קיים כבר (משמש גם את lead-notifier)
 //   WEBSITE_LEAD_SECRET       - מפתח סודי שהאתר שולח בכותרת x-api-key
 //   ALLOWED_ORIGIN            - דומיין/ים מורשים, מופרדים בפסיק
 
 const admin = require('firebase-admin');
 
 // --- אתחול Firebase Admin (פעם אחת לכל instance) ---
-if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SA_LEADS);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+// משתמשים באותו משתנה סביבה שכבר קיים ומשמש את lead-notifier.
+// שורת ה-private_key חיונית: Netlify שומר מעברי שורה כ-\n מילולי,
+// ובלי ההמרה חתימת ההרשאה נכשלת.
+let app;
+function getApp() {
+  if (app) return app;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) throw new Error('חסר משתנה הסביבה FIREBASE_SERVICE_ACCOUNT');
+  const creds = JSON.parse(raw);
+  if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, '\n');
+  app = admin.apps.length
+    ? admin.app()
+    : admin.initializeApp({ credential: admin.credential.cert(creds) });
+  return app;
 }
-const db = admin.firestore();
 
 // אותה רשימת נציגים כמו ב-CRM (AGENTS)
 const AGENTS = [
@@ -93,6 +101,7 @@ exports.handler = async (event) => {
       };
     }
 
+    const db = admin.firestore(getApp());
     const customersRef = db.collection('crm_customers');
 
     // --- בדיקת כפילות לפי טלפון ---
