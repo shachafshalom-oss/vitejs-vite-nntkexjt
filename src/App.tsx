@@ -537,6 +537,28 @@ const AGENTS = [
   { name: 'דניאל', email: 'danielyos205@gmail.com' },
 ];
 
+// שלבים שבהם הכדור אצל הלקוח — אם אין תזכורת מעקב, נקבעת אחת אוטומטית.
+// זה מה שמונע מלידים "להיעלם" אחרי שנשלחה הצעה ואף אחד לא חזר אליהם.
+const AUTO_FOLLOWUP_STAGES = ['quote_sent', 'waiting'];
+const AUTO_FOLLOWUP_BUSINESS_DAYS = 3;
+
+// מוסיף ימי עסקים (מדלג על שישי/שבת) ומחזיר תאריך בפורמט YYYY-MM-DD.
+// חשוב: בונה את המחרוזת מרכיבי התאריך המקומיים ולא דרך toISOString,
+// שהיה מזיז את התאריך יום אחורה בשעות הערב בישראל (הפרש UTC).
+const addBusinessDays = (days: number): string => {
+  const d = new Date();
+  let added = 0;
+  while (added < days) {
+    d.setDate(d.getDate() + 1);
+    const day = d.getDay(); // 5 = שישי, 6 = שבת
+    if (day !== 5 && day !== 6) added++;
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// סדר התקדמות השלבים — משמש כדי לקדם ליד אוטומטית בלי לדרוס שלב מתקדם יותר.
+const LEAD_STAGE_ORDER = ['new', 'contacted', 'callback', 'quote_sent', 'waiting'];
+
 const LEAD_STAGE_MAP: Record<string, string> = {
   'new': 'חדש',
   'contacted': 'יצירת קשר',
@@ -971,8 +993,18 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
-  const [activeSpace, setActiveSpace] = useState<'sales' | 'operations'>('sales');
-  const [activeTab, setActiveTab] = useState('sales_dashboard');
+  // מיקום הניווט נשמר בזיכרון הדפדפן כדי שרענון (או חזרה לאפליקציה בטלפון)
+  // ישאיר את המשתמש באותו מסך במקום לזרוק אותו חזרה לדשבורד.
+  const [activeSpace, setActiveSpace] = useState<'sales' | 'operations'>(() => {
+    try {
+      const saved = localStorage.getItem('crm_nav_space');
+      return saved === 'operations' || saved === 'sales' ? saved : 'sales';
+    } catch { return 'sales'; }
+  });
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('crm_nav_tab') || 'sales_dashboard'; }
+    catch { return 'sales_dashboard'; }
+  });
   const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
   const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
@@ -1141,9 +1173,25 @@ export default function App() {
   const [showAiModal, setShowAiModal] = useState(false);
 
   // --- Space + Tab Navigation Helper ---
+  useEffect(() => {
+    try {
+      localStorage.setItem('crm_nav_space', activeSpace);
+      localStorage.setItem('crm_nav_tab', activeTab);
+    } catch { /* מצב גלישה פרטית — פשוט לא נשמר */ }
+  }, [activeSpace, activeTab]);
+
   const navigateTo = (space: 'sales' | 'operations', tab: string) => {
     setActiveSpace(space);
     setActiveTab(tab);
+  };
+
+  // סגירת תיק לקוח. ליד שעדיין בשלב "חדש" סימן שנפתח ולא נגעו בו —
+  // מזכיר לעדכן, אבל לא חוסם. ליד בשלב מתקדם נסגר בלי הפרעה.
+  const closeCustomerOverview = () => {
+    if (selectedCustomer?.status === 'lead' && selectedCustomer?.leadStage === 'new') {
+      if (!window.confirm('הליד עדיין בשלב "חדש" ולא עודכן סטטוס. לסגור בכל זאת?')) return;
+    }
+    setIsCustomerOverviewOpen(false);
   };
 
   // --- Date Calculations ---
@@ -2203,7 +2251,17 @@ export default function App() {
 
       // 4. ייבוא
       const dataRows = rows.slice(1);
-      let agentIndex = 0;
+
+      // סבב הוגן בין הנציגים: במקום להתחיל תמיד מהנציג הראשון (שגרם להטיה שיטתית
+      // לטובתו בכל ייבוא), מתחילים מהנציג שיש לו הכי פחות לידים מפייסבוק כרגע.
+      // המנגנון מתקן את עצמו לאורך זמן ולא תלוי במונה שנשמר ועלול להתקלקל.
+      const fbLeadCounts = AGENTS.map(a =>
+        existingSnap.docs.filter(d => {
+          const x = d.data();
+          return x.source === 'facebook' && x.assignedTo === a.email;
+        }).length
+      );
+      let agentIndex = fbLeadCounts.indexOf(Math.min(...fbLeadCounts));
 
       for (const row of dataRows) {
         const cells = getCell(row);
@@ -2288,9 +2346,29 @@ export default function App() {
 
   const saveLeadField = async (customerId: string, fields: Record<string, any>) => {
     try {
-      await updateDoc(doc(db, 'crm_customers', customerId), { ...fields, updatedAt: new Date().toISOString() });
+      const payload: Record<string, any> = { ...fields };
+
+      // תזכורת מעקב אוטומטית: כשליד עובר לשלב שבו מחכים לתשובת הלקוח
+      // ואין לו תזכורת קיימת — נקבעת אחת אוטומטית כדי שלא ייפול בין הכיסאות.
+      // לא דורסת תזכורת שנקבעה ידנית, ולא חלה כשמסירים תזכורת באותה פעולה.
+      if (
+        AUTO_FOLLOWUP_STAGES.includes(payload.leadStage) &&
+        !('followUpDate' in payload)
+      ) {
+        const current =
+          selectedCustomer?.id === customerId
+            ? selectedCustomer
+            : customers.find((c: any) => c.id === customerId);
+        if (!current?.followUpDate) {
+          payload.followUpDate = addBusinessDays(AUTO_FOLLOWUP_BUSINESS_DAYS);
+          payload.followUpNote =
+            current?.followUpNote || `מעקב אוטומטי — ${LEAD_STAGE_MAP[payload.leadStage] || ''}`;
+        }
+      }
+
+      await updateDoc(doc(db, 'crm_customers', customerId), { ...payload, updatedAt: new Date().toISOString() });
       if (selectedCustomer?.id === customerId) {
-        setSelectedCustomer((prev: any) => ({ ...prev, ...fields }));
+        setSelectedCustomer((prev: any) => ({ ...prev, ...payload }));
       }
     } catch (err) { console.error('saveLeadField error', err); }
   };
@@ -3240,6 +3318,16 @@ export default function App() {
       };
       
       if (!quoteData.id) await addDoc(collection(db, 'crm_quotes'), quotePayload);
+
+      // קידום אוטומטי של שלב הליד ל"הצעה נשלחה" ברגע שהופקה הצעה.
+      // מקדם רק קדימה — לא ידרוס "ממתין לתשובה" או ליד שכבר הומר ללקוח פעיל.
+      // הקידום עובר דרך saveLeadField, כך שגם נקבעת אוטומטית תזכורת מעקב.
+      if (currentCustomer.status === 'lead') {
+        const currentIdx = LEAD_STAGE_ORDER.indexOf(currentCustomer.leadStage || 'new');
+        if (currentIdx > -1 && currentIdx < LEAD_STAGE_ORDER.indexOf('quote_sent')) {
+          await saveLeadField(quoteData.customerId, { leadStage: 'quote_sent' });
+        }
+      }
 
       const canvas = await html2canvas(quoteRef.current, { scale: 2, useCORS: true, backgroundColor: '#eae5dd' });
       const imgData = canvas.toDataURL('image/png');
@@ -6451,7 +6539,7 @@ export default function App() {
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
-              <button onClick={() => setIsCustomerOverviewOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+              <button onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
             </div>
             
             <div className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
