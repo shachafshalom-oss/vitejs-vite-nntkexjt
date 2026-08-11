@@ -8,32 +8,31 @@
 //   WEBSITE_LEAD_SECRET       - מפתח סודי שהאתר שולח בכותרת x-api-key
 //   ALLOWED_ORIGIN            - דומיין/ים מורשים, מופרדים בפסיק
 
-const admin = require('firebase-admin');
+// ⚠️ ייבוא מודולרי ולא require('firebase-admin') הישן.
+// ב-firebase-admin v13 הוסרה כל ה-API הישנה בסגנון namespace:
+// admin.apps, admin.credential ו-admin.firestore() כבר לא קיימים,
+// וכל שימוש בהם זורק "Cannot read properties of undefined".
+// הייבוא המודולרי הזה עובד גם ב-v10-v12 וגם ב-v13+.
+const { initializeApp, getApps, getApp: getExistingApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 
 // --- אתחול Firebase Admin (פעם אחת לכל instance) ---
-// משתמשים באותו משתנה סביבה שכבר קיים ומשמש את lead-notifier.
 // שורת ה-private_key חיונית: Netlify שומר מעברי שורה כ-\n מילולי,
 // ובלי ההמרה חתימת ההרשאה נכשלת.
-//
-// שים לב: לא משתמשים ב-admin.apps.length — המאפיין הזה הוסר ב-firebase-admin v13
-// והיה זורק "Cannot read properties of undefined (reading 'length')".
-// admin.app() זורק אם אין אפליקציה מאותחלת, ולכן try/catch עובד בכל הגרסאות.
 let app;
 function getApp() {
   if (app) return app;
 
-  try {
-    app = admin.app();
+  if (getApps().length) {
+    app = getExistingApp();
     return app;
-  } catch (e) {
-    // אין עדיין אפליקציה מאותחלת — ממשיכים לאתחול
   }
 
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error('חסר משתנה הסביבה FIREBASE_SERVICE_ACCOUNT');
   const creds = JSON.parse(raw);
   if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, '\n');
-  app = admin.initializeApp({ credential: admin.credential.cert(creds) });
+  app = initializeApp({ credential: cert(creds) });
   return app;
 }
 
@@ -111,7 +110,7 @@ exports.handler = async (event) => {
       };
     }
 
-    const db = admin.firestore(getApp());
+    const db = getFirestore(getApp());
     const customersRef = db.collection('crm_customers');
 
     // --- זיהוי כפילות לפי טלפון (לא חוסם) ---

@@ -13,7 +13,13 @@
 // רק בפורמט המודרני (ESM). כל עוד ההגדרה הייתה כאן בלבד, הפונקציה נרשמה
 // כפונקציית HTTP רגילה ולא רצה מעולם.
 
-const admin = require('firebase-admin');
+// ⚠️ ייבוא מודולרי ולא require('firebase-admin') הישן.
+// ב-firebase-admin v13 הוסרה ה-API בסגנון namespace (admin.apps, admin.credential,
+// admin.firestore(), admin.messaging()) וכל שימוש בה זורק שגיאת undefined.
+// הייבוא הזה עובד גם ב-v10-v12 וגם ב-v13+.
+const { initializeApp, getApps, getApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { getMessaging } = require('firebase-admin/messaging');
 
 // ---------- קבועים עסקיים ----------
 const QUIET_START_HOUR = 23; // מ-23:00
@@ -29,23 +35,21 @@ const TZ = 'Asia/Jerusalem';
 // ⚠️ לא משתמשים ב-admin.apps.length — המאפיין הזה הוסר ב-firebase-admin v13
 // וזרק "Cannot read properties of undefined (reading 'length')".
 // admin.app() זורק כשאין אפליקציה מאותחלת, ולכן try/catch עובד בכל הגרסאות.
-let app;
-function getApp() {
-  if (app) return app;
+let cachedApp;
+function getFirebaseApp() {
+  if (cachedApp) return cachedApp;
 
-  try {
-    app = admin.app();
-    return app;
-  } catch (e) {
-    // אין עדיין אפליקציה מאותחלת — ממשיכים לאתחול
+  if (getApps().length) {
+    cachedApp = getApp();
+    return cachedApp;
   }
 
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error('חסר משתנה הסביבה FIREBASE_SERVICE_ACCOUNT');
   const creds = JSON.parse(raw);
   if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, '\n');
-  app = admin.initializeApp({ credential: admin.credential.cert(creds) });
-  return app;
+  cachedApp = initializeApp({ credential: cert(creds) });
+  return cachedApp;
 }
 
 // ---------- עזרי זמן בשעון ישראל ----------
@@ -186,9 +190,9 @@ exports.handler = async () => {
   console.log(`lead-notifier START ${startedAt}`);
 
   try {
-    const application = getApp();
-    const db = admin.firestore(application);
-    const messaging = admin.messaging(application);
+    const application = getFirebaseApp();
+    const db = getFirestore(application);
+    const messaging = getMessaging(application);
     const now = israelNow();
 
     const newLeads = await notifyNewLeads(db, messaging, now);
