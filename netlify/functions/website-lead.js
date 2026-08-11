@@ -104,25 +104,15 @@ exports.handler = async (event) => {
     const db = admin.firestore(getApp());
     const customersRef = db.collection('crm_customers');
 
-    // --- בדיקת כפילות לפי טלפון ---
-    // נטען את כלל הלידים פעם אחת: משמש גם לכפילות וגם לספירת האיזון.
+    // --- זיהוי כפילות לפי טלפון (לא חוסם) ---
+    // הליד תמיד ייווצר. אם קיים כבר לקוח עם אותו טלפון, מסמנים זאת בהערות
+    // כדי שהנציג יראה מיד ויחליט בעצמו — לקוח שפונה שוב אינו בהכרח כפילות.
+    // נטען את כלל הלידים פעם אחת: משמש גם לזיהוי הכפילות וגם לספירת האיזון.
     const allSnap = await customersRef.get();
 
     const duplicate = allSnap.docs.find(
       (d) => normalizePhone(d.data().phone) === phone
     );
-    if (duplicate) {
-      return {
-        statusCode: 200,
-        headers: corsHeaders(requestOrigin),
-        body: JSON.stringify({
-          ok: true,
-          duplicate: true,
-          id: duplicate.id,
-          message: 'ליד עם טלפון זהה כבר קיים במערכת',
-        }),
-      };
-    }
 
     // --- שיוך round-robin מאוזן כולל ---
     // בניגוד לייבוא מפייסבוק שסופר רק source==='facebook',
@@ -147,7 +137,9 @@ exports.handler = async (event) => {
       campaignId: '',
       assignedTo,
       address: '',
-      notes: '',
+      notes: duplicate
+        ? `⚠️ ייתכן כפילות — קיים כבר לקוח עם טלפון זהה (מזהה: ${duplicate.id}). נוצר בכל זאת לבדיקתך.`
+        : '',
       createdAt: now,
       updatedAt: now,
       interactionLogs: [],
@@ -162,6 +154,7 @@ exports.handler = async (event) => {
         ok: true,
         id: created.id,
         assignedTo,
+        duplicate: Boolean(duplicate),
       }),
     };
   } catch (err) {
@@ -169,7 +162,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 500,
       headers: corsHeaders(requestOrigin),
-      body: JSON.stringify({ error: 'שגיאת שרת ביצירת הליד' }),
+      body: JSON.stringify({ error: `שגיאת שרת: ${err.message}` }),
     };
   }
 };
