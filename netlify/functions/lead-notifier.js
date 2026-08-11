@@ -7,6 +7,11 @@
 //
 // למה בדיקה כל 5 דקות ולא טריגר מיידי: טריגר אמיתי דורש Firebase Cloud Functions
 // ותוכנית Blaze בתשלום. חלון של 5 דקות עדיין בתוך הטווח הקריטי לתגובה ללקוח.
+//
+// ⚠️ התזמון מוגדר ב-netlify.toml ולא בקובץ הזה.
+// הגדרת schedule בתוך קוד CommonJS אינה נקראת על ידי Netlify — היא נתמכת
+// רק בפורמט המודרני (ESM). כל עוד ההגדרה הייתה כאן בלבד, הפונקציה נרשמה
+// כפונקציית HTTP רגילה ולא רצה מעולם.
 
 const admin = require('firebase-admin');
 
@@ -20,14 +25,26 @@ const TZ = 'Asia/Jerusalem';
 // ---------- אתחול Firebase Admin ----------
 // המפתח מגיע ממשתנה סביבה ולא מהקוד. השורה עם private_key חיונית:
 // Netlify שומר מעברי שורה כ-\n מילולי, ובלי ההמרה החתימה נכשלת.
+//
+// ⚠️ לא משתמשים ב-admin.apps.length — המאפיין הזה הוסר ב-firebase-admin v13
+// וזרק "Cannot read properties of undefined (reading 'length')".
+// admin.app() זורק כשאין אפליקציה מאותחלת, ולכן try/catch עובד בכל הגרסאות.
 let app;
 function getApp() {
   if (app) return app;
+
+  try {
+    app = admin.app();
+    return app;
+  } catch (e) {
+    // אין עדיין אפליקציה מאותחלת — ממשיכים לאתחול
+  }
+
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error('חסר משתנה הסביבה FIREBASE_SERVICE_ACCOUNT');
   const creds = JSON.parse(raw);
   if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, '\n');
-  app = admin.apps.length ? admin.app() : admin.initializeApp({ credential: admin.credential.cert(creds) });
+  app = admin.initializeApp({ credential: admin.credential.cert(creds) });
   return app;
 }
 
@@ -92,7 +109,9 @@ async function notifyNewLeads(db, messaging, now) {
   for (const docSnap of pending) {
     const lead = docSnap.data();
     const name = lead.businessName || lead.contactName || 'ליד חדש';
-    const via = lead.source === 'facebook' ? ' (פייסבוק)' : '';
+    const via = lead.source === 'facebook' ? ' (פייסבוק)'
+              : lead.source === 'website' ? ' (אתר)'
+              : '';
     const result = await sendToAgent(db, messaging, lead.assignedTo, {
       title: 'ליד חדש הוקצה אליך',
       body: `${name}${via}${lead.phone ? ' · ' + lead.phone : ''}`,
@@ -161,6 +180,11 @@ async function sendDailyDigest(db, messaging, now) {
 
 // ---------- נקודת הכניסה ----------
 exports.handler = async () => {
+  // שורת חיים: מופיעה בלוגים של Netlify בכל הרצה. אם היא לא מופיעה —
+  // סימן שהתזמון לא נרשם, ולא שהקוד נכשל.
+  const startedAt = new Date().toISOString();
+  console.log(`lead-notifier START ${startedAt}`);
+
   try {
     const application = getApp();
     const db = admin.firestore(application);
@@ -170,16 +194,18 @@ exports.handler = async () => {
     const newLeads = await notifyNewLeads(db, messaging, now);
     const digest = await sendDailyDigest(db, messaging, now);
 
+    console.log('lead-notifier DONE', JSON.stringify({ newLeads, digest }));
+
     return {
       statusCode: 200,
       body: JSON.stringify({ ok: true, israelTime: `${now.date} ${now.hour}:${String(now.minute).padStart(2, '0')}`, newLeads, digest }),
     };
   } catch (err) {
-    console.error('lead-notifier error', err);
+    console.error('lead-notifier ERROR', err && err.message, err);
     return { statusCode: 500, body: JSON.stringify({ ok: false, error: err.message }) };
   }
 };
 
-// לוח הזמנים. רץ כל 5 דקות; הדיגסט מסונן לפי שעון ישראל בתוך הקוד
-// ולא דרך ה-cron, כדי שמעבר שעון קיץ לא יזיז אותו.
-exports.config = { schedule: '*/5 * * * *' };
+// הערה: אין כאן exports.config. התזמון מוגדר ב-netlify.toml:
+//   [functions."lead-notifier"]
+//     schedule = "*/5 * * * *"

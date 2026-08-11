@@ -14,16 +14,26 @@ const admin = require('firebase-admin');
 // משתמשים באותו משתנה סביבה שכבר קיים ומשמש את lead-notifier.
 // שורת ה-private_key חיונית: Netlify שומר מעברי שורה כ-\n מילולי,
 // ובלי ההמרה חתימת ההרשאה נכשלת.
+//
+// שים לב: לא משתמשים ב-admin.apps.length — המאפיין הזה הוסר ב-firebase-admin v13
+// והיה זורק "Cannot read properties of undefined (reading 'length')".
+// admin.app() זורק אם אין אפליקציה מאותחלת, ולכן try/catch עובד בכל הגרסאות.
 let app;
 function getApp() {
   if (app) return app;
+
+  try {
+    app = admin.app();
+    return app;
+  } catch (e) {
+    // אין עדיין אפליקציה מאותחלת — ממשיכים לאתחול
+  }
+
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) throw new Error('חסר משתנה הסביבה FIREBASE_SERVICE_ACCOUNT');
   const creds = JSON.parse(raw);
   if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, '\n');
-  app = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({ credential: admin.credential.cert(creds) });
+  app = admin.initializeApp({ credential: admin.credential.cert(creds) });
   return app;
 }
 
