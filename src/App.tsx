@@ -613,6 +613,58 @@ const extractInlineModelImages = (models: any): Record<string, { itemImgUrl: str
   return imgs;
 };
 
+// ============================================================================
+// === מזהי דגם קבועים (modelId) ==============================================
+// ============================================================================
+// הרקע: עד היום ההתאמה בין פריט מלאי (crm_items) לבין שורת הצעת מחיר נעשתה לפי
+// *מחרוזת השם* של הדגם. לכן כל שינוי שם, או הוספת דגם כפול באיות שונה
+// ("ICE Machine 5/5" מול "ICE Machine 5x5"), ניתקה בשקט פריטים קיימים מהדגם
+// שלהם — והמערכת דיווחה "אין מלאי" למרות שהיחידות קיימות פיזית.
+//
+// הפתרון: לכל דגם יש מעכשיו `id` קבוע, שנוצר פעם אחת ולא משתנה לעולם — גם אם
+// השם משתנה. כל רשומה (פריט/שורת הצעה/שורת משלוח/שורת רכישה) נושאת `modelId`
+// לצד `model`. השם נשאר לתצוגה בלבד; ההתאמה מתבצעת לפי ה-id.
+
+// יוצר מזהה חדש וייחודי. במכוון *לא* נגזר מהשם — כדי ששינוי שם לא ייצור id אחר.
+const generateModelId = (): string =>
+  `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+
+// מחזיר את ה-id הקבוע של דגם לפי שמו. '' אם הדגם לא קיים או טרם קיבל id.
+const getModelIdByName = (models: any, name: string): string =>
+  (models && name && models[name] && models[name].id) || '';
+
+// מחזיר את שם הדגם לפי ה-id הקבוע שלו. '' אם אין התאמה.
+const getModelNameById = (models: any, id: string): string => {
+  if (!id) return '';
+  const found = Object.entries(models || {}).find(([, m]: [string, any]) => m && m.id === id);
+  return found ? found[0] : '';
+};
+
+// מחזיר את ה-modelId האפקטיבי של רשומה: אם כבר יש עליה modelId — הוא מנצח.
+// אחרת נופל אחורה לחיפוש לפי השם. הנפילה-לאחור היא שמאפשרת לקוד החדש לעבוד
+// נכון על נתונים ישנים שטרם עברו מיגרציה, ולכן חובה לשמור אותה בתקופת המעבר.
+const resolveModelId = (entry: any, models: any): string =>
+  (entry && entry.modelId) || getModelIdByName(models, (entry && entry.model) || '');
+
+// הפרדיקט המרכזי: האם שתי רשומות מתייחסות לאותו דגם?
+// עובד גם כששני הצדדים במצבי מיגרציה שונים (לאחד יש id ולשני אין).
+const isSameModel = (entry: any, target: any, models: any): boolean => {
+  const a = resolveModelId(entry, models);
+  const b = resolveModelId(target, models);
+  // שני הצדדים מזוהים לפי id — זו ההשוואה האמינה, ומנצחת תמיד.
+  if (a && b) return a === b;
+  // לפחות אחד הצדדים חסר id (נתון ישן) — נפילה-לאחור בטוחה להשוואת שם.
+  return ((entry && entry.model) || '') === ((target && target.model) || '');
+};
+
+// מעשיר רשומה (שורת הצעה/משלוח/פריט) בשדה modelId לפני שמירה ל-Firestore.
+// אם אין id לדגם (למשל שורת שירות חופשית כמו "התקנה") — לא מוסיף כלום,
+// והרשומה נשמרת בדיוק כמו קודם. שורות שירות לעולם אינן פריטי מלאי.
+const withModelId = (entry: any, models: any): any => {
+  const id = resolveModelId(entry, models);
+  return id ? { ...entry, modelId: id } : { ...entry };
+};
+
 const QUICK_IMPORT_KEYWORDS = [
   'שם איש הקשר', 'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'שם הבר/מסעדה', 'שם הבר\\מסעדה', 
   'שם הבר / מסעדה', 'שם הבר \\ מסעדה', 'שם הבר', 'שם המסעדה', 'שם העסק', 'שם עסק',
@@ -1074,6 +1126,8 @@ export default function App() {
   // מאפשר מיגרציה חד-פעמית ובטוחה: זריעה תחילה ל-collection החדש, ורק אחר כך ניקוי general_settings בכתיבה הבאה.
   const pendingInlineModelImagesRef = useRef<Record<string, { itemImgUrl?: string; blueprintUrl?: string }>>({});
   const modelImageMigrationDoneRef = useRef(false);
+  // שומר שהמיגרציה שמזריקה id קבוע לכל דגם ב-settings.models תרוץ פעם אחת בלבד לכל טעינה.
+  const modelIdMigrationDoneRef = useRef(false);
 
   // --- Custom Projects: Excel column-mapping preview (shown right after parsing, before data enters the form) ---
   const [excelMappingPreview, setExcelMappingPreview] = useState<{
@@ -1164,6 +1218,8 @@ export default function App() {
 
   const [newModelName, setNewModelName] = useState('');
   const [editingModelName, setEditingModelName] = useState<{old: string, newVal: string} | null>(null);
+  // מצב תיבת "מזג דגם": source = הדגם שייעלם, target = הדגם שיקלוט את הכל.
+  const [mergeModelState, setMergeModelState] = useState<{source: string, target: string} | null>(null);
   const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [arrivalPrompt, setArrivalPrompt] = useState<{isOpen: boolean, shipment: any, date: string}>({ isOpen: false, shipment: null, date: '' });
@@ -1332,6 +1388,33 @@ export default function App() {
       }
     };
 
+    // מיגרציה חד-פעמית: מזריקה id קבוע לכל דגם ב-settings.models שעדיין אין לו.
+    // לא-הרסנית לחלוטין — לא נוגעת בדגם שכבר יש לו id, ולא משנה שמות/מחירים/תמונות.
+    // רצה פעם אחת לכל טעינת אפליקציה, ורק אם באמת חסר id לדגם כלשהו (אחרת לא כותבת בכלל,
+    // כדי לא לייצר לולאת onSnapshot אינסופית).
+    const runModelIdMigration = async (models: any) => {
+      if (modelIdMigrationDoneRef.current) return;
+      if (!models || Object.keys(models).length === 0) return;
+      const missing = Object.entries(models).filter(([, m]: [string, any]) => !(m && m.id));
+      if (missing.length === 0) { modelIdMigrationDoneRef.current = true; return; }
+      modelIdMigrationDoneRef.current = true;
+      try {
+        const withIds: any = {};
+        Object.entries(models).forEach(([name, m]: [string, any]) => {
+          withIds[name] = (m && m.id) ? { ...m } : { ...(m || {}), id: generateModelId() };
+        });
+        await setDoc(
+          doc(db, 'crm_settings', 'general_settings'),
+          { models: stripModelImages(withIds) },
+          { merge: true }
+        );
+        console.info(`[modelId] הוזרקו מזהים קבועים ל-${missing.length} דגמים.`);
+      } catch (err) {
+        console.error('מיגרציית מזהי דגם נכשלה:', err);
+        modelIdMigrationDoneRef.current = false; // מאפשר ניסיון חוזר בטעינה הבאה
+      }
+    };
+
     const unsubSettings = onSnapshot(collection(db, 'crm_settings'), (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
       const settingsDoc = docs.find((d: any) => d.id === 'general_settings');
@@ -1348,6 +1431,8 @@ export default function App() {
         const inlineImgs = extractInlineModelImages(settingsDocClean.models);
         pendingInlineModelImagesRef.current = inlineImgs;
         runModelImageMigration(inlineImgs);
+        // מזריק id קבוע לכל דגם שעדיין אין לו (חד-פעמי, לא-הרסני)
+        runModelIdMigration(settingsDocClean.models);
         setSettings(settingsDocClean);
       } else {
          const oldSettingsDoc = docs.find((d: any) => d.id === 'general_cbm');
@@ -1936,7 +2021,8 @@ export default function App() {
     try {
       // כותב general_settings רזה: התמונות של הדגמים לא נכללות (הן ב-crm_model_images). דגם חדש נפתח ללא תמונות.
       const leanModels = stripModelImages(settings.models);
-      const newSettings = { ...settings, models: { ...leanModels, [newModelName.trim()]: { cbm: 0, listPrice: 0, videoUrl: '' } } };
+      // דגם חדש מקבל id קבוע מיד עם היווצרותו — כך הוא לעולם לא תלוי בשם שלו.
+      const newSettings = { ...settings, models: { ...leanModels, [newModelName.trim()]: { id: generateModelId(), cbm: 0, listPrice: 0, videoUrl: '' } } };
       await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
       setNewModelName('');
     } catch(err: any) {
@@ -1949,12 +2035,25 @@ export default function App() {
     const trimmed = newName.trim();
     if (!trimmed) return;
     if (trimmed === oldName) { setEditingModelName(null); return; }
-    if (settings.models?.[trimmed]) { alert(`דגם בשם "${trimmed}" כבר קיים במערכת.`); return; }
+    if (settings.models?.[trimmed]) {
+      // בעבר כאן פשוט נחסמנו — וזה בדיוק מה שיצר דגמים כפולים שאין דרך לאחד.
+      // עכשיו מפנים במפורש לפעולת המיזוג, שיודעת לאחד את שניהם לדגם אחד.
+      alert(
+        `דגם בשם "${trimmed}" כבר קיים במערכת.\n\n` +
+        `אם מדובר באותו מוצר פיזי ששוכפל בטעות — השתמש בכפתור "מזג" ליד שם הדגם ` +
+        `כדי לאחד את "${oldName}" לתוך "${trimmed}" יחד עם כל פריטי המלאי שלו.`
+      );
+      return;
+    }
 
-    const affectedItems = items.filter(i => i.model === oldName);
-    const affectedQuotes = quotes.filter(q => q.items?.some((i: any) => i.model === oldName));
-    const affectedShipments = shipments.filter(s => s.lines?.some((l: any) => l.model === oldName));
-    const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some((l: any) => l.model === oldName));
+    // איסוף הרשומות המושפעות: לפי מזהה קבוע אם קיים, אחרת לפי שם.
+    // מכסה גם רשומות שכבר עברו למזהה וגם רשומות ישנות שעדיין רק בשם.
+    const oldRef = { model: oldName, modelId: getModelIdByName(settings.models, oldName) };
+    const matches = (entry: any) => isSameModel(entry, oldRef, settings.models);
+    const affectedItems = items.filter(matches);
+    const affectedQuotes = quotes.filter(q => q.items?.some(matches));
+    const affectedShipments = shipments.filter(s => s.lines?.some(matches));
+    const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some(matches));
 
     const total = affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length;
     const confirmed = window.confirm(
@@ -1994,15 +2093,19 @@ export default function App() {
         return next;
       });
 
-      // 2. crm_items
+      // 2. crm_items — מעדכן את השם, ומזריק את המזהה הקבוע אם עדיין לא היה עליו.
+      // כך כל שינוי שם גם מקדם רשומות ישנות אל המצב החדש.
+      const renamedId = getModelIdByName(newModels, trimmed);
       for (const item of affectedItems) {
-        await updateDoc(doc(db, 'crm_items', item.id), { model: trimmed, updatedAt: new Date().toISOString() });
+        await updateDoc(doc(db, 'crm_items', item.id), {
+          model: trimmed, ...(renamedId ? { modelId: renamedId } : {}), updatedAt: new Date().toISOString()
+        });
       }
 
       // 3. crm_quotes — עדכון items[] בתוך כל הצעה
       for (const q of affectedQuotes) {
         const newQItems = (q.items || []).map((i: any) =>
-          i.model === oldName ? { ...i, model: trimmed } : i
+          matches(i) ? { ...i, model: trimmed, ...(renamedId ? { modelId: renamedId } : {}) } : i
         );
         await updateDoc(doc(db, 'crm_quotes', q.id), { items: newQItems, updatedAt: new Date().toISOString() });
       }
@@ -2010,7 +2113,7 @@ export default function App() {
       // 4. crm_shipments — עדכון lines[] בתוך כל משלוח
       for (const s of affectedShipments) {
         const newLines = (s.lines || []).map((l: any) =>
-          l.model === oldName ? { ...l, model: trimmed } : l
+          matches(l) ? { ...l, model: trimmed, ...(renamedId ? { modelId: renamedId } : {}) } : l
         );
         await updateDoc(doc(db, 'crm_shipments', s.id), { lines: newLines, updatedAt: new Date().toISOString() });
       }
@@ -2018,7 +2121,7 @@ export default function App() {
       // 5. crm_local_purchases — עדכון lines[]
       for (const lp of affectedLocalPurchases) {
         const newLines = (lp.lines || []).map((l: any) =>
-          l.model === oldName ? { ...l, model: trimmed } : l
+          matches(l) ? { ...l, model: trimmed, ...(renamedId ? { modelId: renamedId } : {}) } : l
         );
         await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
       }
@@ -2031,13 +2134,214 @@ export default function App() {
     setIsSaving(false);
   };
 
+  // ==========================================================================
+  // מיזוג שני דגמים כפולים לדגם אחד
+  // ==========================================================================
+  // הצורך: כשנוסף בטעות דגם *חדש* באיות שונה לאותו מוצר פיזי (למשל
+  // "ICE Machine 5/5" מול "ICE Machine 5x5"), היחידות הפיזיות נשארו תלויות
+  // בדגם הישן — והמערכת דיווחה "אין מלאי" בהצעות שנבנו מול הדגם החדש.
+  // renameModel לא מסוגלת לפתור את זה: היא חוסמת במפורש כששם היעד כבר תפוס.
+  //
+  // הפעולה: כל פריט מלאי / שורת הצעה / שורת משלוח / שורת רכישה ששייכים לדגם
+  // המקור מוצמדים לדגם היעד (גם השם וגם ה-modelId הקבוע), ואז דגם המקור נמחק
+  // מהקטלוג. מכאן ואילך המוצר קיים במערכת פעם אחת בלבד.
+  const mergeModels = async (sourceName: string, targetName: string) => {
+    if (!sourceName || !targetName || sourceName === targetName) return;
+    if (!settings.models?.[sourceName]) { alert(`הדגם "${sourceName}" לא קיים.`); return; }
+    if (!settings.models?.[targetName]) { alert(`הדגם "${targetName}" לא קיים.`); return; }
+
+    // ה-id הקבוע של דגם היעד. אם מיגרציית המזהים טרם רצה, נייצר לו אחד כאן.
+    const targetId = settings.models[targetName].id || generateModelId();
+
+    // איסוף כל הרשומות ששייכות לדגם המקור — לפי id אם יש, אחרת לפי שם.
+    const srcRef = { model: sourceName, modelId: settings.models[sourceName].id || '' };
+    const affectedItems = items.filter(i => isSameModel(i, srcRef, settings.models));
+    const affectedQuotes = quotes.filter(q => q.items?.some((i: any) => isSameModel(i, srcRef, settings.models)));
+    const affectedShipments = shipments.filter(s => s.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
+    const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
+
+    const soldCount = affectedItems.filter(i => i.status === 'sold').length;
+    const stockCount = affectedItems.length - soldCount;
+
+    const confirmed = window.confirm(
+      `מיזוג דגמים\n\n` +
+      `"${sourceName}"  ⟵  יימחק\n` +
+      `"${targetName}"  ⟸  יקלוט את הכל\n\n` +
+      `יועברו לדגם היעד:\n` +
+      `• ${affectedItems.length} פריטי מלאי (מתוכם ${stockCount} פנויים במחסן, ${soldCount} שנמכרו)\n` +
+      `• ${affectedQuotes.length} הצעות מחיר\n` +
+      `• ${affectedShipments.length} משלוחים\n` +
+      `• ${affectedLocalPurchases.length} רכישות מקומיות\n\n` +
+      `הדגם "${sourceName}" יימחק מהקטלוג לצמיתות.\n` +
+      `הפעולה אינה הפיכה. להמשיך?`
+    );
+    if (!confirmed) return;
+
+    setIsSaving(true);
+    try {
+      // 1. crm_items — הצמדה לדגם היעד (שם + מזהה קבוע)
+      for (const item of affectedItems) {
+        await updateDoc(doc(db, 'crm_items', item.id), {
+          model: targetName, modelId: targetId, updatedAt: new Date().toISOString()
+        });
+      }
+
+      // 2. crm_quotes — עדכון items[] בתוך כל הצעה מושפעת
+      for (const q of affectedQuotes) {
+        const newQItems = (q.items || []).map((i: any) =>
+          isSameModel(i, srcRef, settings.models) ? { ...i, model: targetName, modelId: targetId } : i
+        );
+        await updateDoc(doc(db, 'crm_quotes', q.id), { items: newQItems, updatedAt: new Date().toISOString() });
+      }
+
+      // 3. crm_shipments — עדכון lines[]
+      for (const s of affectedShipments) {
+        const newLines = (s.lines || []).map((l: any) =>
+          isSameModel(l, srcRef, settings.models) ? { ...l, model: targetName, modelId: targetId } : l
+        );
+        await updateDoc(doc(db, 'crm_shipments', s.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+
+      // 4. crm_local_purchases — עדכון lines[]
+      for (const lp of affectedLocalPurchases) {
+        const newLines = (lp.lines || []).map((l: any) =>
+          isSameModel(l, srcRef, settings.models) ? { ...l, model: targetName, modelId: targetId } : l
+        );
+        await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+
+      // 5. תמונות — דגם היעד מנצח. משלימים מהמקור רק מה שחסר ליעד.
+      const srcImgs = {
+        itemImgUrl: settingsWithImages.models?.[sourceName]?.itemImgUrl || '',
+        blueprintUrl: settingsWithImages.models?.[sourceName]?.blueprintUrl || '',
+      };
+      const tgtImgs = {
+        itemImgUrl: settingsWithImages.models?.[targetName]?.itemImgUrl || '',
+        blueprintUrl: settingsWithImages.models?.[targetName]?.blueprintUrl || '',
+      };
+      const mergedImgs = {
+        itemImgUrl: tgtImgs.itemImgUrl || srcImgs.itemImgUrl,
+        blueprintUrl: tgtImgs.blueprintUrl || srcImgs.blueprintUrl,
+      };
+      if (mergedImgs.itemImgUrl || mergedImgs.blueprintUrl) {
+        await setDoc(doc(db, 'crm_model_images', getModelImageDocId(targetName)), mergedImgs);
+      }
+      await deleteDoc(doc(db, 'crm_model_images', getModelImageDocId(sourceName))).catch(() => {});
+
+      // 6. הקטלוג עצמו — היעד מקבל id מובטח, והמקור נמחק
+      const newModels = { ...settings.models };
+      newModels[targetName] = { ...newModels[targetName], id: targetId };
+      delete newModels[sourceName];
+      const newSettings = { ...settings, models: stripModelImages(newModels) };
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
+      setSettings(newSettings);
+
+      setModelImages(prev => {
+        const next = { ...prev };
+        next[targetName] = mergedImgs;
+        delete next[sourceName];
+        return next;
+      });
+
+      setMergeModelState(null);
+      alert(
+        `✓ המיזוג הושלם.\n\n` +
+        `${affectedItems.length} פריטי מלאי הוצמדו ל-"${targetName}".\n` +
+        `הדגם "${sourceName}" נמחק מהקטלוג.`
+      );
+    } catch (err: any) {
+      alert(`שגיאה במיזוג הדגמים: ${err?.message || 'שגיאה לא ידועה'}\n\nייתכן שחלק מהרשומות כבר עודכנו — רענן ובדוק לפני ניסיון חוזר.`);
+    }
+    setIsSaving(false);
+  };
+
+  // ==========================================================================
+  // מילוי רטרואקטיבי של modelId לרשומות קיימות
+  // ==========================================================================
+  // הקוד החדש עובד נכון גם בלי זה, בזכות הנפילה-לאחור ב-resolveModelId (שמחפשת
+  // את ה-id לפי השם בקטלוג). אבל אותה נפילה-לאחור עדיין תלויה בשם — ולכן כל עוד
+  // היא בשימוש, לא באמת "ניתקנו" את התלות. הריצה הזו כותבת את ה-id פיזית לכל
+  // רשומה, ומכאן ואילך ההתאמה היא id מול id בלבד.
+  //
+  // בטוח לחלוטין: כותב רק לרשומות שחסר להן modelId ושהשם שלהן מזוהה בקטלוג.
+  // לא משנה שמות, לא משנה סטטוסים, לא מוחק כלום. ניתן להריץ שוב ושוב.
+  const backfillModelIds = async () => {
+    const models = settings.models || {};
+    if (Object.keys(models).length === 0) { alert('אין דגמים בקטלוג.'); return; }
+    const missingIds = Object.entries(models).filter(([, m]: [string, any]) => !(m && m.id));
+    if (missingIds.length > 0) {
+      alert(`עדיין יש ${missingIds.length} דגמים ללא מזהה קבוע. רענן את הדף כדי שהמיגרציה תרוץ, ואז נסה שוב.`);
+      return;
+    }
+
+    // ספירה מקדימה — כמה רשומות באמת ייגעו
+    const itemsToFix = items.filter(i => !i.modelId && getModelIdByName(models, i.model));
+    const quotesToFix = quotes.filter(q => (q.items || []).some((l: any) => !l.modelId && getModelIdByName(models, l.model)));
+    const shipmentsToFix = shipments.filter(s => (s.lines || []).some((l: any) => !l.modelId && getModelIdByName(models, l.model)));
+    const purchasesToFix = localPurchases.filter((lp: any) => (lp.lines || []).some((l: any) => !l.modelId && getModelIdByName(models, l.model)));
+
+    // רשומות שהשם שלהן לא מזוהה בקטלוג — מדווחות ולא נגענות
+    const orphanNames = Array.from(new Set(
+      items.filter(i => !i.modelId && !getModelIdByName(models, i.model)).map(i => i.model)
+    ));
+
+    const total = itemsToFix.length + quotesToFix.length + shipmentsToFix.length + purchasesToFix.length;
+    if (total === 0 && orphanNames.length === 0) { alert('✓ כל הרשומות כבר נושאות מזהה דגם קבוע. אין מה לעדכן.'); return; }
+
+    const confirmed = window.confirm(
+      `מילוי מזהי דגם לרשומות קיימות\n\n` +
+      `ייכתב מזהה קבוע ל:\n` +
+      `• ${itemsToFix.length} פריטי מלאי\n` +
+      `• ${quotesToFix.length} הצעות מחיר\n` +
+      `• ${shipmentsToFix.length} משלוחים\n` +
+      `• ${purchasesToFix.length} רכישות מקומיות\n\n` +
+      (orphanNames.length > 0
+        ? `⚠️ ${orphanNames.length} שמות דגם לא נמצאו בקטלוג ולא ייגעו:\n${orphanNames.join(', ')}\n\n`
+        : '') +
+      `שמות, מחירים וסטטוסים לא ישתנו. להמשיך?`
+    );
+    if (!confirmed) return;
+
+    setIsSaving(true);
+    try {
+      for (const item of itemsToFix) {
+        await updateDoc(doc(db, 'crm_items', item.id), {
+          modelId: getModelIdByName(models, item.model), updatedAt: new Date().toISOString()
+        });
+      }
+      for (const q of quotesToFix) {
+        const newItems = (q.items || []).map((l: any) =>
+          (!l.modelId && getModelIdByName(models, l.model)) ? { ...l, modelId: getModelIdByName(models, l.model) } : l
+        );
+        await updateDoc(doc(db, 'crm_quotes', q.id), { items: newItems, updatedAt: new Date().toISOString() });
+      }
+      for (const s of shipmentsToFix) {
+        const newLines = (s.lines || []).map((l: any) =>
+          (!l.modelId && getModelIdByName(models, l.model)) ? { ...l, modelId: getModelIdByName(models, l.model) } : l
+        );
+        await updateDoc(doc(db, 'crm_shipments', s.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+      for (const lp of purchasesToFix) {
+        const newLines = (lp.lines || []).map((l: any) =>
+          (!l.modelId && getModelIdByName(models, l.model)) ? { ...l, modelId: getModelIdByName(models, l.model) } : l
+        );
+        await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
+      }
+      alert(`✓ הושלם. ${total} רשומות קיבלו מזהה דגם קבוע.`);
+    } catch (err: any) {
+      alert(`שגיאה במילוי המזהים: ${err?.message || 'שגיאה לא ידועה'}\n\nחלק מהרשומות ייתכן שכבר עודכנו — ניתן להריץ שוב בבטחה.`);
+    }
+    setIsSaving(false);
+  };
+
   const handleAddNewModelWithData = async (e: any) => {
       e.preventDefault();
       if (!newModelData.name.trim()) return;
       setIsSaving(true);
       try {
         const leanModels = stripModelImages(settings.models);
-        const newSettings = { ...settings, models: { ...leanModels, [newModelData.name.trim()]: { cbm: Number(newModelData.cbm) || 0 } } };
+        // דגם חדש מקבל id קבוע מיד עם היווצרותו — כך הוא לעולם לא תלוי בשם שלו.
+        const newSettings = { ...settings, models: { ...leanModels, [newModelData.name.trim()]: { id: generateModelId(), cbm: Number(newModelData.cbm) || 0 } } };
         await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
         setNewModelData({ name: '', cbm: 0 });
         setIsModelModalOpen(false);
@@ -2136,32 +2440,49 @@ export default function App() {
     try {
       const sRef = collection(db, 'crm_shipments');
       const itemsRef = collection(db, 'crm_items');
-      const data = { ...editingData, updatedAt: new Date().toISOString() };
+      // כל שורת משלוח נשמרת עם מזהה הדגם הקבוע לצד השם.
+      const data = {
+        ...editingData,
+        lines: (editingData.lines || []).map((l: any) => withModelId(l, settings.models)),
+        updatedAt: new Date().toISOString()
+      };
       
       if (data.id) {
         await updateDoc(doc(sRef, data.id), data);
         
         const currentShipmentItems = items.filter(i => i.shipmentId === data.id);
+        // מפתחים לפי מזהה דגם קבוע ולא לפי שם. קריטי: הלולאה בסוף הבלוק *מוחקת*
+        // פריטים שהמפתח שלהם לא מופיע בשורות המעודכנות. כשהמפתוח היה לפי שם,
+        // כל פער איות בין הפריט לשורה (בדיוק התקלה של "5/5" מול "5x5") גרם
+        // למחיקה שקטה של פריטי מלאי אמיתיים. מפתוח לפי id מונע את זה.
+        // הנפילה-לאחור ל-`name:` שומרת על התנהגות תקינה לשורות שירות/דגמים יתומים.
+        const keyOf = (entry: any) => {
+          const id = resolveModelId(entry, settings.models);
+          return id ? `id:${id}` : `name:${(entry && entry.model) || ''}`;
+        };
         const currentItemsByModel: any = {};
         currentShipmentItems.forEach(item => {
-          if (!currentItemsByModel[item.model]) currentItemsByModel[item.model] = [];
-          currentItemsByModel[item.model].push(item);
+          const k = keyOf(item);
+          if (!currentItemsByModel[k]) currentItemsByModel[k] = [];
+          currentItemsByModel[k].push(item);
         });
 
         const modelsInUpdatedLines = new Set();
 
         for (const line of data.lines) {
           const model = line.model;
-          modelsInUpdatedLines.add(model);
+          const lineKey = keyOf(line);
+          modelsInUpdatedLines.add(lineKey);
           const desiredQty = Number(line.qty) || 0;
-          const currentModelItems = currentItemsByModel[model] || [];
+          const currentModelItems = currentItemsByModel[lineKey] || [];
           const currentQty = currentModelItems.length;
           const diff = desiredQty - currentQty;
 
           if (diff > 0) {
             for (let i = 0; i < diff; i++) {
               await addDoc(itemsRef, { 
-                shipmentId: data.id, model: model, status: data.status || 'ordered', 
+                shipmentId: data.id, model: model, modelId: resolveModelId(line, settings.models),
+                status: data.status || 'ordered', 
                 arrivalDate: data.arrivalDate || null, factoryUnitCostUSD: Number(line.unitCostUSD) || 0, 
                 serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, 
                 campaignId: '', createdAt: new Date().toISOString() 
@@ -2190,9 +2511,11 @@ export default function App() {
           }
         }
 
-        for (const model in currentItemsByModel) {
-          if (!modelsInUpdatedLines.has(model)) {
-            for (const item of currentItemsByModel[model]) {
+        // מוחק פריטים ששורת הדגם שלהם הוסרה כליל מהמשלוח. הבדיקה היא לפי מפתח
+        // מזהה קבוע — כך שינוי שם דגם לעולם לא ייראה כאן כ"שורה שנמחקה".
+        for (const modelKey in currentItemsByModel) {
+          if (!modelsInUpdatedLines.has(modelKey)) {
+            for (const item of currentItemsByModel[modelKey]) {
               if (!item._deleted) await deleteDoc(doc(db, 'crm_items', item.id));
             }
           }
@@ -2203,7 +2526,7 @@ export default function App() {
         const docRef = await addDoc(sRef, data);
         for (const line of data.lines) {
           for (let i=0; i<(Number(line.qty)||0); i++) {
-            await addDoc(itemsRef, { shipmentId: docRef.id, model: line.model, status: 'ordered', factoryUnitCostUSD: Number(line.unitCostUSD) || 0, serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: new Date().toISOString() });
+            await addDoc(itemsRef, { shipmentId: docRef.id, model: line.model, modelId: resolveModelId(line, settings.models), status: 'ordered', factoryUnitCostUSD: Number(line.unitCostUSD) || 0, serialNumber: '', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: new Date().toISOString() });
           }
         }
       }
@@ -2220,7 +2543,8 @@ export default function App() {
       
       if (data.isGlobalSale) {
         if (!data.model) throw new Error("חובה לבחור דגם");
-        const availableItem = items.find(i => i.model === data.model && i.status === 'in_warehouse');
+        // מכירה ישירה — אותה התאמה לפי מזהה קבוע כמו באישור הצעת מחיר.
+        const availableItem = items.find(i => isSameModel(i, data, settings.models) && i.status === 'in_warehouse');
         if (!availableItem) throw new Error("אין פריטים פנויים מדגם זה במלאי ברגע זה.");
         
         const updatePayload = {
@@ -2804,7 +3128,8 @@ export default function App() {
         date: form.date,
         notes: form.notes,
         totalCostILS,
-        lines: form.lines,
+        // כל שורת רכישה מקומית נשמרת עם מזהה הדגם הקבוע לצד השם.
+        lines: (form.lines || []).map((l: any) => withModelId(l, settings.models)),
         createdAt: new Date().toISOString(),
         createdBy: user?.email || '',
       };
@@ -2824,6 +3149,7 @@ export default function App() {
             localCostILS: costPerUnit,
             localCostBeforeVat: costBeforeVat,
             model: line.model,
+            modelId: resolveModelId(line, settings.models),
             status: 'in_warehouse',
             shipmentId: null,
             factoryUnitCostUSD: 0,
@@ -3390,7 +3716,8 @@ export default function App() {
       const quotePayload = {
         customerId: quoteData.customerId,
         date: quoteData.date,
-        items: quoteData.items,
+        // כל שורת הצעה נשמרת עם מזהה הדגם הקבוע לצד השם. השם לתצוגה, ה-id להתאמת מלאי.
+        items: (quoteData.items || []).map((it: any) => withModelId(it, settings.models)),
         shippingCost: quoteData.shippingCost,
         warrantyMonths: Number(quoteData.warrantyMonths) || 0,
         campaignId: quoteData.campaignId || '',
@@ -3430,7 +3757,7 @@ export default function App() {
     if (modelsList.length > 0) {
       const model = modelsList[0];
       const lp = Number(settings?.models?.[model]?.listPrice) || 0;
-      setQuoteData({...quoteData, items: [...quoteData.items, { model, qty: 1, listPrice: lp, discount: 0, finalPrice: lp, price: lp, customNotes: '' }]});
+      setQuoteData({...quoteData, items: [...quoteData.items, { model, modelId: getModelIdByName(settings?.models, model), qty: 1, listPrice: lp, discount: 0, finalPrice: lp, price: lp, customNotes: '' }]});
     }
   };
 
@@ -3440,6 +3767,8 @@ export default function App() {
     // auto-fill listPrice when model changes
     if (field === 'model') {
       const lp = Number(settings?.models?.[value]?.listPrice) || 0;
+      // נועל את מזהה הדגם הקבוע ברגע הבחירה — מכאן ואילך השורה קשורה למוצר, לא לשם.
+      item.modelId = getModelIdByName(settings?.models, value);
       item.listPrice = lp;
       item.discount = 0;
       item.finalPrice = lp;
@@ -3509,7 +3838,12 @@ export default function App() {
     // נתיב 1: אישור עם גריעת מלאי (מכל סטטוס שאינו approved)
     if (newStatus === 'approved') {
       const itemsToProcess = quote.items.map((item: any) => ({
-        model: item.model, qty: item.qty,
+        model: item.model,
+        // חובה להעביר את מזהה הדגם הלאה — אחרת ההתאמה במסך האישור תיפול חזרה
+        // להשוואת שם, וזו בדיוק התקלה שהמעבר ל-modelId בא לפתור.
+        // resolveModelId מכסה גם הצעות ישנות שנשמרו לפני המעבר (נפילה-לאחור לפי שם).
+        modelId: resolveModelId(item, settings.models),
+        qty: item.qty,
         salePrice: getEffectivePrice(item),
         discountAmount: Number(item.discount || 0),
         saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
@@ -3576,7 +3910,9 @@ export default function App() {
       try {
         const updatesToMake = [];
         for (const line of quoteApprovalData.itemsToProcess) {
-            const availableItems = items.filter(i => i.model === line.model && i.status === 'in_warehouse');
+            // התאמה לפי מזהה דגם קבוע (עם נפילה-לאחור לשם עבור נתונים שטרם עברו מיגרציה).
+            // זה הלב של התיקון: שינוי שם דגם כבר לא מנתק פריטי מלאי מהצעת המחיר.
+            const availableItems = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse');
             if (availableItems.length < line.qty) {
                 throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${line.qty}, פנוי: ${availableItems.length})`);
             }
@@ -4227,7 +4563,7 @@ export default function App() {
               <button 
                 onClick={() => { 
                   setIsFabOpen(false); 
-                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
+                  setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', modelId: getModelIdByName(settings?.models, modelsList[0] || ''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                   setIsQuoteModalOpen(true); 
                 }} 
                 className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
@@ -4480,6 +4816,37 @@ export default function App() {
                   
                   return (
                   <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
+                    {/* לוח מיזוג — נפתח כשלוחצים "מזג" על הדגם הזה */}
+                    {mergeModelState?.source === model && (
+                      <div className="mb-4 bg-[#F7F1F1] border-2 border-[#A55F60] rounded-lg p-4">
+                        <p className="font-bold text-[#651011] mb-1">מיזוג דגם כפול</p>
+                        <p className="text-xs text-slate-600 mb-3">
+                          לשימוש כשאותו מוצר פיזי נוצר בטעות פעמיים בשמות שונים.
+                          כל פריטי המלאי, ההצעות, המשלוחים והרכישות של <b>"{model}"</b> יועברו לדגם שתבחר,
+                          והדגם <b>"{model}"</b> יימחק מהקטלוג.
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-slate-700">מזג את "{model}" לתוך:</span>
+                          <select
+                            className="border border-[#A55F60] rounded-md p-1.5 text-sm bg-white font-medium"
+                            value={mergeModelState.target}
+                            onChange={e => setMergeModelState({ source: model, target: e.target.value })}
+                          >
+                            <option value="">— בחר דגם יעד —</option>
+                            {modelsList.filter(m => m !== model).map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          <button
+                            onClick={() => mergeModels(model, mergeModelState.target)}
+                            disabled={isSaving || !mergeModelState.target}
+                            className="bg-[#7B1315] text-white text-xs px-4 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-40"
+                          >בצע מיזוג</button>
+                          <button
+                            onClick={() => setMergeModelState(null)}
+                            className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white"
+                          >ביטול</button>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex justify-between items-center mb-4">
                         {/* שם דגם + עריכה inline */}
                         {editingModelName?.old === model ? (
@@ -4514,6 +4881,13 @@ export default function App() {
                               title="ערוך שם דגם"
                             >
                               <Edit className="w-3.5 h-3.5"/>
+                            </button>
+                            <button
+                              onClick={() => setMergeModelState({ source: model, target: '' })}
+                              className="text-slate-400 hover:text-[#7B1315] p-1 rounded transition-colors text-xs font-bold border border-slate-200 px-2"
+                              title="מזג דגם זה לתוך דגם אחר (לשימוש כשאותו מוצר נוצר פעמיים בשמות שונים)"
+                            >
+                              מזג
                             </button>
                           </div>
                         )}
@@ -4562,7 +4936,13 @@ export default function App() {
                   </div>
                 )})}
               </div>
-              <div className="mt-6 flex justify-end">
+              <div className="mt-6 flex justify-between items-center gap-4 flex-wrap">
+                <button
+                  onClick={backfillModelIds}
+                  disabled={isSaving}
+                  className="text-sm text-slate-600 hover:text-[#7B1315] border border-slate-300 px-4 py-2 rounded-md font-medium bg-white disabled:opacity-50"
+                  title="כותב מזהה דגם קבוע לכל פריט/הצעה/משלוח קיימים. בטוח להרצה חוזרת."
+                >🔗 מלא מזהי דגם לרשומות קיימות</button>
                 <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור הגדרות (לוגו ודגמים)</button>
               </div>
             </div>
@@ -4954,7 +5334,7 @@ export default function App() {
                           )}
                         </div>
                         <button className="lead-actions text-[10px] bg-[#F7F1F1] text-[#651011] px-2 py-0.5 rounded font-medium hover:bg-[#EDDEDE] flex items-center gap-1"
-                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
+                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
                           <FileText className="w-3 h-3"/> הצעה
                         </button>
                         <button className="lead-actions text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded font-medium hover:bg-green-100 flex items-center gap-1"
@@ -5111,7 +5491,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1 customer-actions">
-                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -6037,7 +6417,7 @@ export default function App() {
                icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
+                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', modelId: getModelIdByName(settings?.models, calculatedData.availableModelsInStock[0] || ''), salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
                 setIsItemModalOpen(true); 
               }} 
             />
@@ -6053,7 +6433,7 @@ export default function App() {
                icon={FileText} iconColor="text-blue-500" label="הצעת מחיר חדשה"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
+                setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', modelId: getModelIdByName(settings?.models, modelsList[0] || ''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
                 setIsQuoteModalOpen(true); 
               }} 
             />
@@ -6103,7 +6483,7 @@ export default function App() {
                     <label className="block text-sm font-medium text-slate-700 mb-1">בחר דגם למכירה <span className="text-red-500">*</span></label>
                     <select required className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={editingData.model || ''} onChange={e => {
                       const lp = Number(settings?.models?.[e.target.value]?.listPrice) || 0;
-                      setEditingData({...editingData, model: e.target.value, salePrice: lp - (Number(editingData.discount)||0), discount: editingData.discount || 0});
+                      setEditingData({...editingData, model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value), salePrice: lp - (Number(editingData.discount)||0), discount: editingData.discount || 0});
                     }}>
                       {calculatedData.availableModelsInStock.length === 0 && <option value="">אין דגמים במלאי</option>}
                       {calculatedData.availableModelsInStock.map((m: string) => (
@@ -6278,7 +6658,7 @@ export default function App() {
                     {editingData.lines.length > 1 && <button type="button" onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
                     <div className="flex-1">
                       <label className="block text-xs font-bold text-slate-600 mb-1">דגם</label>
-                      <select className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value}; setEditingData({...editingData, lines: newLines}); }}>
+                      <select className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>
                         {modelsList.map((m: string) => <option key={m} value={m}>{m}</option>)}
                       </select>
                     </div>
@@ -8234,7 +8614,7 @@ export default function App() {
                 <div className="space-y-2">
                   {localStockForm.lines.map((line: any, idx: number) => (
                     <div key={idx} className="flex gap-2 items-center bg-slate-50 p-2 rounded-lg">
-                      <select className="flex-1 border-slate-300 rounded p-2 text-sm border bg-white" value={line.model} onChange={e => { const nl = [...localStockForm.lines]; nl[idx] = {...nl[idx], model: e.target.value}; setLocalStockForm({...localStockForm, lines: nl}); }}>
+                      <select className="flex-1 border-slate-300 rounded p-2 text-sm border bg-white" value={line.model} onChange={e => { const nl = [...localStockForm.lines]; nl[idx] = {...nl[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setLocalStockForm({...localStockForm, lines: nl}); }}>
                         {modelsList.map((m: string) => <option key={m} value={m}>{m}</option>)}
                       </select>
                       <div className="flex items-center gap-1">
