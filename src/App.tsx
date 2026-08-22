@@ -4,7 +4,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -539,8 +539,9 @@ const AGENTS = [
 ];
 
 // שלבים שבהם הכדור אצל הלקוח — אם אין תזכורת מעקב, נקבעת אחת אוטומטית.
-// זה מה שמונע מלידים "להיעלם" אחרי שנשלחה הצעה ואף אחד לא חזר אליהם.
-const AUTO_FOLLOWUP_STAGES = ['quote_sent', 'waiting'];
+// callback כלול בכוונה: זה בדיוק השלב שאמור להזכיר "צריך לחזור אליו",
+// והוא היה חסר בהגדרה המקורית — ליד שם היה יכול לשבת בלי שום דחיפה.
+const AUTO_FOLLOWUP_STAGES = ['quote_sent', 'waiting', 'callback'];
 const AUTO_FOLLOWUP_BUSINESS_DAYS = 3;
 
 // מוסיף ימי עסקים (מדלג על שישי/שבת) ומחזיר תאריך בפורמט YYYY-MM-DD.
@@ -1062,9 +1063,7 @@ export default function App() {
   const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   // Leads UI States
-  const [assignDropdownId, setAssignDropdownId] = useState<string | null>(null);
   const [quickAssignInput, setQuickAssignInput] = useState('');
-  const [leadFollowupEditId, setLeadFollowupEditId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Data States
@@ -2664,14 +2663,13 @@ export default function App() {
       // 4. ייבוא
       const dataRows = rows.slice(1);
 
-      // סבב הוגן בין הנציגים: במקום להתחיל תמיד מהנציג הראשון (שגרם להטיה שיטתית
-      // לטובתו בכל ייבוא), מתחילים מהנציג שיש לו הכי פחות לידים מפייסבוק כרגע.
-      // המנגנון מתקן את עצמו לאורך זמן ולא תלוי במונה שנשמר ועלול להתקלקל.
+      // סבב הוגן בין הנציגים: סופרים את כלל הלידים של כל נציג, מכל המקורות —
+      // לא רק לידי פייסבוק. אותה שיטה בדיוק כמו ב-website-lead.js. לספור רק
+      // לידי פייסבוק היה יוצר שתי תמונות איזון נפרדות שיכולות לסתור זו את זו:
+      // ייבוא פייסבוק יכול להטות דווקא לטובת נציג שכבר מוביל במספר לידים כולל,
+      // רק כי הוא מפגר ספציפית בפייסבוק.
       const fbLeadCounts = AGENTS.map(a =>
-        existingSnap.docs.filter(d => {
-          const x = d.data();
-          return x.source === 'facebook' && x.assignedTo === a.email;
-        }).length
+        existingSnap.docs.filter(d => d.data().assignedTo === a.email).length
       );
       let agentIndex = fbLeadCounts.indexOf(Math.min(...fbLeadCounts));
 
@@ -2759,6 +2757,10 @@ export default function App() {
   const saveLeadField = async (customerId: string, fields: Record<string, any>) => {
     try {
       const payload: Record<string, any> = { ...fields };
+      const current =
+        selectedCustomer?.id === customerId
+          ? selectedCustomer
+          : customers.find((c: any) => c.id === customerId);
 
       // תזכורת מעקב אוטומטית: כשליד עובר לשלב שבו מחכים לתשובת הלקוח
       // ואין לו תזכורת קיימת — נקבעת אחת אוטומטית כדי שלא ייפול בין הכיסאות.
@@ -2767,15 +2769,22 @@ export default function App() {
         AUTO_FOLLOWUP_STAGES.includes(payload.leadStage) &&
         !('followUpDate' in payload)
       ) {
-        const current =
-          selectedCustomer?.id === customerId
-            ? selectedCustomer
-            : customers.find((c: any) => c.id === customerId);
         if (!current?.followUpDate) {
           payload.followUpDate = addBusinessDays(AUTO_FOLLOWUP_BUSINESS_DAYS);
           payload.followUpNote =
             current?.followUpNote || `מעקב אוטומטי — ${LEAD_STAGE_MAP[payload.leadStage] || ''}`;
         }
+      }
+
+      // איפוס דגל ההתראה בשיוך מחדש: lead-notifier מסמן pushSentAt פעם אחת ולא
+      // מנקה אותו לבד. בלי האיפוס כאן, נציג חדש שמקבל ליד ששויך בעבר למישהו
+      // אחר לא יקבל שום פוש — בדיוק המצב שההתראות אמורות למנוע.
+      if (
+        'assignedTo' in payload &&
+        payload.assignedTo &&
+        payload.assignedTo !== current?.assignedTo
+      ) {
+        payload.pushSentAt = null;
       }
 
       await updateDoc(doc(db, 'crm_customers', customerId), { ...payload, updatedAt: new Date().toISOString() });
@@ -5284,117 +5293,58 @@ export default function App() {
                 const isStale = daysSinceContact !== null && daysSinceContact >= 7;
                 const followUpOverdue = c.followUpDate && c.followUpDate < todayStr3;
                 const followUpToday = c.followUpDate && c.followUpDate === todayStr3;
-                const followUpSoon = c.followUpDate && c.followUpDate > todayStr3;
+                const initials = (c.businessName || c.contactName || '?').trim().slice(0, 2);
+                const stageColorClasses = LEAD_STAGE_COLORS[c.leadStage] || 'bg-slate-100 text-slate-600';
 
+                // מקור הליד: רק שני ערכים אמיתיים קיימים היום בנתונים — facebook ו-website.
+                // כל דבר אחר (כולל ריק) פירושו שהליד נוצר ידנית בתוך ה-CRM.
+                const sourceBadge =
+                  c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק' }
+                  : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
+                  : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };
+
+                // שורה קומפקטית אחת במקום כרטיס מלא. שיוך נציג, עריכת תזכורת ופרטי קשר
+                // מלאים עברו לפאנל הפרטים — הם כבר קיימים שם במלואם, ולא צריך לשכפל אותם כאן.
+                // הפעולה המהירה היחידה שנשארת בשורה היא שליחת קטלוג, לפי מה שביקשת.
                 return (
-                  <div key={c.id} className={`bg-white border rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col cursor-pointer relative ${isStale ? 'border-orange-200' : 'border-slate-200'}`}
-                    onClick={e => { if ((e.target as HTMLElement).closest('.lead-actions')) return; setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}>
+                  <div key={c.id}
+                    onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+                    className="flex items-center gap-3 px-3 py-2.5 bg-white border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors">
 
-                    {/* top colored stripe based on stage */}
-                    <div className={`h-1 rounded-t-lg ${c.leadStage === 'not_relevant' ? 'bg-slate-300' : c.leadStage === 'callback' ? 'bg-teal-400' : c.leadStage === 'quote_sent' ? 'bg-purple-400' : c.leadStage === 'waiting' ? 'bg-green-400' : c.leadStage === 'contacted' ? 'bg-orange-400' : 'bg-blue-400'}`}/>
-
-                    <div className="p-4 flex-1">
-                      {/* Header */}
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-bold text-slate-800 truncate">{c.businessName || c.contactName}</h3>
-                          {c.businessName && c.contactName && <p className="text-xs text-slate-500">{c.contactName}</p>}
-                        </div>
-                        <div className="flex gap-1 lead-actions shrink-0 mr-1">
-                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="עריכה"><Edit className="w-3.5 h-3.5"/></button>
-                          <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1" title="מחיקה"><Trash2 className="w-3.5 h-3.5"/></button>
-                        </div>
+                    <div className="relative shrink-0">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold ${stageColorClasses}`}>
+                        {initials}
                       </div>
-
-                      {/* Badges row */}
-                      <div className="flex flex-wrap gap-1 mb-3">
-                        {c.leadStage && (
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${LEAD_STAGE_COLORS[c.leadStage] || 'bg-slate-100 text-slate-600'}`}>
-                            {LEAD_STAGE_MAP[c.leadStage] || c.leadStage}
-                          </span>
-                        )}
-                        {c.businessType && <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}</span>}
-                        {isStale && daysSinceContact !== null && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-medium">⚠️ {daysSinceContact} ימים ללא קשר</span>
-                        )}
-                        {!isStale && daysSinceContact !== null && daysSinceContact > 0 && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-50 text-slate-400">{daysSinceContact} ימים</span>
-                        )}
-                      </div>
-
-                      {/* Contact info */}
-                      <div className="space-y-1 text-xs text-slate-600 mb-3">
-                        {c.phone && <div className="flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-[#7B1315]" onClick={e => e.stopPropagation()}>{c.phone}</a></div>}
-                        {c.address && <div className="flex items-center gap-1.5"><MapPin className="w-3 h-3 text-slate-400"/> <span className="truncate">{c.address}</span></div>}
-                      </div>
-
-                      {/* Follow-up date */}
-                      {(c.followUpDate || leadFollowupEditId === c.id) ? (
-                        <div className={`rounded-md px-2.5 py-1.5 text-xs mb-2 lead-actions ${followUpOverdue ? 'bg-red-50 border border-red-200' : followUpToday ? 'bg-amber-50 border border-amber-200' : 'bg-green-50 border border-green-200'}`}>
-                          {leadFollowupEditId === c.id ? (
-                            <div className="flex flex-col gap-1" onClick={e => e.stopPropagation()}>
-                              <input type="date" className="w-full border border-slate-300 rounded p-1 text-xs" defaultValue={c.followUpDate || todayStr3}
-                                onBlur={async e => { await saveLeadField(c.id, { followUpDate: e.target.value }); setLeadFollowupEditId(null); }}
-                                autoFocus />
-                              <input type="text" className="w-full border border-slate-300 rounded p-1 text-xs" placeholder="הערה (לדוגמה: לקוח ביקש להתקשר אחרי 17:00)" defaultValue={c.followUpNote || ''}
-                                onBlur={async e => { await saveLeadField(c.id, { followUpNote: e.target.value }); }} />
-                              <button className="text-[10px] text-slate-400 hover:text-red-500 self-end" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { followUpDate: null, followUpNote: '' }); setLeadFollowupEditId(null); }}>הסר תזכורת</button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-between" onClick={e => { e.stopPropagation(); setLeadFollowupEditId(c.id); }}>
-                              <div className="flex items-center gap-1">
-                                <CalendarDays className={`w-3 h-3 ${followUpOverdue ? 'text-red-500' : followUpToday ? 'text-amber-600' : 'text-green-600'}`}/>
-                                <span className={`font-medium ${followUpOverdue ? 'text-red-600' : followUpToday ? 'text-amber-700' : 'text-green-700'}`}>
-                                  {followUpToday ? 'היום!' : followUpOverdue ? `⚠️ ${new Date(c.followUpDate).toLocaleDateString('he-IL')}` : new Date(c.followUpDate).toLocaleDateString('he-IL')}
-                                </span>
-                              </div>
-                              <Edit className="w-2.5 h-2.5 text-slate-400"/>
-                            </div>
-                          )}
-                          {!leadFollowupEditId && c.followUpNote && <p className="text-[10px] text-slate-500 mt-0.5 italic truncate">"{c.followUpNote}"</p>}
-                        </div>
-                      ) : (
-                        <button className="lead-actions text-[10px] text-slate-400 hover:text-[#7B1315] flex items-center gap-1 mb-2"
-                          onClick={e => { e.stopPropagation(); setLeadFollowupEditId(c.id); }}>
-                          <CalendarDays className="w-3 h-3"/> + קבע תזכורת חזרה
-                        </button>
-                      )}
-
-                      {/* Footer: assignee + quick actions */}
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                        <div className="relative lead-actions">
-                          {assignDropdownId === c.id ? (
-                            <div className="flex items-center gap-1 flex-wrap" onClick={e => e.stopPropagation()}>
-                              {AGENTS.map(a => (
-                                <button key={a.email}
-                                  className={`text-xs px-2.5 py-1 rounded-full font-bold border transition-colors ${c.assignedTo === a.email ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60] hover:text-[#7B1315]'}`}
-                                  onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: a.email }); setAssignDropdownId(null); }}>
-                                  {a.name}
-                                </button>
-                              ))}
-                              <button className="text-[10px] text-slate-400 hover:text-red-500 px-1" onClick={async e => { e.stopPropagation(); await saveLeadField(c.id, { assignedTo: '' }); setAssignDropdownId(null); }}>✕ הסר</button>
-                            </div>
-                          ) : (
-                            <button className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-[#7B1315] transition-colors"
-                              onClick={e => { e.stopPropagation(); setAssignDropdownId(c.id); }}>
-                              <User className="w-3 h-3"/>
-                              {c.assignedTo ? <span className="font-medium text-[#7B1315]">{AGENTS.find(a => a.email === c.assignedTo)?.name || c.assignedTo.split('@')[0]}</span> : <span className="text-slate-400">לא מוקצה — לחץ לשיוך</span>}
-                            </button>
-                          )}
-                        </div>
-                        <button className="lead-actions text-[10px] bg-[#F7F1F1] text-[#651011] px-2 py-0.5 rounded font-medium hover:bg-[#EDDEDE] flex items-center gap-1"
-                          onClick={e => { e.stopPropagation(); setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }}>
-                          <FileText className="w-3 h-3"/> הצעה
-                        </button>
-                        <button className="lead-actions text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded font-medium hover:bg-green-100 flex items-center gap-1"
-                          onClick={e => { e.stopPropagation(); setCatalogSendTarget(c); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
-                          📤 קטלוג
-                        </button>
+                      <div title={sourceBadge.label} className={`absolute -bottom-0.5 -left-0.5 w-3.5 h-3.5 rounded-full flex items-center justify-center ring-2 ring-white ${sourceBadge.cls}`}>
+                        <sourceBadge.Icon className="w-2 h-2" strokeWidth={2.5}/>
                       </div>
                     </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">{c.businessName || c.contactName}</p>
+                    </div>
+
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 hidden sm:inline-block ${stageColorClasses}`}>
+                      {LEAD_STAGE_MAP[c.leadStage] || c.leadStage || 'חדש'}
+                    </span>
+
+                    <span className={`text-[10px] shrink-0 w-16 text-left ${followUpOverdue ? 'text-red-600 font-bold' : followUpToday ? 'text-amber-600 font-bold' : isStale ? 'text-orange-500' : 'text-slate-400'}`}>
+                      {followUpToday ? 'תזכורת היום' : followUpOverdue ? 'תזכורת באיחור' : daysSinceContact !== null ? `לפני ${daysSinceContact} ימים` : ''}
+                    </span>
+
+                    <button className="lead-actions text-slate-400 hover:text-green-600 p-1 shrink-0" title="שלח קטלוג"
+                      onClick={e => { e.stopPropagation(); setCatalogSendTarget(c); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
+                      📤
+                    </button>
                   </div>
                 );
               };
+
+              // "דחוף עכשיו": תזכורת שעברה או שהיום, וליד "חדש" שעדיין לא נוצר איתו קשר בכלל.
+              // נגזר מ-filteredLeads הקיים — מכבד את הסינון שכבר נבחר, בלי שאילתה נפרדת.
+              const urgentOverdue = filteredLeads.filter(c => c.followUpDate && c.followUpDate < todayStr3);
+              const urgentToday = filteredLeads.filter(c => c.followUpDate && c.followUpDate === todayStr3);
+              const urgentNew = filteredLeads.filter(c => (c.leadStage || 'new') === 'new' && (!c.interactionLogs || c.interactionLogs.length === 0) && !urgentOverdue.includes(c) && !urgentToday.includes(c));
 
               return (
                 <div>
@@ -5423,15 +5373,28 @@ export default function App() {
                     </select>
                   </div>
 
+                  {/* דחוף עכשיו — לא מוצג בתוך פילטר "תזכורות היום" כדי לא לשכפל את מה שכבר מוצג למטה */}
+                  {leadsFilter !== 'today' && (urgentOverdue.length + urgentToday.length + urgentNew.length) > 0 && (
+                    <div className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <AlertTriangle className="w-4 h-4 text-[#7B1315]"/>
+                        <h4 className="text-sm font-bold text-[#7B1315]">דחוף עכשיו ({urgentOverdue.length + urgentToday.length + urgentNew.length})</h4>
+                      </div>
+                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                        {[...urgentOverdue, ...urgentToday, ...urgentNew].map(renderLeadCard)}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Unassigned section */}
                   {unassigned.length > 0 && leadsFilter !== 'mine' && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
                         <AlertTriangle className="w-4 h-4 text-amber-500"/>
                         <h4 className="text-sm font-bold text-amber-700">לא מוקצה ({unassigned.length})</h4>
-                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">לחץ על שם הנציג בכרטיס לשיוך מיידי</span>
+                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">לחץ על הליד לשיוך</span>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100">
                         {unassigned.map(renderLeadCard)}
                       </div>
                     </div>
@@ -5443,7 +5406,7 @@ export default function App() {
                       {unassigned.length > 0 && leadsFilter !== 'mine' && (
                         <h4 className="text-sm font-bold text-slate-600 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> לידים משויכים ({assigned.length})</h4>
                       )}
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100">
                         {assigned.map(renderLeadCard)}
                       </div>
                     </div>
@@ -5471,7 +5434,7 @@ export default function App() {
                       {isArchiveOpen && (
                         <div className="mt-4">
                           <p className="text-xs text-slate-400 mb-3">לחץ על כרטיס ליד לפתיחת חלון הסקירה — ניתן לשנות שלב ולהחזיר לרשימה הפעילה.</p>
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 opacity-70">
+                          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100 opacity-70">
                             {archivedLeads.map(renderLeadCard)}
                           </div>
                         </div>
