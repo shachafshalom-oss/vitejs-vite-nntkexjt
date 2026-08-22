@@ -2147,32 +2147,39 @@ export default function App() {
   // מהקטלוג. מכאן ואילך המוצר קיים במערכת פעם אחת בלבד.
   const mergeModels = async (sourceName: string, targetName: string) => {
     if (!sourceName || !targetName || sourceName === targetName) return;
-    if (!settings.models?.[sourceName]) { alert(`הדגם "${sourceName}" לא קיים.`); return; }
     if (!settings.models?.[targetName]) { alert(`הדגם "${targetName}" לא קיים.`); return; }
 
     // ה-id הקבוע של דגם היעד. אם מיגרציית המזהים טרם רצה, נייצר לו אחד כאן.
     const targetId = settings.models[targetName].id || generateModelId();
 
     // איסוף כל הרשומות ששייכות לדגם המקור — לפי id אם יש, אחרת לפי שם.
-    const srcRef = { model: sourceName, modelId: settings.models[sourceName].id || '' };
+    // המקור לא חייב להיות קיים בקטלוג: זה בדיוק המקרה של "דגם יתום" — שם
+    // שמופיע על פריטים/הצעות/משלוחים בפועל, אבל נמחק (או שלא נוצר) בקטלוג עצמו.
+    const srcRef = { model: sourceName, modelId: settings.models?.[sourceName]?.id || '' };
     const affectedItems = items.filter(i => isSameModel(i, srcRef, settings.models));
     const affectedQuotes = quotes.filter(q => q.items?.some((i: any) => isSameModel(i, srcRef, settings.models)));
     const affectedShipments = shipments.filter(s => s.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
     const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
 
+    if (!settings.models?.[sourceName] && affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length === 0) {
+      alert(`"${sourceName}" לא קיים בקטלוג ואין אף רשומה שמשתמשת בו. אין מה למזג.`);
+      return;
+    }
+
     const soldCount = affectedItems.filter(i => i.status === 'sold').length;
     const stockCount = affectedItems.length - soldCount;
 
+    const sourceIsOrphan = !settings.models?.[sourceName];
     const confirmed = window.confirm(
       `מיזוג דגמים\n\n` +
-      `"${sourceName}"  ⟵  יימחק\n` +
+      `"${sourceName}"  ⟵  ${sourceIsOrphan ? 'שם יתום (לא בקטלוג), הרשומות שלו יוצמדו' : 'יימחק'}\n` +
       `"${targetName}"  ⟸  יקלוט את הכל\n\n` +
       `יועברו לדגם היעד:\n` +
       `• ${affectedItems.length} פריטי מלאי (מתוכם ${stockCount} פנויים במחסן, ${soldCount} שנמכרו)\n` +
       `• ${affectedQuotes.length} הצעות מחיר\n` +
       `• ${affectedShipments.length} משלוחים\n` +
       `• ${affectedLocalPurchases.length} רכישות מקומיות\n\n` +
-      `הדגם "${sourceName}" יימחק מהקטלוג לצמיתות.\n` +
+      (sourceIsOrphan ? '' : `הדגם "${sourceName}" יימחק מהקטלוג לצמיתות.\n`) +
       `הפעולה אינה הפיכה. להמשיך?`
     );
     if (!confirmed) return;
@@ -4808,6 +4815,48 @@ export default function App() {
               </form>
               
               <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת</h3>
+
+              {/* שמות דגם יתומים: מופיעים על פריטים/הצעות/משלוחים/רכישות בפועל, */}
+              {/* אבל אין להם רשומה בקטלוג (למשל נמחקו ישירות ב-Firestore, מחוץ לממשק). */}
+              {/* mergeModels יודעת לטפל בהם גם בלי רשומת קטלוג — כאן רק נותנים להם כפתור. */}
+              {(() => {
+                const catalogNames = new Set(Object.keys(settings.models || {}));
+                const orphanSet = new Set<string>();
+                items.forEach(i => { if (i.model && !catalogNames.has(i.model)) orphanSet.add(i.model); });
+                quotes.forEach(q => (q.items || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
+                shipments.forEach(s => (s.lines || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
+                localPurchases.forEach((lp: any) => (lp.lines || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
+                const orphans = Array.from(orphanSet);
+                if (orphans.length === 0) return null;
+                return (
+                  <div className="mb-6 bg-[#FBE9E9] border-2 border-[#7B1315] rounded-lg p-4">
+                    <p className="font-bold text-[#651011] mb-1">⚠️ {orphans.length} שמות דגם יתומים</p>
+                    <p className="text-xs text-slate-600 mb-3">
+                      מופיעים על פריטי מלאי/הצעות/משלוחים בפועל, אבל אין להם רשומה בקטלוג —
+                      כנראה נמחקו במסד הנתונים ישירות, לא דרך המסך הזה. אפשר להצמיד כל אחד מהם לדגם קיים בקטלוג.
+                    </p>
+                    {orphans.map(orphan => (
+                      <div key={orphan} className="flex items-center gap-2 flex-wrap mb-2 last:mb-0">
+                        <span className="text-sm font-medium text-slate-700">"{orphan}" ←</span>
+                        <select
+                          className="border border-[#A55F60] rounded-md p-1.5 text-sm bg-white font-medium"
+                          value={mergeModelState?.source === orphan ? mergeModelState.target : ''}
+                          onChange={e => setMergeModelState({ source: orphan, target: e.target.value })}
+                        >
+                          <option value="">— בחר דגם יעד —</option>
+                          {modelsList.map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                        <button
+                          onClick={() => mergeModels(orphan, mergeModelState?.source === orphan ? mergeModelState.target : '')}
+                          disabled={isSaving || !(mergeModelState?.source === orphan && mergeModelState.target)}
+                          className="bg-[#7B1315] text-white text-xs px-4 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-40"
+                        >הצמד</button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
               <div className="space-y-6">
                 {modelsList.map(model => {
                   const modelCbm = settings.models?.[model]?.cbm || '';
