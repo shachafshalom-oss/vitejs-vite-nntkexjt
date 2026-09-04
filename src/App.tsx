@@ -2787,6 +2787,19 @@ export default function App() {
         payload.pushSentAt = null;
       }
 
+      // תיעוד אוטומטי בשינוי שלב: נכנס ליומן העדכונים עם התאריך, בלי הקלדה ידנית.
+      // מתויג type:'system' בכוונה — "ימים ללא קשר" נספר מהתיעוד האחרון, וזה לא
+      // אמור לספור שינוי שלב טכני כאילו הייתה שיחה אמיתית עם הלקוח.
+      if ('leadStage' in payload && payload.leadStage !== current?.leadStage) {
+        const stageLog = {
+          date: new Date().toISOString(),
+          text: `סטטוס שונה ל"${LEAD_STAGE_MAP[payload.leadStage] || payload.leadStage}"`,
+          user: user?.email || 'משתמש מערכת',
+          type: 'system',
+        };
+        payload.interactionLogs = [...(current?.interactionLogs || []), stageLog];
+      }
+
       await updateDoc(doc(db, 'crm_customers', customerId), { ...payload, updatedAt: new Date().toISOString() });
       if (selectedCustomer?.id === customerId) {
         setSelectedCustomer((prev: any) => ({ ...prev, ...payload }));
@@ -5284,15 +5297,23 @@ export default function App() {
               const stageCounts: Record<string, number> = {};
               allLeads.forEach(c => { const s = c.leadStage || 'new'; stageCounts[s] = (stageCounts[s] || 0) + 1; });
 
+              // שלבים שבהם "ימים ללא קשר" עדיין המדד הרלוונטי — לפני שיש הצעה על השולחן.
+              // בהצעה נשלחה/ממתין, התזכורת כבר אומרת מה קורה; מונה גולמי שם רק מבלבל.
+              const DAYS_COUNTER_STAGES = ['new', 'contacted', 'callback'];
+
               const renderLeadCard = (c: any) => {
                 const stat = calculatedData.customerStats[c.id];
-                const lastContactMs = c.interactionLogs && c.interactionLogs.length > 0
-                  ? new Date(c.interactionLogs[c.interactionLogs.length-1].date).getTime()
+                // "קשר אמיתי" נספר רק מתיעוד שלא מתויג system — שינוי שלב אוטומטי
+                // (מסעיף 1 למעלה) לא אמור לאפס את השעון כאילו דיברתם עם הלקוח בפועל.
+                const realLogs = (c.interactionLogs || []).filter((l: any) => l.type !== 'system');
+                const lastContactMs = realLogs.length > 0
+                  ? new Date(realLogs[realLogs.length-1].date).getTime()
                   : (c.createdAt ? new Date(c.createdAt).getTime() : null);
                 const daysSinceContact = lastContactMs ? Math.floor((Date.now() - lastContactMs) / (1000*60*60*24)) : null;
                 const isStale = daysSinceContact !== null && daysSinceContact >= 7;
                 const followUpOverdue = c.followUpDate && c.followUpDate < todayStr3;
                 const followUpToday = c.followUpDate && c.followUpDate === todayStr3;
+                const showDaysCounter = DAYS_COUNTER_STAGES.includes(c.leadStage || 'new');
                 const initials = (c.businessName || c.contactName || '?').trim().slice(0, 2);
                 const stageColorClasses = LEAD_STAGE_COLORS[c.leadStage] || 'bg-slate-100 text-slate-600';
 
@@ -5303,14 +5324,15 @@ export default function App() {
                   : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
                   : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };
 
-                // שורה קומפקטית אחת במקום כרטיס מלא. שיוך נציג, עריכת תזכורת ופרטי קשר
-                // מלאים עברו לפאנל הפרטים — הם כבר קיימים שם במלואם, ולא צריך לשכפל אותם כאן.
-                // הפעולה המהירה היחידה שנשארת בשורה היא שליחת קטלוג, לפי מה שביקשת.
+                // שורה קומפקטית אחת במקום כרטיס מלא, ועוד שורה שנייה קטנה מתחתיה כשיש
+                // מה להראות (תוכן תזכורת, או מונה ימים בשלבים המוקדמים). שיוך נציג ועריכת
+                // תזכורת מלאה כבר קיימים בפאנל הפרטים שנפתח בלחיצה — לא משוכפלים כאן.
                 return (
                   <div key={c.id}
                     onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
-                    className="flex items-center gap-3 px-3 py-2.5 bg-white border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors">
+                    className="flex flex-col gap-1 px-3 py-2.5 bg-white border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors">
 
+                  <div className="flex items-center gap-3">
                     <div className="relative shrink-0">
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold ${stageColorClasses}`}>
                         {initials}
@@ -5324,18 +5346,24 @@ export default function App() {
                       <p className="text-sm font-medium text-slate-800 truncate">{c.businessName || c.contactName}</p>
                     </div>
 
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 hidden sm:inline-block ${stageColorClasses}`}>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${stageColorClasses}`}>
                       {LEAD_STAGE_MAP[c.leadStage] || c.leadStage || 'חדש'}
                     </span>
 
                     <span className={`text-[10px] shrink-0 w-16 text-left ${followUpOverdue ? 'text-red-600 font-bold' : followUpToday ? 'text-amber-600 font-bold' : isStale ? 'text-orange-500' : 'text-slate-400'}`}>
-                      {followUpToday ? 'תזכורת היום' : followUpOverdue ? 'תזכורת באיחור' : daysSinceContact !== null ? `לפני ${daysSinceContact} ימים` : ''}
+                      {followUpToday ? 'תזכורת היום' : followUpOverdue ? 'תזכורת באיחור' : (showDaysCounter && daysSinceContact !== null) ? `לפני ${daysSinceContact} ימים` : ''}
+
                     </span>
 
                     <button className="lead-actions text-slate-400 hover:text-green-600 p-1 shrink-0" title="שלח קטלוג"
                       onClick={e => { e.stopPropagation(); setCatalogSendTarget(c); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
                       📤
                     </button>
+                  </div>
+
+                  {c.followUpNote && (
+                    <p className="text-[11px] text-slate-500 pr-11 truncate italic">"{c.followUpNote}"</p>
+                  )}
                   </div>
                 );
               };
@@ -5400,15 +5428,29 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Assigned leads */}
+                  {/* Assigned leads — מקובצים לפי שלב, כל קבוצה עם כותרת משלה */}
                   {assigned.length > 0 && (
                     <div>
                       {unassigned.length > 0 && leadsFilter !== 'mine' && (
                         <h4 className="text-sm font-bold text-slate-600 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> לידים משויכים ({assigned.length})</h4>
                       )}
-                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100">
-                        {assigned.map(renderLeadCard)}
-                      </div>
+                      {LEAD_STAGE_ORDER.map(stage => {
+                        const stageLeads = assigned.filter(c => (c.leadStage || 'new') === stage);
+                        if (stageLeads.length === 0) return null;
+                        return (
+                          <div key={stage} className="mb-5">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${LEAD_STAGE_COLORS[stage] || 'bg-slate-100 text-slate-600'}`}>
+                                {LEAD_STAGE_MAP[stage] || stage}
+                              </span>
+                              <span className="text-[11px] text-slate-400">({stageLeads.length})</span>
+                            </div>
+                            <div className="bg-white rounded-lg border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                              {stageLeads.map(renderLeadCard)}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
