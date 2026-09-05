@@ -1059,7 +1059,7 @@ export default function App() {
     try { return localStorage.getItem('crm_nav_tab') || 'sales_dashboard'; }
     catch { return 'sales_dashboard'; }
   });
-  const [leadsFilter, setLeadsFilter] = useState<'mine' | 'all' | 'today'>('all');
+  const [leadsFilter, setLeadsFilter] = useState<string>('mine');
   const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   // Leads UI States
@@ -5279,7 +5279,9 @@ export default function App() {
                 .filter(c => {
                   if (leadsFilter === 'mine') return c.assignedTo === user?.email || c.createdBy === user?.email;
                   if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
-                  return true;
+                  if (leadsFilter === 'all') return true;
+                  // כל ערך אחר הוא כתובת מייל של נציג ספציפי — "לידים של X" מהכפתור הדינמי.
+                  return c.assignedTo === leadsFilter;
                 })
                 .filter(c => {
                   if (leadStageFilter === 'all') return true;
@@ -5379,8 +5381,9 @@ export default function App() {
                   {/* Filter toolbar */}
                   <div className="flex items-center gap-2 mb-4 flex-wrap">
                     {[
-                      { id: 'all', label: `כל הלידים (${allLeads.length})` },
                       { id: 'mine', label: `הלידים שלי (${AGENTS.find(a => a.email === user?.email)?.name || user?.email?.split('@')[0] || 'לא מזוהה'})` },
+                      ...AGENTS.filter(a => a.email !== user?.email).map(a => ({ id: a.email, label: `לידים של ${a.name}` })),
+                      { id: 'all', label: `כל הלידים (${allLeads.length})` },
                       { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
                     ].map(f => (
                       <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
@@ -5415,7 +5418,7 @@ export default function App() {
                   )}
 
                   {/* Unassigned section */}
-                  {unassigned.length > 0 && leadsFilter !== 'mine' && (
+                  {unassigned.length > 0 && leadsFilter === 'all' && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
                         <AlertTriangle className="w-4 h-4 text-amber-500"/>
@@ -5431,7 +5434,7 @@ export default function App() {
                   {/* Assigned leads — מקובצים לפי שלב, כל קבוצה עם כותרת משלה */}
                   {assigned.length > 0 && (
                     <div>
-                      {unassigned.length > 0 && leadsFilter !== 'mine' && (
+                      {unassigned.length > 0 && leadsFilter === 'all' && (
                         <h4 className="text-sm font-bold text-slate-600 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> לידים משויכים ({assigned.length})</h4>
                       )}
                       {LEAD_STAGE_ORDER.map(stage => {
