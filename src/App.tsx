@@ -5326,9 +5326,9 @@ export default function App() {
                   : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
                   : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };
 
-                // שורה קומפקטית אחת במקום כרטיס מלא, ועוד שורה שנייה קטנה מתחתיה כשיש
-                // מה להראות (תוכן תזכורת, או מונה ימים בשלבים המוקדמים). שיוך נציג ועריכת
-                // תזכורת מלאה כבר קיימים בפאנל הפרטים שנפתח בלחיצה — לא משוכפלים כאן.
+                // שורה קומפקטית אחת עם שם + דחיפות (תזכורת/ימים), ושורה שנייה קבועה
+                // עם סטטוס הליד מימין וההערה ממשיכה משמאלו. שיוך נציג ועריכת תזכורת
+                // מלאה כבר קיימים בפאנל הפרטים שנפתח בלחיצה — לא משוכפלים כאן.
                 return (
                   <div key={c.id}
                     onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
@@ -5348,13 +5348,8 @@ export default function App() {
                       <p className="text-sm font-medium text-slate-800 truncate">{c.businessName || c.contactName}</p>
                     </div>
 
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${stageColorClasses}`}>
-                      {LEAD_STAGE_MAP[c.leadStage] || c.leadStage || 'חדש'}
-                    </span>
-
-                    <span className={`text-[10px] shrink-0 w-16 text-left ${followUpOverdue ? 'text-red-600 font-bold' : followUpToday ? 'text-amber-600 font-bold' : isStale ? 'text-orange-500' : 'text-slate-400'}`}>
+                    <span className={`text-[10px] shrink-0 whitespace-nowrap ${followUpOverdue ? 'text-red-600 font-bold' : followUpToday ? 'text-amber-600 font-bold' : isStale ? 'text-orange-500' : 'text-slate-400'}`}>
                       {followUpToday ? 'תזכורת היום' : followUpOverdue ? 'תזכורת באיחור' : (showDaysCounter && daysSinceContact !== null) ? `לפני ${daysSinceContact} ימים` : ''}
-
                     </span>
 
                     <button className="lead-actions text-slate-400 hover:text-green-600 p-1 shrink-0" title="שלח קטלוג"
@@ -5363,9 +5358,14 @@ export default function App() {
                     </button>
                   </div>
 
-                  {c.followUpNote && (
-                    <p className="text-[11px] text-slate-500 pr-11 truncate italic">"{c.followUpNote}"</p>
-                  )}
+                  <div className="flex items-center gap-2 pr-11">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${stageColorClasses}`}>
+                      {LEAD_STAGE_MAP[c.leadStage] || c.leadStage || 'חדש'}
+                    </span>
+                    {c.followUpNote && (
+                      <p className="text-[11px] text-slate-500 truncate italic flex-1 min-w-0">"{c.followUpNote}"</p>
+                    )}
+                  </div>
                   </div>
                 );
               };
