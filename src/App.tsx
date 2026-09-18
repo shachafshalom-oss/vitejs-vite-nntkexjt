@@ -5572,9 +5572,11 @@ export default function App() {
                   // "עודכנו לאחרונה בסטטוסים" — נשען על רשומות ה-system ביומן האינטראקציות,
                   // שנכתבות אוטומטית בכל שינוי leadStage. בכוונה לא updatedAt: עריכת הערה
                   // או שינוי טלפון מעדכנים את updatedAt והיו מזהמים את הרשימה בלידים
-                  // שהסטטוס שלהם כלל לא זז.
+                  // שהסטטוס שלהם כלל לא זז. מצומצם ללידים של המשתמש המחובר בלבד —
+                  // אותה בעלות בדיוק כמו "הלידים שלי" — כדי שכל נציג יראה רק את שלו.
                   if (leadsFilter === 'status_updated') {
-                    return (c.interactionLogs || []).some((l: any) =>
+                    const isMine = c.assignedTo === user?.email || c.createdBy === user?.email;
+                    return isMine && (c.interactionLogs || []).some((l: any) =>
                       l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
                     );
                   }
@@ -5595,6 +5597,7 @@ export default function App() {
               const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
               const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
               const statusUpdatedToday = allLeads.filter(c =>
+                (c.assignedTo === user?.email || c.createdBy === user?.email) &&
                 (c.interactionLogs || []).some((l: any) =>
                   l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
                 )
