@@ -4,7 +4,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -578,6 +578,39 @@ const LEAD_STAGE_COLORS: Record<string, string> = {
   'not_relevant': 'bg-slate-100 text-slate-500',
 };
 
+// --- נרמול טלפון לזיהוי פנייה חוזרת ---
+// אותה לוגיקה בדיוק כמו ב-netlify/functions/website-lead.js, כדי ששלוש נקודות הכניסה
+// (טופס אתר / ייבוא פייסבוק / הזנה ידנית) יזהו כפילות באופן זהה.
+// מסיר תווי עיצוב, מוריד קידומת בינלאומית (+972 / 00972 / 972) ומחזיר צורה מקומית עם 0 מוביל,
+// כך ש-"+972-54-805-0870" ו-"0548050870" מצטמצמים לאותו מחרוזת.
+const normalizePhone = (raw: any): string => {
+  let p = String(raw || '').replace(/[\s\-()\.]/g, '');
+  if (!p) return '';
+  p = p.replace(/^(\+|00)?972/, '');
+  if (!p.startsWith('0')) p = '0' + p;
+  return p;
+};
+
+// מאתר ליד/לקוח קיים בעל אותו טלפון מנורמל. שם זהה בלבד אינו כפילות —
+// שמות דומים בין לקוחות שונים הם מצב לגיטימי לחלוטין בעסק.
+const findDuplicateByPhone = (phone: any, list: any[], excludeId?: string): any | null => {
+  const target = normalizePhone(phone);
+  if (!target || target.length < 7) return null;
+  return list.find(c => c.id !== excludeId && normalizePhone(c.phone) === target) || null;
+};
+
+// --- מועד תחילת האחריות ---
+// האחריות נספרת ממועד מסירת המוצר ללקוח (warrantyStartDate), ולא ממועד המכירה.
+// saleDate נשאר שדה הכספים בלבד — הוא מזין את ההכנסה החודשית, ושינוי שלו היה מעוות דוחות.
+// נפילה-לאחור ל-saleDate קיימת עבור מכירות היסטוריות שנוצרו לפני השינוי, כדי שלא יאבדו אחריות.
+const getWarrantyStartDate = (item: any): string | null => {
+  if (item?.warrantyStartDate) return item.warrantyStartDate;
+  if (item?.awaitingDelivery) return null; // נמכר אך טרם נמסר — האחריות לא התחילה
+  return item?.saleDate || null;
+};
+
+const DELIVERY_METHOD_MAP: Record<string, string> = { 'delivery': 'משלוח', 'pickup': 'איסוף עצמי' };
+
 const defaultSettings: any = { 
   models: { 
     'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
@@ -1089,6 +1122,9 @@ export default function App() {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [localPurchases, setLocalPurchases] = useState<any[]>([]);
   const [customProjects, setCustomProjects] = useState<any[]>([]);
+  // הובלות ללקוחות — מסירת מוצר שנמכר ללקוח סופי. לא לבלבל עם shipments (סחורה מסין).
+  const [customerDeliveries, setCustomerDeliveries] = useState<any[]>([]);
+  const [deliveriesSubTab, setDeliveriesSubTab] = useState<'awaiting' | 'delivered'>('awaiting');
 
   // Custom Projects UI States
   const [isCustomProjectModalOpen, setIsCustomProjectModalOpen] = useState(false);
@@ -1182,7 +1218,7 @@ export default function App() {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importCampaignId, setImportCampaignId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{ created: number; skipped: number; errors: string[] } | null>(null);
+  const [importResult, setImportResult] = useState<{ created: number; skipped: number; duplicatesMarked?: number; errors: string[] } | null>(null);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isCustomerOverviewOpen, setIsCustomerOverviewOpen] = useState(false);
@@ -1513,7 +1549,15 @@ export default function App() {
       setCustomProjects(data);
     });
 
-    return () => { unsubSettings(); unsubModelImages(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); unsubCustomProjects(); };
+    // הובלות ללקוחות — נפרד לחלוטין מ-crm_shipments (שהוא סחורה מסין למחסן).
+    // כאן מדובר במסירת מוצר שנמכר ללקוח סופי, ומכאן גם מתחילה ספירת האחריות.
+    const unsubCustomerDeliveries = onSnapshot(collection(db, 'crm_customer_deliveries'), (snap) => {
+      let data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      setCustomerDeliveries(data);
+    });
+
+    return () => { unsubSettings(); unsubModelImages(); unsubShipments(); unsubItems(); unsubCampaigns(); unsubCustomers(); unsubQuotes(); unsubExpenses(); unsubSuppliers(); unsubLocalPurchases(); unsubCustomProjects(); unsubCustomerDeliveries(); };
   }, [user]);
 
   // --- Dynamic favicon & apple-touch-icon from company logo ---
@@ -1710,9 +1754,11 @@ export default function App() {
             monthlyFinance[d.getMonth()].breakdowns.itemCosts += itemSpecificCosts;
           }
 
-          if (item.warrantyMonths) {
-            const saleDate = new Date(item.saleDate);
-            const expiryDate = new Date(saleDate);
+          // האחריות נספרת ממועד המסירה ללקוח, לא ממועד המכירה. פריט שנמכר וטרם נמסר
+          // מחזיר null ולכן אינו נספר כ"באחריות" — בדיוק כפי שמופיע בחוזה מול הלקוח.
+          const warrantyStart = getWarrantyStartDate(item);
+          if (item.warrantyMonths && warrantyStart) {
+            const expiryDate = new Date(warrantyStart);
             expiryDate.setMonth(expiryDate.getMonth() + Number(item.warrantyMonths));
             
             if (expiryDate > today) {
@@ -2643,7 +2689,7 @@ export default function App() {
   const handleFbLeadsImport = async (file: File, campaignId: string) => {
     setIsImporting(true);
     setImportResult(null);
-    const result = { created: 0, skipped: 0, errors: [] as string[] };
+    const result = { created: 0, skipped: 0, duplicatesMarked: 0, errors: [] as string[] };
 
     try {
       // 1. קריאת הקובץ
@@ -2660,9 +2706,15 @@ export default function App() {
       const headers = getCell(rows[0]);
       const idx = (name: string) => headers.indexOf(name);
 
-      // 3. שליפת טלפונים קיימים
+      // 3. שליפת הלידים הקיימים — משמש לזיהוי פנייה חוזרת ולאיזון השיוך בין הנציגים
       const existingSnap = await getDocs(collection(db, 'crm_customers'));
-      const existingPhones = new Set(existingSnap.docs.map(d => (d.data().phone || '').replace(/^\+972/, '0').replace(/\s/g, '')));
+      // מפה מטלפון מנורמל → מזהה הליד הקיים. שומרים את המזהה (ולא רק Set של טלפונים)
+      // כדי שנוכל לקשר את הליד החדש לפנייה הקודמת ולא רק לדעת שהיא קיימת.
+      const phoneToId = new Map<string, string>();
+      existingSnap.docs.forEach(d => {
+        const p = normalizePhone(d.data().phone);
+        if (p && p.length >= 7 && !phoneToId.has(p)) phoneToId.set(p, d.id);
+      });
 
       // 4. ייבוא
       const dataRows = rows.slice(1);
@@ -2686,22 +2738,20 @@ export default function App() {
 
         if (!rawPhone && !fullName) continue; // שורה ריקה
 
-        // נרמול טלפון: +972X → 0X
-        const phone = rawPhone.replace(/^\+972/, '0').replace(/\s/g, '');
+        // נרמול טלפון אחיד — אותה פונקציה בדיוק כמו בטופס האתר ובהזנה ידנית
+        const phone = normalizePhone(rawPhone);
 
-        // בדיקת כפילות
-        if (existingPhones.has(phone)) {
-          result.skipped++;
-          continue;
-        }
-        existingPhones.add(phone); // מניעת כפל בתוך הייבוא עצמו
+        // זיהוי פנייה חוזרת — כבר לא חוסם. לקוח שפונה שוב הוא לקוח מתעניין,
+        // ודילוג עליו היה מאבד פנייה אמיתית. יוצרים תמיד, ומסמנים לנציג.
+        const dupId = phone && phone.length >= 7 ? phoneToId.get(phone) : undefined;
+        if (dupId) result.duplicatesMarked = (result.duplicatesMarked || 0) + 1;
 
         // שיוך נציג round-robin מ-AGENTS
         const assignedTo = AGENTS[agentIndex % AGENTS.length].email;
         agentIndex++;
 
         try {
-          await addDoc(collection(db, 'crm_customers'), {
+          const newRef = await addDoc(collection(db, 'crm_customers'), {
             contactName:   fullName,
             businessName:  fullName,
             phone,
@@ -2715,7 +2765,11 @@ export default function App() {
             createdAt,
             updatedAt:     new Date().toISOString(),
             interactionLogs: [],
+            possibleDuplicateOfId: dupId || null,
+            possibleDuplicateAt:   dupId ? new Date().toISOString() : null,
           });
+          // רישום הטלפון החדש — כך שגם כפילות בתוך אותו קובץ ייבוא תסומן ולא תיעלם
+          if (phone && phone.length >= 7 && !phoneToId.has(phone)) phoneToId.set(phone, newRef.id);
           result.created++;
         } catch (err: any) {
           result.errors.push(`${fullName}: ${err.message}`);
@@ -2747,6 +2801,11 @@ export default function App() {
         data.createdBy = user?.email || '';
         if (!data.assignedTo) data.assignedTo = user?.email || '';
         data.interactionLogs = [];
+        // זיהוי פנייה חוזרת — לא חוסם. שם זהה לבדו אינו כפילות (שמות דומים בין לקוחות
+        // הם מצב לגיטימי), ולכן ההשוואה היא על הטלפון המנורמל בלבד.
+        const dup = findDuplicateByPhone(data.phone, customers);
+        data.possibleDuplicateOfId = dup ? dup.id : null;
+        data.possibleDuplicateAt = dup ? new Date().toISOString() : null;
         const docRef = await addDoc(collection(db, 'crm_customers'), data); 
         newCustomerId = docRef.id;
       }
@@ -3882,7 +3941,20 @@ export default function App() {
         saleDate: todayStr, warrantyMonths: Number(quote.warrantyMonths) || 0,
         campaignId: quote.campaignId || '', processed: 0
       }));
-      setQuoteApprovalData({ quoteId: quote.id, customerId: quote.customerId, itemsToProcess, shippingCost: Number(quote.shippingCost) || 0 });
+      // ערכי ברירת מחדל להובלה ללקוח. העיר נמשכת מכרטיס הלקוח (שדה city הייעודי) וניתנת
+      // לעריכה — הובלה לאולם אירועים או לאתר אחר היא מצב אמיתי ולא חריג.
+      const approvalCustomer = customers.find(c => c.id === quote.customerId);
+      setQuoteApprovalData({
+        quoteId: quote.id,
+        customerId: quote.customerId,
+        itemsToProcess,
+        shippingCost: Number(quote.shippingCost) || 0,
+        deliveryMethod: 'delivery',
+        shippingTiming: 'immediate',
+        shippingDate: '',
+        deliveryCity: approvalCustomer?.city || '',
+        deliveryCost: Number(quote.shippingCost) || 0,
+      });
       setIsQuoteApprovalModalOpen(true);
       return;
     }
@@ -3899,10 +3971,16 @@ export default function App() {
               status: 'in_warehouse',
               saleDate: null, warrantyMonths: 0, salePrice: 0,
               addOnPrice: 0, customerId: '', campaignId: '',
+              // ניקוי מצב ההובלה והאחריות — אחרת פריט שחזר למחסן היה נושא איתו
+              // תאריך תחילת אחריות ממכירה שבוטלה.
+              awaitingDelivery: false, warrantyStartDate: null,
               updatedAt: new Date().toISOString()
             })
           ));
         }
+        // מחיקת רשומת ההובלה שנפתחה באישור — אחרת נשארת "הובלת רפאים" בטאב ההובלות.
+        const relatedDeliveries = customerDeliveries.filter(d => d.quoteId === quote.id);
+        await Promise.all(relatedDeliveries.map(d => deleteDoc(doc(db, 'crm_customer_deliveries', d.id))));
         // החזרת סטטוס לקוח
         if (quote.customerId) {
           const prevStatus = quote.previousCustomerStatus || 'lead';
@@ -3937,6 +4015,61 @@ export default function App() {
     } catch (err) { alert("שגיאה בעדכון סטטוס."); }
   };
 
+  // --- אישור הגעת הובלה ללקוח ---
+  // זו הנקודה היחידה במערכת שמתחילה את ספירת האחריות. עד לרגע הזה הפריט מסומן
+  // awaitingDelivery ואין לו warrantyStartDate, ולכן מוצג כ"אחריות טרם החלה".
+  const confirmDeliveryArrival = async (delivery: any) => {
+    const isPickup = delivery.deliveryMethod === 'pickup';
+    const actionLabel = isPickup ? 'נאסף על ידי הלקוח' : 'הגיע ללקוח';
+    if (!window.confirm(`לסמן שההזמנה של ${delivery.customerName || 'הלקוח'} ${actionLabel}?\nפעולה זו תתחיל את ספירת האחריות על כל הפריטים בהזמנה.`)) return;
+    setIsSaving(true);
+    try {
+      const arrivalDate = new Date().toISOString().split('T')[0];
+      const itemIds: string[] = Array.isArray(delivery.itemIds) ? delivery.itemIds : [];
+      await Promise.all(itemIds.map((itemId: string) =>
+        updateDoc(doc(db, 'crm_items', itemId), {
+          warrantyStartDate: arrivalDate,
+          awaitingDelivery: false,
+          updatedAt: new Date().toISOString()
+        })
+      ));
+      await updateDoc(doc(db, 'crm_customer_deliveries', delivery.id), {
+        deliveryStatus: 'delivered',
+        deliveredAt: new Date().toISOString(),
+        deliveredBy: user?.email || '',
+        updatedAt: new Date().toISOString()
+      });
+      alert(`ההזמנה סומנה כ${actionLabel}. האחריות החלה לרוץ מתאריך ${new Date(arrivalDate).toLocaleDateString('he-IL')}.`);
+    } catch (err: any) {
+      alert('שגיאה בעדכון ההובלה: ' + (err?.message || ''));
+    }
+    setIsSaving(false);
+  };
+
+  // החזרת הובלה לסטטוס ממתין — למקרה שסומנה בטעות. מאפס גם את תחילת האחריות.
+  const revertDeliveryArrival = async (delivery: any) => {
+    if (!window.confirm('להחזיר את ההובלה לסטטוס "ממתין להובלה"?\nספירת האחריות על הפריטים תתאפס עד לאישור הגעה מחדש.')) return;
+    setIsSaving(true);
+    try {
+      const itemIds: string[] = Array.isArray(delivery.itemIds) ? delivery.itemIds : [];
+      await Promise.all(itemIds.map((itemId: string) =>
+        updateDoc(doc(db, 'crm_items', itemId), {
+          warrantyStartDate: null,
+          awaitingDelivery: true,
+          updatedAt: new Date().toISOString()
+        })
+      ));
+      await updateDoc(doc(db, 'crm_customer_deliveries', delivery.id), {
+        deliveryStatus: 'awaiting',
+        deliveredAt: null,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (err: any) {
+      alert('שגיאה בהחזרת ההובלה: ' + (err?.message || ''));
+    }
+    setIsSaving(false);
+  };
+
   const executeQuoteApproval = async (e: any) => {
       e.preventDefault();
       setIsSaving(true);
@@ -3957,6 +4090,10 @@ export default function App() {
                         salePrice: Number(line.salePrice) || 0,
                         discountAmount: Number(line.discountAmount) || 0,
                         campaignId: line.campaignId || '', customerId: quoteApprovalData.customerId,
+                        // הפריט נמכר אך טרם נמסר — האחריות עדיין לא התחילה לרוץ.
+                        // warrantyStartDate ייכתב רק באישור ההגעה ללקוח בטאב ההובלות.
+                        awaitingDelivery: true,
+                        warrantyStartDate: null,
                         updatedAt: new Date().toISOString()
                     }
                 });
@@ -3985,6 +4122,38 @@ export default function App() {
           updatedAt: new Date().toISOString()
         });
 
+        // --- פתיחת רשומת הובלה ללקוח ---
+        // העיר והסכום נשמרים כ-snapshot על הרשומה עצמה, כך שעדכון עתידי בכרטיס הלקוח
+        // לא ישכתב היסטוריית הובלות שכבר בוצעו.
+        const isPickup = quoteApprovalData.deliveryMethod === 'pickup';
+        await addDoc(collection(db, 'crm_customer_deliveries'), {
+          quoteId: quoteApprovalData.quoteId,
+          customerId: quoteApprovalData.customerId,
+          customerName: customer?.businessName || customer?.contactName || '',
+          customerPhone: customer?.phone || '',
+          customerAddress: customer?.address || '',
+          itemIds: approvedItemIds,
+          lines: quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: Number(l.qty) || 0 })),
+          deliveryMethod: quoteApprovalData.deliveryMethod || 'delivery',
+          shippingTiming: quoteApprovalData.shippingTiming || 'immediate',
+          shippingDate: quoteApprovalData.shippingTiming === 'scheduled' ? (quoteApprovalData.shippingDate || '') : '',
+          deliveryCity: isPickup ? '' : (quoteApprovalData.deliveryCity || '').trim(),
+          deliveryCost: isPickup ? 0 : (Number(quoteApprovalData.deliveryCost) || 0),
+          deliveryStatus: 'awaiting',
+          deliveredAt: null,
+          createdAt: new Date().toISOString(),
+          createdBy: user?.email || '',
+          updatedAt: new Date().toISOString(),
+        });
+
+        // שמירת העיר גם בכרטיס הלקוח, אם טרם הוזנה שם — כדי שהיא תישמר לפעם הבאה.
+        if (!isPickup && (quoteApprovalData.deliveryCity || '').trim() && !customer?.city) {
+          await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), {
+            city: (quoteApprovalData.deliveryCity || '').trim(),
+            updatedAt: new Date().toISOString()
+          });
+        }
+
         setIsQuoteApprovalModalOpen(false);
 
         // --- Morning Integration ---
@@ -3997,18 +4166,18 @@ export default function App() {
             );
             if (invoiceUrl) {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.');
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.');
             } else {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: morningErr, morningSentAt: new Date().toISOString() });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
             }
           } catch(err: any) {
             const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Morning.';
             await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: errMsg, morningSentAt: new Date().toISOString() });
-            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
+            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
           }
         } else {
-          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.');
+          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.');
         }
       } catch (err: any) { alert(err.message || "שגיאה בתהליך אישור ההצעה."); }
       setIsSaving(false);
@@ -4045,6 +4214,11 @@ export default function App() {
   }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#7B1315]"></div></div>;
+
+  // מונה להובלות שממתינות — מוצג כתג על הטאב בשני המרחבים (מכירות ותפעול).
+  const awaitingDeliveries = customerDeliveries.filter(d => (d.deliveryStatus || 'awaiting') === 'awaiting');
+  const deliveredDeliveries = customerDeliveries.filter(d => d.deliveryStatus === 'delivered');
+  const awaitingDeliveriesCount = awaitingDeliveries.length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
@@ -4110,12 +4284,14 @@ export default function App() {
                 { id: 'leads', icon: UserPlus, label: 'לידים' },
                 { id: 'customers', icon: Users, label: 'לקוחות' },
                 { id: 'quotes', icon: FileText, label: 'הצעות מחיר' },
+                { id: 'customer_deliveries', icon: Truck, label: `הובלות ללקוחות${awaitingDeliveriesCount > 0 ? ` (${awaitingDeliveriesCount})` : ''}` },
                 { id: 'custom_projects', icon: Layers, label: 'פרויקטים קסטום' },
                 { id: 'marketing', icon: Megaphone, label: 'קמפיינים' },
                 { id: 'settings', icon: Settings, label: 'הגדרות' },
               ] : [
                 { id: 'operations_dashboard', icon: Activity, label: 'דשבורד' },
                 { id: 'inventory', icon: Package, label: 'ניהול מלאי' },
+                { id: 'customer_deliveries', icon: Truck, label: `הובלות ללקוחות${awaitingDeliveriesCount > 0 ? ` (${awaitingDeliveriesCount})` : ''}` },
                 { id: 'shipments', icon: Ship, label: 'משלוחים' },
                 { id: 'finance', icon: Wallet, label: 'כספים' },
                 { id: 'models', icon: Layers, label: 'דגמים' },
@@ -4322,8 +4498,8 @@ export default function App() {
             {(() => {
               const todayMs = new Date().getTime();
               const warrantyAlerts = calculatedData.enrichedItems
-                .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && item.saleDate)
-                .map((item: any) => { const expiry = new Date(item.saleDate); expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths)); const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24)); return { ...item, daysLeft }; })
+                .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && getWarrantyStartDate(item))
+                .map((item: any) => { const expiry = new Date(getWarrantyStartDate(item) as string); expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths)); const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24)); return { ...item, daysLeft }; })
                 .filter((item: any) => item.daysLeft <= 30)
                 .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
               if (warrantyAlerts.length === 0) return null;
@@ -5024,6 +5200,114 @@ export default function App() {
           </div>
         )}
 
+        {/* --- TAB: CUSTOMER DELIVERIES --- */}
+        {activeTab === 'customer_deliveries' && (
+          <div>
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-slate-800">הובלות ללקוחות</h2>
+              <p className="text-sm text-slate-400 mt-0.5">מסירת הזמנות ללקוחות שכבר רכשו — האחריות מתחילה עם אישור ההגעה</p>
+            </div>
+
+            {/* תתי-טאבים */}
+            <div className="flex gap-2 mb-5 border-b border-slate-200">
+              {[
+                { id: 'awaiting', label: 'ממתינים להובלה', count: awaitingDeliveries.length, icon: Clock },
+                { id: 'delivered', label: 'נשלחו בהצלחה', count: deliveredDeliveries.length, icon: PackageCheck },
+              ].map(st => (
+                <button key={st.id} onClick={() => setDeliveriesSubTab(st.id as any)}
+                  className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-bold border-b-2 -mb-px transition-colors ${deliveriesSubTab === st.id ? 'border-[#7B1315] text-[#7B1315]' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                  <st.icon className="w-4 h-4"/> {st.label}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${deliveriesSubTab === st.id ? 'bg-[#EDDEDE] text-[#651011]' : 'bg-slate-100 text-slate-500'}`}>{st.count}</span>
+                </button>
+              ))}
+            </div>
+
+            {(() => {
+              const list = deliveriesSubTab === 'awaiting' ? awaitingDeliveries : deliveredDeliveries;
+              const totalCost = list.reduce((s: number, d: any) => s + (Number(d.deliveryCost) || 0), 0);
+
+              if (list.length === 0) {
+                return (
+                  <div className="bg-white border border-slate-200 rounded-lg py-16 text-center text-slate-400">
+                    <Truck className="w-10 h-10 mx-auto mb-3 opacity-20"/>
+                    <p className="font-medium">{deliveriesSubTab === 'awaiting' ? 'אין הובלות שממתינות כרגע.' : 'אין הובלות שהושלמו עדיין.'}</p>
+                    <p className="text-xs mt-1">הובלה נפתחת אוטומטית עם אישור הצעת מחיר.</p>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {totalCost > 0 && (
+                    <div className="bg-slate-100 rounded-lg p-3 mb-4 text-sm text-slate-600">
+                      סה"כ הובלות ב{deliveriesSubTab === 'awaiting' ? 'המתנה' : 'ביצוע'}: <span className="font-bold text-slate-800">₪{totalCost.toLocaleString()}</span> · {list.length} הזמנות
+                    </div>
+                  )}
+                  <div className="space-y-3">
+                    {list.map((d: any) => {
+                      const isPickup = d.deliveryMethod === 'pickup';
+                      const isLate = deliveriesSubTab === 'awaiting' && d.shippingTiming === 'scheduled' && d.shippingDate && d.shippingDate < todayStr;
+                      return (
+                        <div key={d.id} className={`bg-white border rounded-lg p-4 ${isLate ? 'border-red-300' : 'border-slate-200'}`}>
+                          <div className="flex justify-between items-start gap-3 flex-wrap">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-slate-800">{d.customerName || 'לקוח ללא שם'}</span>
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isPickup ? 'bg-slate-100 text-slate-600' : 'bg-blue-100 text-blue-700'}`}>
+                                  {DELIVERY_METHOD_MAP[d.deliveryMethod] || 'משלוח'}
+                                </span>
+                                {d.shippingTiming === 'immediate' ? (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-700">מיידי</span>
+                                ) : (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isLate ? 'bg-red-100 text-red-700' : 'bg-teal-100 text-teal-700'}`}>
+                                    {isLate ? 'באיחור · ' : ''}{d.shippingDate ? new Date(d.shippingDate).toLocaleDateString('he-IL') : 'ללא תאריך'}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-500 mt-1">
+                                {(d.lines || []).map((l: any) => `${l.model} ×${l.qty}`).join(' · ') || '---'}
+                              </p>
+                              <div className="flex items-center gap-3 mt-1.5 flex-wrap text-xs text-slate-600">
+                                {!isPickup && (
+                                  <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-slate-400"/> {d.deliveryCity || 'ללא עיר'}</span>
+                                )}
+                                <span className="flex items-center gap-1 font-medium text-[#651011]">
+                                  <Banknote className="w-3.5 h-3.5 text-slate-400"/> {isPickup ? 'ללא עלות הובלה' : `₪${Number(d.deliveryCost || 0).toLocaleString()}`}
+                                </span>
+                                {d.customerPhone && (
+                                  <a href={`tel:${d.customerPhone}`} className="flex items-center gap-1 text-slate-500 hover:text-[#7B1315]" dir="ltr"><Phone className="w-3.5 h-3.5"/> {d.customerPhone}</a>
+                                )}
+                              </div>
+                              {deliveriesSubTab === 'delivered' && d.deliveredAt && (
+                                <p className="text-[11px] text-green-700 mt-1.5 flex items-center gap-1">
+                                  <ShieldCheck className="w-3.5 h-3.5"/> {isPickup ? 'נאסף' : 'נמסר'} ב-{new Date(d.deliveredAt).toLocaleDateString('he-IL')} · האחריות החלה
+                                </p>
+                              )}
+                            </div>
+                            <div className="shrink-0">
+                              {deliveriesSubTab === 'awaiting' ? (
+                                <button onClick={() => confirmDeliveryArrival(d)} disabled={isSaving}
+                                  className="bg-green-600 text-white px-3 py-2 rounded-md text-xs font-bold hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
+                                  <CheckCircle className="w-4 h-4"/> {isPickup ? 'אשר איסוף' : 'אשר הגעה ללקוח'}
+                                </button>
+                              ) : (
+                                <button onClick={() => revertDeliveryArrival(d)} disabled={isSaving}
+                                  className="text-slate-400 hover:text-red-600 px-2 py-1.5 rounded text-xs font-medium flex items-center gap-1" title="החזר לממתינים">
+                                  <History className="w-4 h-4"/> החזר
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
         {/* --- TAB: SHIPMENTS --- */}
         {activeTab === 'shipments' && (
           <div>
@@ -5192,7 +5476,9 @@ export default function App() {
                                           <div>
                                             <span className="font-medium text-[#651011]">{item.customerName}</span>
                                             {item.warrantyMonths > 0 ? (
-                                              item.isWarrantyActive ? (
+                                              !getWarrantyStartDate(item) ? (
+                                                <div className="flex items-center gap-1 text-[10px] text-amber-600 mt-0.5"><Clock className="w-3 h-3"/> ממתין למסירה — אחריות טרם החלה</div>
+                                              ) : item.isWarrantyActive ? (
                                                 <div className="flex items-center gap-1 text-[10px] text-green-600 mt-0.5"><ShieldCheck className="w-3 h-3"/> באחריות (עוד {item.warrantyDaysLeft} ימים)</div>
                                               ) : (
                                                 <div className="flex items-center gap-1 text-[10px] text-red-500 mt-0.5"><ShieldAlert className="w-3 h-3"/> אחריות פגה</div>
@@ -5283,6 +5569,15 @@ export default function App() {
                 .filter(c => {
                   if (leadsFilter === 'mine') return c.assignedTo === user?.email || c.createdBy === user?.email;
                   if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
+                  // "עודכנו לאחרונה בסטטוסים" — נשען על רשומות ה-system ביומן האינטראקציות,
+                  // שנכתבות אוטומטית בכל שינוי leadStage. בכוונה לא updatedAt: עריכת הערה
+                  // או שינוי טלפון מעדכנים את updatedAt והיו מזהמים את הרשימה בלידים
+                  // שהסטטוס שלהם כלל לא זז.
+                  if (leadsFilter === 'status_updated') {
+                    return (c.interactionLogs || []).some((l: any) =>
+                      l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+                    );
+                  }
                   if (leadsFilter === 'all') return true;
                   // כל ערך אחר הוא כתובת מייל של נציג ספציפי — "לידים של X" מהכפתור הדינמי.
                   return c.assignedTo === leadsFilter;
@@ -5299,6 +5594,11 @@ export default function App() {
               const unassigned = filteredLeads.filter(c => !c.assignedTo && !c.createdBy);
               const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
               const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
+              const statusUpdatedToday = allLeads.filter(c =>
+                (c.interactionLogs || []).some((l: any) =>
+                  l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+                )
+              ).length;
 
               const stageCounts: Record<string, number> = {};
               allLeads.forEach(c => { const s = c.leadStage || 'new'; stageCounts[s] = (stageCounts[s] || 0) + 1; });
@@ -5370,6 +5670,23 @@ export default function App() {
                       <p className="text-[11px] text-slate-500 truncate italic flex-1 min-w-0">"{c.followUpNote}"</p>
                     )}
                   </div>
+
+                  {/* פנייה חוזרת — הליד לא נחסם, רק מסומן. לחיצה פותחת את הפנייה הקודמת. */}
+                  {c.possibleDuplicateOfId && (() => {
+                    const prev = customers.find(p => p.id === c.possibleDuplicateOfId);
+                    return (
+                      <div className="pr-11 mt-1">
+                        <button
+                          onClick={e => { e.stopPropagation(); if (prev) setSelectedCustomer(prev); }}
+                          disabled={!prev}
+                          className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:hover:bg-amber-100 flex items-center gap-1"
+                          title={prev ? 'הצג את הפנייה הקודמת' : 'הפנייה הקודמת נמחקה מהמערכת'}>
+                          <History className="w-3 h-3"/>
+                          השאיר פנייה בעבר{prev ? ` · ${prev.businessName || prev.contactName || ''}` : ''}
+                        </button>
+                      </div>
+                    );
+                  })()}
                   </div>
                 );
               };
@@ -5389,6 +5706,7 @@ export default function App() {
                       ...AGENTS.filter(a => a.email !== user?.email).map(a => ({ id: a.email, label: `לידים של ${a.name}` })),
                       { id: 'all', label: `כל הלידים (${allLeads.length})` },
                       { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
+                      { id: 'status_updated', label: `עודכנו לאחרונה בסטטוסים${statusUpdatedToday > 0 ? ` (${statusUpdatedToday})` : ''}` },
                     ].map(f => (
                       <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
                         className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === f.id ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'} ${f.id === 'today' && todayReminders > 0 ? 'animate-pulse' : ''}`}>
@@ -5408,8 +5726,16 @@ export default function App() {
                     </select>
                   </div>
 
-                  {/* דחוף עכשיו — לא מוצג בתוך פילטר "תזכורות היום" כדי לא לשכפל את מה שכבר מוצג למטה */}
-                  {leadsFilter !== 'today' && (urgentOverdue.length + urgentToday.length + urgentNew.length) > 0 && (
+                  {/* תצוגת "עודכנו לאחרונה" — כותרת הסבר, כדי שיהיה ברור שמדובר בשינויי סטטוס של היום בלבד */}
+                  {leadsFilter === 'status_updated' && (
+                    <div className="bg-slate-100 rounded-lg p-3 mb-4 text-sm text-slate-600 flex items-center gap-2">
+                      <History className="w-4 h-4 text-slate-400 shrink-0"/>
+                      <span>לידים שהסטטוס שלהם שונה היום ({new Date().toLocaleDateString('he-IL')}), מקובצים לפי השלב הנוכחי.</span>
+                    </div>
+                  )}
+
+                  {/* דחוף עכשיו — לא מוצג בפילטרים ממוקדים ("תזכורות היום" / "עודכנו לאחרונה") כדי לא לשכפל את מה שכבר מוצג למטה */}
+                  {leadsFilter !== 'today' && leadsFilter !== 'status_updated' && (urgentOverdue.length + urgentToday.length + urgentNew.length) > 0 && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
                         <AlertTriangle className="w-4 h-4 text-[#7B1315]"/>
@@ -5464,7 +5790,7 @@ export default function App() {
                   {filteredLeads.length === 0 && (
                     <div className="bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500 col-span-full">
                       <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
-                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : leadStageFilter !== 'all' ? `אין לידים בשלב "${LEAD_STAGE_MAP[leadStageFilter]}"` : 'אין לידים להצגה'}</p>
+                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : leadsFilter === 'status_updated' ? 'אף ליד לא שינה סטטוס היום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : leadStageFilter !== 'all' ? `אין לידים בשלב "${LEAD_STAGE_MAP[leadStageFilter]}"` : 'אין לידים להצגה'}</p>
                     </div>
                   )}
 
@@ -5527,11 +5853,15 @@ export default function App() {
                 const todayMs2 = new Date().getTime();
                 const customerSoldItems = calculatedData.enrichedItems?.filter((i: any) => i.customerId === c.id && i.status === 'sold') || [];
                 const hasActiveWarranty = customerSoldItems.some((i: any) => {
-                  if (!i.warrantyMonths || !i.saleDate) return false;
-                  const exp = new Date(i.saleDate); exp.setMonth(exp.getMonth() + Number(i.warrantyMonths));
+                  const wStart = getWarrantyStartDate(i);
+                  if (!i.warrantyMonths || !wStart) return false;
+                  const exp = new Date(wStart); exp.setMonth(exp.getMonth() + Number(i.warrantyMonths));
                   return exp.getTime() > todayMs2;
                 });
-                const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && customerSoldItems.length > 0;
+                // פריט שנמכר וטרם נמסר אינו "אחריות שפגה" — הוא פשוט טרם התחיל.
+                // בלי החריגה הזו לקוח שרק אתמול קנה היה מוצג כ"לקוח עבר".
+                const hasPendingDelivery = customerSoldItems.some((i: any) => i.awaitingDelivery);
+                const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && !hasPendingDelivery && customerSoldItems.length > 0;
                 const isActiveCustomer = c.status === 'active' && (hasActiveWarranty || customerSoldItems.length > 0);
                 const displayStatus = isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
                 const badgeColor = isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
@@ -6786,7 +7116,7 @@ export default function App() {
                   <CheckCircle className="w-5 h-5 text-green-600 shrink-0"/>
                   <div>
                     <p className="text-sm font-bold text-green-800">ייבוא הושלם</p>
-                    <p className="text-xs text-green-700">נוצרו {importResult.created} לידים · דולגו {importResult.skipped} כפילויות</p>
+                    <p className="text-xs text-green-700">נוצרו {importResult.created} לידים{(importResult.duplicatesMarked || 0) > 0 ? ` · ${importResult.duplicatesMarked} סומנו כפנייה חוזרת` : ''}</p>
                   </div>
                 </div>
                 {importResult.errors.length > 0 && (
@@ -6928,6 +7258,7 @@ export default function App() {
                       <input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none mt-1" placeholder="הערה לתזכורת (אופציונלי)" value={customerEditingData.followUpNote || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpNote: e.target.value})} />
                     </div>
                   )}
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">עיר</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.city || ''} onChange={e => setCustomerEditingData({...customerEditingData, city: e.target.value})} placeholder="למשל: תל אביב"/></div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
                 </div>
@@ -7088,6 +7419,24 @@ export default function App() {
                       {selectedCustomer.status === 'lead' ? 'ליד מתעניין' : selectedCustomer.status === 'active' ? 'לקוח פעיל' : 'לקוח עבר'}
                     </span>
                   </div>
+                  {/* פנייה חוזרת — קישור לפנייה הקודמת של אותו מספר טלפון */}
+                  {selectedCustomer.possibleDuplicateOfId && (() => {
+                    const prev = customers.find(p => p.id === selectedCustomer.possibleDuplicateOfId);
+                    return (
+                      <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-center">
+                        <p className="text-[11px] font-bold text-amber-800 flex items-center justify-center gap-1">
+                          <History className="w-3.5 h-3.5"/> השאיר פנייה בעבר
+                        </p>
+                        {prev ? (
+                          <button onClick={() => setSelectedCustomer(prev)} className="text-[11px] text-amber-700 underline mt-1">
+                            {prev.businessName || prev.contactName || 'פנייה קודמת'} · {prev.createdAt ? new Date(prev.createdAt).toLocaleDateString('he-IL') : ''}
+                          </button>
+                        ) : (
+                          <p className="text-[11px] text-amber-700 mt-1">הפנייה הקודמת כבר לא קיימת במערכת</p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Lead-specific controls */}
@@ -7190,8 +7539,16 @@ export default function App() {
                             <span className="text-slate-400 block">ללא אחריות</span>
                           </div>
                         );
-                        const saleDate = new Date(item.saleDate);
-                        const expiryDate = new Date(saleDate);
+                        const wStart = getWarrantyStartDate(item);
+                        if (!wStart) return (
+                          <div key={item.id} className="bg-amber-50 border border-amber-200 rounded p-2 text-xs">
+                            <span className="font-medium text-slate-700">{item.model}</span>
+                            <div className="flex items-center gap-1 mt-0.5 font-bold text-amber-700">
+                              <Clock className="w-3 h-3"/> אחריות טרם החלה — ממתין למסירה
+                            </div>
+                          </div>
+                        );
+                        const expiryDate = new Date(wStart);
                         expiryDate.setMonth(expiryDate.getMonth() + Number(item.warrantyMonths));
                         const daysLeft = Math.ceil((expiryDate.getTime() - todayMs) / (1000 * 60 * 60 * 24));
                         const isActive = daysLeft > 0;
@@ -7290,15 +7647,21 @@ export default function App() {
                       <div className="space-y-3">
                         {customerItems.map((item: any) => {
                           const saleDate = item.saleDate ? new Date(item.saleDate) : null;
-                          const expiryDate = saleDate && item.warrantyMonths ? (() => { const d = new Date(saleDate); d.setMonth(d.getMonth() + Number(item.warrantyMonths)); return d; })() : null;
+                          const wStart = getWarrantyStartDate(item);
+                          const expiryDate = wStart && item.warrantyMonths ? (() => { const d = new Date(wStart); d.setMonth(d.getMonth() + Number(item.warrantyMonths)); return d; })() : null;
                           const daysLeft = expiryDate ? Math.ceil((expiryDate.getTime() - todayMs) / (1000 * 60 * 60 * 24)) : null;
                           const isWarrantyActive = daysLeft !== null && daysLeft > 0;
+                          const warrantyPending = !wStart && Number(item.warrantyMonths) > 0;
                           return (
                             <div key={item.id} className="bg-white border border-slate-200 rounded-lg p-4 flex justify-between items-start">
                               <div>
                                 <p className="font-bold text-slate-800">{item.model}</p>
                                 <p className="text-xs text-slate-500 mt-0.5">תאריך מכירה: {saleDate ? saleDate.toLocaleDateString('he-IL') : '---'}</p>
-                                {item.warrantyMonths > 0 && (
+                                {warrantyPending ? (
+                                  <div className="flex items-center gap-1 text-xs mt-1 font-medium text-amber-600">
+                                    <Clock className="w-3.5 h-3.5"/> אחריות טרם החלה — ממתין למסירה ({item.warrantyMonths} חודשי אחריות)
+                                  </div>
+                                ) : item.warrantyMonths > 0 && (
                                   <div className={`flex items-center gap-1 text-xs mt-1 font-medium ${isWarrantyActive ? (daysLeft! <= 30 ? 'text-amber-600' : 'text-green-600') : 'text-red-500'}`}>
                                     {isWarrantyActive ? <ShieldCheck className="w-3.5 h-3.5"/> : <ShieldAlert className="w-3.5 h-3.5"/>}
                                     {isWarrantyActive ? (daysLeft! >= 30 ? `${Math.floor(daysLeft!/30)} חודשים ו-${daysLeft!%30} ימים לפקיעה` : `${daysLeft} ימים לפקיעה`) : `פגה ${expiryDate?.toLocaleDateString('he-IL')}`}
@@ -7798,6 +8161,59 @@ export default function App() {
                           </div>
                       </div>
                   ))}
+
+                  {/* --- פרטי הובלה ללקוח --- */}
+                  <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 space-y-4">
+                      <h4 className="font-bold text-amber-900 flex items-center gap-2 border-b border-amber-200 pb-2">
+                          <Truck className="w-4 h-4"/> פרטי הובלה ללקוח
+                      </h4>
+                      <p className="text-xs text-amber-800 -mt-1">
+                          ההזמנה תיפתח בטאב "הובלות ללקוחות" בסטטוס ממתין. שים לב: האחריות תתחיל לרוץ רק כשתאשר שההזמנה הגיעה ללקוח בפועל.
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-4">
+                          <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">אופן מסירה</label>
+                              <select className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.deliveryMethod}
+                                  onChange={(e) => setQuoteApprovalData({...quoteApprovalData, deliveryMethod: e.target.value, deliveryCost: e.target.value === 'pickup' ? 0 : quoteApprovalData.deliveryCost })}>
+                                  <option value="delivery">משלוח</option>
+                                  <option value="pickup">איסוף עצמי</option>
+                              </select>
+                          </div>
+                          <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">תזמון</label>
+                              <select className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.shippingTiming}
+                                  onChange={(e) => setQuoteApprovalData({...quoteApprovalData, shippingTiming: e.target.value, shippingDate: e.target.value === 'immediate' ? '' : quoteApprovalData.shippingDate })}>
+                                  <option value="immediate">מיידי</option>
+                                  <option value="scheduled">תאריך מתוזמן</option>
+                              </select>
+                          </div>
+                      </div>
+
+                      {quoteApprovalData.shippingTiming === 'scheduled' && (
+                          <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">תאריך {quoteApprovalData.deliveryMethod === 'pickup' ? 'איסוף' : 'שילוח'} מתוכנן</label>
+                              <input type="date" required min={todayStr} className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.shippingDate || ''}
+                                  onChange={(e) => setQuoteApprovalData({...quoteApprovalData, shippingDate: e.target.value})} />
+                          </div>
+                      )}
+
+                      {quoteApprovalData.deliveryMethod === 'delivery' && (
+                          <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-700 mb-1">עיר יעד</label>
+                                  <input type="text" required className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.deliveryCity || ''} placeholder="למשל: תל אביב"
+                                      onChange={(e) => setQuoteApprovalData({...quoteApprovalData, deliveryCity: e.target.value})} />
+                              </div>
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-700 mb-1">סכום הובלה (₪)</label>
+                                  <input type="number" min="0" step="0.01" className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.deliveryCost ?? 0}
+                                      onChange={(e) => setQuoteApprovalData({...quoteApprovalData, deliveryCost: Number(e.target.value)})} />
+                                  <p className="text-[10px] text-slate-500 mt-1">נמשך מההצעה — ניתן לעדכן לסכום בפועל</p>
+                              </div>
+                          </div>
+                      )}
+                  </div>
 
                   <button type="submit" disabled={isSaving} className="w-full bg-green-600 text-white py-3 rounded-md font-bold hover:bg-green-700 mt-4 disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-lg">
                       {isSaving ? 'מעדכן מלאי ומאשר...' : 'אשר הצעת מחיר וגרא פריטים מהמלאי'}

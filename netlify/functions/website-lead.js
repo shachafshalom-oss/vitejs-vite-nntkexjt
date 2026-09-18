@@ -42,9 +42,15 @@ const AGENTS = [
   { name: 'דניאל', email: 'danielyos205@gmail.com' },
 ];
 
-// נרמול טלפון: +9725... -> 05...
+// נרמול טלפון לזיהוי פנייה חוזרת — חייב להישאר זהה ל-normalizePhone ב-src/App.tsx,
+// אחרת אותו לקוח ייחשב כפילות בערוץ אחד ולא בשני.
+// מסיר תווי עיצוב, מוריד קידומת בינלאומית (+972 / 00972 / 972) ומחזיר צורה מקומית עם 0 מוביל.
 function normalizePhone(raw) {
-  return String(raw || '').replace(/^\+972/, '0').replace(/[\s-]/g, '');
+  let p = String(raw || '').replace(/[\s\-().]/g, '');
+  if (!p) return '';
+  p = p.replace(/^(\+|00)?972/, '');
+  if (!p.startsWith('0')) p = '0' + p;
+  return p;
 }
 
 // ALLOWED_ORIGIN יכול להכיל כמה דומיינים מופרדים בפסיק.
@@ -120,7 +126,7 @@ exports.handler = async (event) => {
     const allSnap = await customersRef.get();
 
     const duplicate = allSnap.docs.find(
-      (d) => normalizePhone(d.data().phone) === phone
+      (d) => phone.length >= 7 && normalizePhone(d.data().phone) === phone
     );
 
     // --- שיוך round-robin מאוזן כולל ---
@@ -146,9 +152,11 @@ exports.handler = async (event) => {
       campaignId: '',
       assignedTo,
       address: '',
-      notes: duplicate
-        ? `⚠️ ייתכן כפילות — קיים כבר לקוח עם טלפון זהה (מזהה: ${duplicate.id}). נוצר בכל זאת לבדיקתך.`
-        : '',
+      notes: '',
+      // סימון פנייה חוזרת כשדה מובנה ולא כהערת טקסט חופשי: כך ה-CRM מציג תג לחיץ
+      // שמוביל לפנייה הקודמת, ושדה ההערות נשאר פנוי לנציג.
+      possibleDuplicateOfId: duplicate ? duplicate.id : null,
+      possibleDuplicateAt: duplicate ? now : null,
       createdAt: now,
       updatedAt: now,
       interactionLogs: [],
