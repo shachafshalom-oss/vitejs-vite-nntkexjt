@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { ISRAELI_CITIES } from './israeliCities';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
@@ -611,6 +612,67 @@ const getWarrantyStartDate = (item: any): string | null => {
 
 const DELIVERY_METHOD_MAP: Record<string, string> = { 'delivery': 'משלוח', 'pickup': 'איסוף עצמי' };
 
+// --- בורר עיר: חיפוש חופשי, שמירה רק בבחירה מהרשימה ---
+// בכוונה לא datalist רגיל: datalist מאפשר לשמור כל טקסט שהוקלד, גם אם לא נבחר מהרשימה.
+// כאן ה-query (מה שמוקלד) נפרד מה-value (מה שבאמת נשמר) — value מתעדכן רק בלחיצה/Enter
+// על פריט מהרשימה, וכל טקסט שלא נבחר נמחק בחזרה בסגירה, כדי שערי הלקוחות יישארו אחידות.
+function CityPicker({ value, onChange, placeholder, required, className }: {
+  value: string; onChange: (city: string) => void; placeholder?: string; required?: boolean; className?: string;
+}) {
+  const [query, setQuery] = useState(value || '');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value || ''); }, [value]);
+
+  const matches = useMemo(() => {
+    const q = query.trim();
+    const filtered = q ? ISRAELI_CITIES.filter(c => c.includes(q)) : ISRAELI_CITIES;
+    return filtered.slice(0, 50);
+  }, [query]);
+
+  const commit = (city: string) => { onChange(city); setQuery(city); setIsOpen(false); };
+  const cancel = () => { setQuery(value || ''); setIsOpen(false); };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) cancel(); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, value]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        type="text" required={required} className={className} value={query} placeholder={placeholder}
+        onFocus={() => { setIsOpen(true); setHighlightIndex(0); }}
+        onChange={e => { setQuery(e.target.value); setIsOpen(true); setHighlightIndex(0); }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightIndex(i => Math.min(i + 1, matches.length - 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightIndex(i => Math.max(i - 1, 0)); }
+          else if (e.key === 'Enter') { e.preventDefault(); if (matches[highlightIndex]) commit(matches[highlightIndex]); }
+          else if (e.key === 'Escape') { cancel(); }
+        }}
+      />
+      {isOpen && (
+        <div className="absolute z-30 mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-300 rounded-md shadow-lg">
+          {matches.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-slate-400">לא נמצאה עיר תואמת</p>
+          ) : matches.map((c, i) => (
+            <button key={c} type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => commit(c)}
+              className={`block w-full text-right px-3 py-1.5 text-sm ${i === highlightIndex ? 'bg-[#EDDEDE] text-[#651011]' : 'hover:bg-slate-50 text-slate-700'}`}>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const defaultSettings: any = { 
   models: { 
     'Prime': { cbm: 1.2, blueprintUrl: '', itemImgUrl: '', listPrice: 0 }, 
@@ -1126,6 +1188,9 @@ export default function App() {
   const [customerDeliveries, setCustomerDeliveries] = useState<any[]>([]);
   const [deliveriesSubTab, setDeliveriesSubTab] = useState<'awaiting' | 'delivered'>('awaiting');
   const [isBackfillModalOpen, setIsBackfillModalOpen] = useState(false);
+  // עריכת עיר מוטבעת (inline) על הובלה שכבר קיימת — בין אם ממתינה ובין אם כבר נמסרה.
+  const [editingDeliveryCityId, setEditingDeliveryCityId] = useState<string | null>(null);
+  const [editingDeliveryCityValue, setEditingDeliveryCityValue] = useState('');
 
   // Custom Projects UI States
   const [isCustomProjectModalOpen, setIsCustomProjectModalOpen] = useState(false);
@@ -4148,6 +4213,20 @@ export default function App() {
     setIsSaving(false);
   };
 
+  // שמירת עיר שנבחרה inline על הובלה קיימת — נקרא ברגע הבחירה מהרשימה (CityPicker.onChange),
+  // לא רק ברגע ה-Enter/blur — כי מדובר בבחירה ולא בהקלדה חופשית.
+  const saveDeliveryCity = async (deliveryId: string, newCity: string) => {
+    setEditingDeliveryCityId(null);
+    try {
+      await updateDoc(doc(db, 'crm_customer_deliveries', deliveryId), {
+        deliveryCity: newCity,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (err: any) {
+      alert('שגיאה בשמירת העיר: ' + (err?.message || ''));
+    }
+  };
+
   const executeQuoteApproval = async (e: any) => {
       e.preventDefault();
       setIsSaving(true);
@@ -5370,7 +5449,27 @@ export default function App() {
                               </p>
                               <div className="flex items-center gap-3 mt-1.5 flex-wrap text-xs text-slate-600">
                                 {!isPickup && (
-                                  <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-slate-400"/> {d.deliveryCity || 'ללא עיר'}</span>
+                                  editingDeliveryCityId === d.id ? (
+                                    <span className="flex items-center gap-1 w-36" onClick={e => e.stopPropagation()}>
+                                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0"/>
+                                      <CityPicker
+                                        value={editingDeliveryCityValue}
+                                        onChange={city => { setEditingDeliveryCityValue(city); saveDeliveryCity(d.id, city); }}
+                                        className="border border-[#7B1315] rounded px-1.5 py-0.5 text-xs w-24"
+                                      />
+                                      <button onClick={() => setEditingDeliveryCityId(null)} className="text-slate-400 hover:text-red-600 shrink-0" title="ביטול">
+                                        <X className="w-3.5 h-3.5"/>
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setEditingDeliveryCityId(d.id); setEditingDeliveryCityValue(d.deliveryCity || ''); }}
+                                      className="flex items-center gap-1 hover:text-[#7B1315] group"
+                                      title="לחץ לעריכת העיר">
+                                      <MapPin className="w-3.5 h-3.5 text-slate-400"/> {d.deliveryCity || 'ללא עיר'}
+                                      <Edit className="w-3 h-3 text-slate-300 group-hover:text-[#7B1315]"/>
+                                    </button>
+                                  )
                                 )}
                                 <span className="flex items-center gap-1 font-medium text-[#651011]">
                                   <Banknote className="w-3.5 h-3.5 text-slate-400"/> {isPickup ? 'ללא עלות הובלה' : `₪${Number(d.deliveryCost || 0).toLocaleString()}`}
@@ -7406,7 +7505,11 @@ export default function App() {
                       <input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none mt-1" placeholder="הערה לתזכורת (אופציונלי)" value={customerEditingData.followUpNote || ''} onChange={e => setCustomerEditingData({...customerEditingData, followUpNote: e.target.value})} />
                     </div>
                   )}
-                  <div><label className="block text-sm font-medium text-slate-700 mb-1">עיר</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.city || ''} onChange={e => setCustomerEditingData({...customerEditingData, city: e.target.value})} placeholder="למשל: תל אביב"/></div>
+                  <div><label className="block text-sm font-medium text-slate-700 mb-1">עיר</label>
+                    <CityPicker value={customerEditingData.city || ''} onChange={city => setCustomerEditingData({...customerEditingData, city})}
+                      className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none"
+                      placeholder="הקלד לחיפוש עיר..." />
+                  </div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">כתובת מלאה</label><input type="text" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.address || ''} onChange={e => setCustomerEditingData({...customerEditingData, address: e.target.value})} placeholder="רחוב, מספר, עיר..."/></div>
                   <div className="md:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1">הערות בסיסיות (לא יומן)</label><textarea className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none min-h-[80px]" value={customerEditingData.notes || ''} onChange={e => setCustomerEditingData({...customerEditingData, notes: e.target.value})} placeholder="הערות קבועות שחשוב לדעת על הלקוח..."></textarea></div>
                 </div>
@@ -8350,8 +8453,8 @@ export default function App() {
                           <div className="grid grid-cols-2 gap-4">
                               <div>
                                   <label className="block text-xs font-bold text-slate-700 mb-1">עיר יעד</label>
-                                  <input type="text" required className="w-full border-slate-300 rounded p-2 text-sm bg-white" value={quoteApprovalData.deliveryCity || ''} placeholder="למשל: תל אביב"
-                                      onChange={(e) => setQuoteApprovalData({...quoteApprovalData, deliveryCity: e.target.value})} />
+                                  <CityPicker required value={quoteApprovalData.deliveryCity || ''} onChange={city => setQuoteApprovalData({...quoteApprovalData, deliveryCity: city})}
+                                      className="w-full border-slate-300 rounded p-2 text-sm bg-white" placeholder="הקלד לחיפוש עיר..." />
                               </div>
                               <div>
                                   <label className="block text-xs font-bold text-slate-700 mb-1">סכום הובלה (₪)</label>
