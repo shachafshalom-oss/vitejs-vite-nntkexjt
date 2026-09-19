@@ -1125,6 +1125,7 @@ export default function App() {
   // הובלות ללקוחות — מסירת מוצר שנמכר ללקוח סופי. לא לבלבל עם shipments (סחורה מסין).
   const [customerDeliveries, setCustomerDeliveries] = useState<any[]>([]);
   const [deliveriesSubTab, setDeliveriesSubTab] = useState<'awaiting' | 'delivered'>('awaiting');
+  const [isBackfillModalOpen, setIsBackfillModalOpen] = useState(false);
 
   // Custom Projects UI States
   const [isCustomProjectModalOpen, setIsCustomProjectModalOpen] = useState(false);
@@ -4070,6 +4071,83 @@ export default function App() {
     setIsSaving(false);
   };
 
+  // --- שיוך רטרואקטיבי להצעות שאושרו לפני שהטאב הזה נוצר ---
+  // בנייה משותפת של רשומת ההובלה הבסיסית, כדי ששני המסלולים (ממתין / כבר נמסר) לא יסטו זה מזה.
+  const buildBackfillDeliveryBase = (quote: any) => {
+    const cust = customers.find((c: any) => c.id === quote.customerId);
+    const itemIds: string[] = Array.isArray(quote.approvedItemIds) ? quote.approvedItemIds : [];
+    const relatedItems = items.filter((i: any) => itemIds.includes(i.id));
+    return {
+      quoteId: quote.id,
+      customerId: quote.customerId,
+      customerName: cust?.businessName || cust?.contactName || '',
+      customerPhone: cust?.phone || '',
+      customerAddress: cust?.address || '',
+      itemIds,
+      lines: relatedItems.length > 0
+        ? relatedItems.map((i: any) => ({ model: i.model, qty: 1 }))
+        : (Array.isArray(quote.items) ? quote.items.map((l: any) => ({ model: l.model, qty: Number(l.qty) || 1 })) : []),
+      deliveryMethod: 'delivery',
+      deliveryCity: cust?.city || '',
+      deliveryCost: Number(quote.shippingCost) || 0,
+      backfilled: true, // מסמן שהרשומה נוצרה בשיוך הרטרואקטיבי, לא באישור הצעה רגיל
+      createdAt: new Date().toISOString(),
+      createdBy: user?.email || '',
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  // "עדיין צריך לצאת" — נכנסת לממתינים בדיוק כמו הובלה שנפתחה עכשיו.
+  const backfillAsAwaiting = async (quote: any) => {
+    setIsSaving(true);
+    try {
+      await addDoc(collection(db, 'crm_customer_deliveries'), {
+        ...buildBackfillDeliveryBase(quote),
+        shippingTiming: 'immediate',
+        shippingDate: '',
+        deliveryStatus: 'awaiting',
+        deliveredAt: null,
+      });
+    } catch (err: any) {
+      alert('שגיאה בשיוך ההזמנה: ' + (err?.message || ''));
+    }
+    setIsSaving(false);
+  };
+
+  // "כבר נמסרה בעבר" — נרשמת ישירות כנמסרה, עם תאריך האחריות של תאריך המכירה המקורי.
+  // בכוונה לא תאריך היום: אחרת לקוח שקיבל את ההזמנה לפני חודשיים היה מקבל אחריות
+  // שמתחילה מחדש היום, כלומר חודשיים אחריות במתנה שלא הובטחו.
+  const backfillAsDelivered = async (quote: any) => {
+    const itemIds: string[] = Array.isArray(quote.approvedItemIds) ? quote.approvedItemIds : [];
+    const relatedItems = items.filter((i: any) => itemIds.includes(i.id));
+    const historicalDate = relatedItems.find((i: any) => i.saleDate)?.saleDate || quote.updatedAt?.split('T')[0] || quote.createdAt?.split('T')[0];
+    if (!historicalDate) { alert('לא נמצא תאריך מכירה לפריטים — סמן ידנית או פנה אליי.'); return; }
+    if (!window.confirm(`לסמן כנמסרה בתאריך ${new Date(historicalDate).toLocaleDateString('he-IL')}?\nזהו תאריך המכירה המקורי — האחריות תיספר ממנו, לא מהיום.`)) return;
+    setIsSaving(true);
+    try {
+      if (itemIds.length > 0) {
+        await Promise.all(itemIds.map((itemId: string) =>
+          updateDoc(doc(db, 'crm_items', itemId), {
+            warrantyStartDate: historicalDate,
+            awaitingDelivery: false,
+            updatedAt: new Date().toISOString()
+          })
+        ));
+      }
+      await addDoc(collection(db, 'crm_customer_deliveries'), {
+        ...buildBackfillDeliveryBase(quote),
+        shippingTiming: 'immediate',
+        shippingDate: '',
+        deliveryStatus: 'delivered',
+        deliveredAt: historicalDate,
+        deliveredBy: user?.email || '',
+      });
+    } catch (err: any) {
+      alert('שגיאה בשיוך ההזמנה: ' + (err?.message || ''));
+    }
+    setIsSaving(false);
+  };
+
   const executeQuoteApproval = async (e: any) => {
       e.preventDefault();
       setIsSaving(true);
@@ -4107,12 +4185,16 @@ export default function App() {
         const customer = customers.find(c => c.id === quoteApprovalData.customerId);
         const previousCustomerStatus = customer?.status || 'lead';
 
+        // סכום ההובלה שבאמת מחויב בחשבונית. באיסוף עצמי אין הובלה בפועל —
+        // אומדן ההובלה שבהצעה לא אמור להצטרף לחשבונית, גם אם עדיין מוצג בהצעה עצמה.
+        const billedShippingCost = quoteApprovalData.deliveryMethod === 'pickup' ? 0 : (Number(quoteApprovalData.shippingCost) || 0);
+
         await Promise.all(updatesToMake.map(update => updateDoc(doc(db, 'crm_items', update.id), update.data)));
         await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), {
           status: 'approved',
           approvedAt: new Date().toISOString(),
           approvedItemIds: approvedItemIds,
-          approvedShippingCost: quoteApprovalData.shippingCost || 0,
+          approvedShippingCost: billedShippingCost,
           previousCustomerStatus: previousCustomerStatus,
           updatedAt: new Date().toISOString()
         });
@@ -4161,7 +4243,7 @@ export default function App() {
           try {
             const { url: invoiceUrl, error: morningErr } = await sendToMorning(
               quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
-              quoteApprovalData.shippingCost || 0,
+              billedShippingCost,
               customer
             );
             if (invoiceUrl) {
@@ -4219,6 +4301,13 @@ export default function App() {
   const awaitingDeliveries = customerDeliveries.filter(d => (d.deliveryStatus || 'awaiting') === 'awaiting');
   const deliveredDeliveries = customerDeliveries.filter(d => d.deliveryStatus === 'delivered');
   const awaitingDeliveriesCount = awaitingDeliveries.length;
+
+  // הזמנות "יתומות" — אושרו לפני שהטאב הזה נוצר, ולכן אין להן רשומת הובלה כלל.
+  // נבדק לפי quoteId ולא itemId, כי ייתכן שכל הפריטים בהצעה כבר לא קיימים ב-crm_items.
+  const deliveryQuoteIds = new Set(customerDeliveries.map((d: any) => d.quoteId));
+  const orphanApprovedQuotes = quotes.filter((q: any) =>
+    ['approved', 'approved_no_stock', 'approved_test'].includes(q.status) && !deliveryQuoteIds.has(q.id)
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 relative" dir="rtl">
@@ -5208,6 +5297,18 @@ export default function App() {
               <p className="text-sm text-slate-400 mt-0.5">מסירת הזמנות ללקוחות שכבר רכשו — האחריות מתחילה עם אישור ההגעה</p>
             </div>
 
+            {/* הזמנות שאושרו לפני שהטאב הזה נוצר — אין להן רשומת הובלה כלל */}
+            {orphanApprovedQuotes.length > 0 && (
+              <button onClick={() => setIsBackfillModalOpen(true)}
+                className="w-full bg-amber-50 border border-amber-300 rounded-lg p-3.5 mb-5 flex items-center justify-between gap-3 hover:bg-amber-100 transition-colors text-right">
+                <span className="flex items-center gap-2 text-amber-800 font-bold text-sm">
+                  <AlertTriangle className="w-4.5 h-4.5 shrink-0"/>
+                  {orphanApprovedQuotes.length} הזמנות מאושרות מלפני השדרוג טרם שויכו להובלה
+                </span>
+                <span className="text-xs text-amber-700 underline shrink-0">לסקור ולשייך ←</span>
+              </button>
+            )}
+
             {/* תתי-טאבים */}
             <div className="flex gap-2 mb-5 border-b border-slate-200">
               {[
@@ -5305,6 +5406,50 @@ export default function App() {
                 </>
               );
             })()}
+          </div>
+        )}
+
+        {/* --- MODAL: שיוך הזמנות ישנות שאין להן רשומת הובלה --- */}
+        {isBackfillModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setIsBackfillModalOpen(false)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center p-5 border-b border-slate-200 shrink-0">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">שיוך הזמנות ישנות</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">הצעות שאושרו לפני שהטאב הזה נוצר — לכל אחת אין רשומת הובלה</p>
+                </div>
+                <button onClick={() => setIsBackfillModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+              </div>
+              <div className="overflow-y-auto p-4 space-y-2.5">
+                {orphanApprovedQuotes.length === 0 ? (
+                  <p className="text-sm text-slate-400 text-center py-8">כל ההזמנות ההיסטוריות שויכו. אפשר לסגור.</p>
+                ) : orphanApprovedQuotes.map((q: any) => {
+                  const cust = customers.find((c: any) => c.id === q.customerId);
+                  const itemIds: string[] = Array.isArray(q.approvedItemIds) ? q.approvedItemIds : [];
+                  const relatedItems = items.filter((i: any) => itemIds.includes(i.id));
+                  const linesLabel = relatedItems.length > 0
+                    ? relatedItems.map((i: any) => i.model).join(' · ')
+                    : (Array.isArray(q.items) ? q.items.map((l: any) => l.model).join(' · ') : '---');
+                  const saleDate = relatedItems.find((i: any) => i.saleDate)?.saleDate;
+                  return (
+                    <div key={q.id} className="border border-slate-200 rounded-lg p-3">
+                      <p className="font-bold text-slate-800 text-sm">{cust?.businessName || cust?.contactName || 'לקוח לא ידוע'}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{linesLabel}{saleDate ? ` · אושרה ${new Date(saleDate).toLocaleDateString('he-IL')}` : ''}</p>
+                      <div className="flex gap-2 mt-2.5">
+                        <button onClick={() => backfillAsAwaiting(q)} disabled={isSaving}
+                          className="flex-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-md py-1.5 text-xs font-bold hover:bg-blue-100 disabled:opacity-50">
+                          עדיין צריך לצאת
+                        </button>
+                        <button onClick={() => backfillAsDelivered(q)} disabled={isSaving}
+                          className="flex-1 bg-green-50 text-green-700 border border-green-200 rounded-md py-1.5 text-xs font-bold hover:bg-green-100 disabled:opacity-50">
+                          כבר נמסרה בעבר
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
 
