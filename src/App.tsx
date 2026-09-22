@@ -2861,6 +2861,19 @@ export default function App() {
       }
       let newCustomerId = data.id;
       if (data.id) {
+        // אם שלב הליד השתנה דרך טופס העריכה המלא (ולא רק דרך כפתורי השלב המהירים) —
+        // נרשמת אותה רשומת system בדיוק כמו ב-saveLeadField. בלי זה, שינוי שלב מכאן
+        // היה קורה בפועל אבל נעלם לגמרי מ"עודכנו לאחרונה בסטטוסים".
+        const currentForLog = customers.find((c: any) => c.id === data.id);
+        if (currentForLog && data.leadStage && data.leadStage !== currentForLog.leadStage) {
+          const stageLog = {
+            date: new Date().toISOString(),
+            text: `סטטוס שונה ל"${LEAD_STAGE_MAP[data.leadStage] || data.leadStage}"`,
+            user: user?.email || 'משתמש מערכת',
+            type: 'system',
+          };
+          data.interactionLogs = [...(currentForLog.interactionLogs || []), stageLog];
+        }
         await updateDoc(doc(db, 'crm_customers', data.id), data);
       } else { 
         data.createdAt = new Date().toISOString(); 
@@ -3513,11 +3526,30 @@ export default function App() {
 
   const logCatalogSent = async (customer: any) => {
     try {
-      const newLog = { date: new Date().toISOString(), text: 'נשלח קטלוג מוצרים', type: 'catalog', user: user?.email || '' };
+      const catalogLog = { date: new Date().toISOString(), text: 'נשלח קטלוג מוצרים', type: 'catalog', user: user?.email || '' };
       const currentLogs = Array.isArray(customer.interactionLogs) ? customer.interactionLogs : [];
-      const updatedLogs = [...currentLogs, newLog];
-      await updateDoc(doc(db, 'crm_customers', customer.id), { interactionLogs: updatedLogs, updatedAt: new Date().toISOString() });
-      setCustomers((prev: any[]) => prev.map(c => c.id === customer.id ? { ...c, interactionLogs: updatedLogs } : c));
+      let updatedLogs = [...currentLogs, catalogLog];
+      const payload: Record<string, any> = {};
+
+      // שליחת קטלוג היא יצירת קשר ראשונה עם הליד — אם הוא עדיין בשלב "חדש", מקדמים
+      // אוטומטית ל"יצירת קשר", עם אותה רשומת system שקידום שלב רגיל היה יוצר,
+      // כדי שגם זה ייספר נכון תחת "עודכנו לאחרונה בסטטוסים".
+      if (customer.status === 'lead' && customer.leadStage === 'new') {
+        const stageLog = {
+          date: new Date().toISOString(),
+          text: `סטטוס שונה ל"${LEAD_STAGE_MAP['contacted']}"`,
+          user: user?.email || 'משתמש מערכת',
+          type: 'system',
+        };
+        updatedLogs = [...updatedLogs, stageLog];
+        payload.leadStage = 'contacted';
+      }
+
+      payload.interactionLogs = updatedLogs;
+      payload.updatedAt = new Date().toISOString();
+      await updateDoc(doc(db, 'crm_customers', customer.id), payload);
+      setCustomers((prev: any[]) => prev.map(c => c.id === customer.id ? { ...c, ...payload } : c));
+      if (selectedCustomer?.id === customer.id) setSelectedCustomer((prev: any) => prev ? { ...prev, ...payload } : prev);
     } catch {}
   };
 
@@ -5816,12 +5848,13 @@ export default function App() {
                   // "עודכנו לאחרונה בסטטוסים" — נשען על רשומות ה-system ביומן האינטראקציות,
                   // שנכתבות אוטומטית בכל שינוי leadStage. בכוונה לא updatedAt: עריכת הערה
                   // או שינוי טלפון מעדכנים את updatedAt והיו מזהמים את הרשימה בלידים
-                  // שהסטטוס שלהם כלל לא זז. מצומצם ללידים של המשתמש המחובר בלבד —
-                  // אותה בעלות בדיוק כמו "הלידים שלי" — כדי שכל נציג יראה רק את שלו.
+                  // שהסטטוס שלהם כלל לא זז. הבעלות כאן היא לפי מי שביצע את השינוי בפועל
+                  // (log.user) — לא לפי מי שהליד משויך אליו: ליד ששויך לשחף אבל דניאל
+                  // שינה לו סטטוס היום צריך להופיע אצל דניאל, לא אצל שחף.
                   if (leadsFilter === 'status_updated') {
-                    const isMine = c.assignedTo === user?.email || c.createdBy === user?.email;
-                    return isMine && (c.interactionLogs || []).some((l: any) =>
-                      l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+                    return (c.interactionLogs || []).some((l: any) =>
+                      l?.type === 'system' && l?.user === user?.email &&
+                      typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
                     );
                   }
                   if (leadsFilter === 'all') return true;
@@ -5841,9 +5874,9 @@ export default function App() {
               const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
               const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
               const statusUpdatedToday = allLeads.filter(c =>
-                (c.assignedTo === user?.email || c.createdBy === user?.email) &&
                 (c.interactionLogs || []).some((l: any) =>
-                  l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+                  l?.type === 'system' && l?.user === user?.email &&
+                  typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
                 )
               ).length;
 
