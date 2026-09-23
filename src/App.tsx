@@ -3,7 +3,7 @@ import { ISRAELI_CITIES } from './israeliCities';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -612,6 +612,57 @@ const getWarrantyStartDate = (item: any): string | null => {
 
 const DELIVERY_METHOD_MAP: Record<string, string> = { 'delivery': 'משלוח', 'pickup': 'איסוף עצמי' };
 
+// --- פרטי זהות החברה למסמכים רשמיים ---
+// ריכוז במקום אחד: ת. משלוח (ובעתיד כל מסמך רשמי נוסף) נשען על אותם ערכים.
+// שם + ח.פ נדרשים בתעודת משלוח לפי הוראות ניהול פנקסים. הכתובת — לבקשת שחף, המחסן.
+const COMPANY_INFO = {
+  legalName: 'סטיל אנד ספיריט בע"מ',
+  companyNumber: '517356077',
+  address: 'אפעל 11, פתח תקווה',
+  phones: '050-2212880 · 054-8050870',
+  email: 'sales@steelandspirit.com',
+  website: 'steelandspirit.com',
+  brandLine: 'Steel & Spirit Ltd · Crafted by Bartenders',
+};
+
+const formatDeliveryNoteNumber = (n: any) => String(Number(n) || 0).padStart(5, '0');
+
+// שדה הכתובת בכרטיס הלקוח הוא טקסט חופשי ולעתים כבר כולל את העיר ("הרצל 5, חיפה").
+// כשהעיר מוצגת בשורה נפרדת (מההובלה) — מסירים אותה מסוף הכתובת רק אם היא מופרדת בפסיק
+// ותואמת במדויק. בכוונה לא לפי רווח: רחובות רבים נקראים על שם ערים ("דרך חיפה", "שדרות ירושלים"),
+// ועיר כפולה היא פגם קוסמטי — כתובת קטועה במסמך רשמי היא פגם אמיתי.
+const stripTrailingCity = (address: string, city: string): string => {
+  const a = String(address || '').trim();
+  const c = String(city || '').trim();
+  if (!a || !c) return a;
+  if (a === c) return '';
+  const cleaned = a.replace(/[\s,،]+$/, '');
+  if (cleaned.endsWith(c)) {
+    const head = cleaned.slice(0, cleaned.length - c.length);
+    if (/[,،]\s*$/.test(head)) return head.replace(/[\s,،]+$/, '').trim();
+  }
+  return a;
+};
+
+// שורות התעודה: איחוד לפי דגם (הזמנות ששויכו בדיעבד נשמרו כשורה לכל יחידה), תיאור מהגדרות הדגם,
+// ומספרים סידוריים מהמלאי — רק מה שהוזן בפועל, בלי להמציא.
+const buildDeliveryNoteLines = (delivery: any, allItems: any[], models: any): { model: string, description: string, serials: string[], qty: number }[] => {
+  const byModel = new Map<string, number>();
+  (delivery?.lines || []).forEach((l: any) => {
+    const m = String(l?.model || '').trim();
+    if (!m) return;
+    byModel.set(m, (byModel.get(m) || 0) + (Number(l?.qty) || 0));
+  });
+  const itemIds: string[] = Array.isArray(delivery?.itemIds) ? delivery.itemIds : [];
+  const deliveryItems = allItems.filter((i: any) => itemIds.includes(i.id));
+  return Array.from(byModel.entries()).map(([model, qty]) => ({
+    model,
+    qty,
+    description: String(models?.[model]?.deliveryDescription || '').trim(),
+    serials: deliveryItems.filter((i: any) => i.model === model && String(i.serialNumber || '').trim()).map((i: any) => String(i.serialNumber).trim()),
+  }));
+};
+
 // --- בורר עיר: חיפוש חופשי, שמירה רק בבחירה מהרשימה ---
 // בכוונה לא datalist רגיל: datalist מאפשר לשמור כל טקסט שהוקלד, גם אם לא נבחר מהרשימה.
 // כאן ה-query (מה שמוקלד) נפרד מה-value (מה שבאמת נשמר) — value מתעדכן רק בלחיצה/Enter
@@ -775,6 +826,147 @@ const QUICK_IMPORT_KEYWORDS = [
 // =========================================================================
 
 // 1. רכיב תצוגת מסמך הצעת המחיר (PDF)
+// --- תעודת משלוח ---
+// מרונדרת אך ורק מתוך snapshot שננעל ברגע ההנפקה הראשונה — לא מכרטיס הלקוח החי.
+// כך תעודה ממוספרת נשארת זהה לעד, גם אם הכתובת או הטלפון של הלקוח ישתנו אחר כך.
+// רקע לבן בכוונה: המסמך מודפס ונחתם בשטח, ורקע צבעוני מלא יוצא אפור במדפסת משרדית.
+// inline styles בלבד (לא Tailwind) כי html2canvas מצלם את החישוב בפועל, וכך המסמך לא תלוי ב-CSS של האפליקציה.
+const DN = { charcoal: '#2A3134', burgundy: '#7B1315', cream: '#EFEBD8', muted: '#6b7075', line: '#e6e2d8', zebra: '#faf8f3', border: '#d9d4c7' };
+
+const DeliveryNoteDocument = ({ snapshot, logoUrl, innerRef }: { snapshot: any, logoUrl?: string, innerRef?: React.RefObject<HTMLDivElement | null> }) => {
+  const s = snapshot || {};
+  const c = s.customer || {};
+  const isPickup = s.method === 'pickup';
+  const lines: any[] = Array.isArray(s.lines) ? s.lines : [];
+  const hasSerials = lines.some(l => Array.isArray(l.serials) && l.serials.length > 0);
+  const totalUnits = lines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
+  const fmtDate = (v: any) => v ? new Date(v).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+  const timingLabel = s.timing === 'scheduled' && s.shippingDate ? fmtDate(s.shippingDate) : 'מיידי';
+
+  const cardStyle: React.CSSProperties = { flex: 1, border: `1px solid ${DN.border}`, borderRadius: '8px', overflow: 'hidden' };
+  const cardHead: React.CSSProperties = { background: DN.cream, color: DN.burgundy, fontWeight: 'bold', fontSize: '12.5px', padding: '6px 12px' };
+  const Row = ({ label, children, ltr }: { label: string, children: React.ReactNode, ltr?: boolean }) => (
+    <div style={{ display: 'flex', fontSize: '12.5px', padding: '4px 12px', lineHeight: '1.45' }}>
+      <span style={{ width: '82px', flexShrink: 0, color: DN.muted }}>{label}</span>
+      <span style={ltr ? { direction: 'ltr', unicodeBidi: 'embed' } : undefined}>{children}</span>
+    </div>
+  );
+  const th: React.CSSProperties = { background: DN.charcoal, color: DN.cream, padding: '7px 10px', textAlign: 'right', fontWeight: 'bold' };
+  const td = (idx: number): React.CSSProperties => ({ padding: '7px 10px', borderBottom: `1px solid ${DN.line}`, background: idx % 2 === 1 ? DN.zebra : '#ffffff', verticalAlign: 'top' });
+  const sigLine: React.CSSProperties = { borderBottom: `1px solid ${DN.charcoal}`, height: '30px', marginBottom: '5px' };
+
+  return (
+    <div ref={innerRef} style={{ width: '210mm', minHeight: '297mm', background: '#ffffff', padding: '14mm 16mm 0', boxSizing: 'border-box', direction: 'rtl', fontFamily: 'Arial, Helvetica, sans-serif', color: DN.charcoal, display: 'flex', flexDirection: 'column' }}>
+      {/* כותרת: זהות החברה (ימין) + תיבת מסמך (שמאל) */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {logoUrl ? <img src={logoUrl} alt="" crossOrigin="anonymous" style={{ maxWidth: '130px', maxHeight: '70px', objectFit: 'contain' }} /> : null}
+          <div style={{ fontSize: '11.5px', lineHeight: '1.55' }}>
+            <div style={{ fontSize: '15px', fontWeight: 'bold', marginBottom: '2px' }}>{COMPANY_INFO.legalName}</div>
+            <div>ח.פ {COMPANY_INFO.companyNumber}</div>
+            <div>{COMPANY_INFO.address}</div>
+            <div style={{ direction: 'ltr', textAlign: 'right' }}>{COMPANY_INFO.phones}</div>
+            <div style={{ direction: 'ltr', textAlign: 'right' }}>{COMPANY_INFO.email} · {COMPANY_INFO.website}</div>
+          </div>
+        </div>
+        <div style={{ border: `1.5px solid ${DN.burgundy}`, borderRadius: '8px', minWidth: '190px', overflow: 'hidden', textAlign: 'center', flexShrink: 0 }}>
+          <div style={{ background: DN.burgundy, color: DN.cream, fontWeight: 'bold', fontSize: '19px', padding: '7px 12px' }}>תעודת משלוח</div>
+          {[
+            ['מספר', formatDeliveryNoteNumber(s.number)],
+            ['תאריך הפקה', fmtDate(s.issuedAt)],
+            ...(s.orderDate ? [['הזמנה מתאריך', fmtDate(s.orderDate)]] : []),
+          ].map(([k, v], i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 12px', fontSize: '12px', borderTop: i === 0 ? 'none' : '1px solid #eee' }}>
+              <span>{k}</span><span style={{ fontWeight: 'bold', direction: 'ltr' }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ height: '3px', background: DN.burgundy, margin: '14px 0 16px', borderRadius: '2px' }} />
+
+      {/* פרטי לקוח + פרטי מסירה */}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+        <div style={cardStyle}>
+          <div style={cardHead}>פרטי הלקוח</div>
+          <div style={{ padding: '4px 0 6px' }}>
+            <Row label="שם הלקוח">{c.name || '—'}{c.tradeName ? ` (${c.tradeName})` : ''}</Row>
+            {c.hp ? <Row label="ח.פ / ע.מ">{c.hp}</Row> : null}
+            {/* לקוח פרטי: השם ואיש הקשר זהים — לא מציגים פעמיים */}
+            {c.contactName && c.contactName !== c.name ? <Row label="איש קשר">{c.contactName}</Row> : null}
+            {c.phone ? <Row label="טלפון" ltr>{c.phone}</Row> : null}
+          </div>
+        </div>
+        <div style={cardStyle}>
+          <div style={cardHead}>פרטי מסירה</div>
+          <div style={{ padding: '4px 0 6px' }}>
+            <Row label="אופן מסירה">{isPickup ? 'איסוף עצמי' : 'משלוח'}</Row>
+            {isPickup ? (
+              <Row label="מקום איסוף">{COMPANY_INFO.address}</Row>
+            ) : (
+              <>
+                <Row label="כתובת">{s.address || '—'}</Row>
+                <Row label="עיר">{s.city || '—'}</Row>
+              </>
+            )}
+            <Row label="מועד">{timingLabel}</Row>
+          </div>
+        </div>
+      </div>
+
+      {/* פירוט טובין — ללא מחירים וללא שורת הובלה */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+        <thead>
+          <tr>
+            <th style={{ ...th, width: '34px' }}>#</th>
+            <th style={th}>תיאור הטובין</th>
+            {hasSerials ? <th style={th}>מס' סידורי</th> : null}
+            <th style={{ ...th, width: '60px' }}>יחידה</th>
+            <th style={{ ...th, width: '60px' }}>כמות</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l, idx) => (
+            <tr key={idx}>
+              <td style={td(idx)}>{idx + 1}</td>
+              <td style={td(idx)}>{l.description ? <><span>{l.description}</span><span style={{ color: DN.muted }}> — </span><span style={{ fontWeight: 'bold' }}>{l.model}</span></> : <span style={{ fontWeight: 'bold' }}>{l.model}</span>}</td>
+              {hasSerials ? <td style={{ ...td(idx), direction: 'ltr', textAlign: 'right' }}>{(l.serials || []).length ? l.serials.join(', ') : '—'}</td> : null}
+              <td style={td(idx)}>יח'</td>
+              <td style={td(idx)}>{l.qty}</td>
+            </tr>
+          ))}
+          <tr>
+            <td style={{ padding: '8px 10px', borderTop: `2px solid ${DN.charcoal}` }}></td>
+            <td style={{ padding: '8px 10px', borderTop: `2px solid ${DN.charcoal}`, fontWeight: 'bold' }}>סה"כ יחידות</td>
+            {hasSerials ? <td style={{ padding: '8px 10px', borderTop: `2px solid ${DN.charcoal}` }}></td> : null}
+            <td style={{ padding: '8px 10px', borderTop: `2px solid ${DN.charcoal}` }}></td>
+            <td style={{ padding: '8px 10px', borderTop: `2px solid ${DN.charcoal}`, fontWeight: 'bold' }}>{totalUnits}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* הצהרת קבלה + חתימות */}
+      <div style={{ marginTop: '22px', fontSize: '12px', background: DN.zebra, borderRight: `3px solid ${DN.burgundy}`, padding: '9px 12px', lineHeight: '1.6' }}>
+        אני החתום/ה מטה מאשר/ת כי קיבלתי את הטובין המפורטים לעיל בשלמותם ובמצב תקין.
+      </div>
+      <div style={{ display: 'flex', gap: '22px', marginTop: '34px' }}>
+        {['שם המקבל', 'חתימה', 'תאריך ושעה'].map(label => (
+          <div key={label} style={{ flex: 1, fontSize: '11.5px', color: DN.muted }}>
+            <div style={sigLine} />
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ height: '18mm' }} />
+      <div style={{ marginTop: 'auto', marginLeft: '-16mm', marginRight: '-16mm', background: DN.charcoal, color: DN.cream, fontSize: '10.5px', padding: '8px 16mm', display: 'flex', justifyContent: 'space-between' }}>
+        <span style={{ direction: 'ltr' }}>{COMPANY_INFO.brandLine}</span>
+        <span>תעודת משלוח {formatDeliveryNoteNumber(s.number)}</span>
+      </div>
+    </div>
+  );
+};
+
 const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, customer: any, settings: any, innerRef?: React.RefObject<HTMLDivElement> }) => {
   const getItemEffectivePrice = (item: any) => getEffectivePrice(item);
   const itemsTotal = quote?.items?.reduce((sum: number, item: any) => sum + (getItemEffectivePrice(item) * Number(item.qty)), 0) || 0;
@@ -1309,6 +1501,16 @@ export default function App() {
   const [selectedQuote, setSelectedQuote] = useState<any>(null);
   const [quoteData, setQuoteData] = useState<any>(null);
   const quoteRef = useRef<HTMLDivElement>(null);
+  // תעודת משלוח: מרונדרת מחוץ למסך רק בזמן ההפקה עצמה, ואז מוסרת — לא צריכה להישאר mounted
+  // כמו מסמך ההצעה (שנמצא בתוך מודל פתוח ממילא).
+  const deliveryNoteRef = useRef<HTMLDivElement>(null);
+  const [printingDeliveryNote, setPrintingDeliveryNote] = useState<{ snapshot: any, fileLabel: string } | null>(null);
+  // מזהה ההובלה שבהפקה כרגע — כדי להציג "מפיק..." בשורה הנכונה בלבד ולחסום לחיצה כפולה.
+  const [generatingDeliveryNoteId, setGeneratingDeliveryNoteId] = useState<string | null>(null);
+  // מונה תעודות המשלוח — במסמך נפרד crm_settings/delivery_note_counter (לא ב-general_settings,
+  // שנדרס בשלמותו ע"י כפתורי שמירה אחרים ועלול היה להחזיר את המונה אחורה וליצור כפילויות).
+  const [nextDeliveryNoteNumber, setNextDeliveryNoteNumber] = useState<number>(1);
+  const [counterEditValue, setCounterEditValue] = useState<string>('');
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [isQuoteApprovalModalOpen, setIsQuoteApprovalModalOpen] = useState(false);
   const [quoteApprovalData, setQuoteApprovalData] = useState<any>(null);
@@ -1528,6 +1730,8 @@ export default function App() {
       // וקרוב מאוד למגבלת הגודל של 1MB למסמך ב-Firestore. לוגו נוסף שם עלול לגרום לכשל שמירה שקט.
       const logoDoc = docs.find((d: any) => d.id === 'company_logo');
       setCompanyLogoUrl(logoDoc?.url || '');
+      const counterDoc = docs.find((d: any) => d.id === 'delivery_note_counter');
+      setNextDeliveryNoteNumber(Math.max(1, Number(counterDoc?.next) || 1));
       if (settingsDoc) {
         // מנקה שדה companyLogoUrl ישן אם נשאר במסמך general_settings מגרסה קודמת —
         // כדי שהוא לא ימשיך "לטרמפ" על כל setDoc({...settings}) עתידי מכפתורי שמירה אחרים
@@ -4259,6 +4463,119 @@ export default function App() {
     }
   };
 
+  // --- תעודת משלוח: snapshot + מספור סידורי ---
+  // הטיוטה נבנית מהנתונים החיים (כרטיס לקוח, ההובלה, המלאי, הגדרות הדגמים, ההצעה),
+  // אבל נשמרת ננעלת על ההובלה ברגע ההנפקה הראשונה — ומשם כל הדפסה חוזרת מתרנדרת ממנה בלבד.
+  const buildDeliveryNoteDraft = (delivery: any) => {
+    const cust = customers.find((c: any) => c.id === delivery.customerId) || {};
+    const quote = quotes.find((q: any) => q.id === delivery.quoteId);
+    const isPickup = delivery.deliveryMethod === 'pickup';
+    const legalName = String(cust.companyName || '').trim();
+    const tradeName = String(cust.businessName || '').trim();
+    return {
+      orderDate: quote?.date || '',
+      customer: {
+        name: legalName || tradeName || String(cust.contactName || '').trim(),
+        tradeName: legalName && tradeName && legalName !== tradeName ? tradeName : '',
+        hp: String(cust.hp || '').trim(),
+        contactName: String(cust.contactName || '').trim(),
+        phone: String(cust.phone || '').trim(),
+      },
+      method: isPickup ? 'pickup' : 'delivery',
+      address: isPickup ? '' : stripTrailingCity(cust.address || '', delivery.deliveryCity || ''),
+      city: isPickup ? '' : (delivery.deliveryCity || ''),
+      timing: delivery.shippingTiming || 'immediate',
+      shippingDate: delivery.shippingDate || '',
+      lines: buildDeliveryNoteLines(delivery, items, settings?.models),
+    };
+  };
+
+  // טרנזקציה אחת שקוראת גם את המונה וגם את ההובלה עצמה: אם כבר הונפקה תעודה להובלה הזו
+  // (גם אם משתמש אחר הנפיק אותה באותה שנייה) — מחזירים את הקיימת ולא נוגעים במונה.
+  // כך אין מספרים שרופים ואין שתי תעודות לאותה הובלה.
+  const issueDeliveryNote = async (delivery: any): Promise<any> => {
+    if (delivery.deliveryNoteSnapshot?.number) return delivery.deliveryNoteSnapshot;
+    const draft = buildDeliveryNoteDraft(delivery);
+    const counterRef = doc(db, 'crm_settings', 'delivery_note_counter');
+    const deliveryDocRef = doc(db, 'crm_customer_deliveries', delivery.id);
+    return runTransaction(db, async (tx) => {
+      const counterSnap = await tx.get(counterRef);
+      const deliverySnap = await tx.get(deliveryDocRef);
+      const current = (deliverySnap as any).data?.() || {};
+      if (current.deliveryNoteSnapshot?.number) return current.deliveryNoteSnapshot;
+      const issuedAt = new Date().toISOString();
+      // הובלה שכבר קיבלה מספר בלי snapshot (לא אמור לקרות) — שומרים את המספר, לא מקדמים מונה.
+      if (current.deliveryNoteNumber) {
+        const snap = { ...draft, number: Number(current.deliveryNoteNumber), issuedAt: current.deliveryNoteIssuedAt || issuedAt };
+        tx.update(deliveryDocRef, { deliveryNoteSnapshot: snap, updatedAt: issuedAt });
+        return snap;
+      }
+      const n = Math.max(1, Number((counterSnap as any).data?.()?.next) || 1);
+      const snap = { ...draft, number: n, issuedAt };
+      tx.set(counterRef, { next: n + 1 }, { merge: true });
+      tx.update(deliveryDocRef, { deliveryNoteNumber: n, deliveryNoteIssuedAt: issuedAt, deliveryNoteSnapshot: snap, updatedAt: issuedAt });
+      return snap;
+    });
+  };
+
+  const handleGenerateDeliveryNote = async (delivery: any) => {
+    if (generatingDeliveryNoteId) return;
+    if (!customers.find((c: any) => c.id === delivery.customerId) && !delivery.deliveryNoteSnapshot) {
+      alert('לא נמצא לקוח מקושר להובלה זו.');
+      return;
+    }
+    setGeneratingDeliveryNoteId(delivery.id);
+    try {
+      const snapshot = await issueDeliveryNote(delivery);
+      setPrintingDeliveryNote({ snapshot, fileLabel: snapshot?.customer?.name || delivery.customerName || 'לקוח' });
+    } catch (err: any) {
+      alert('שגיאה בהנפקת תעודת המשלוח: ' + (err?.message || ''));
+      setGeneratingDeliveryNoteId(null);
+    }
+  };
+
+  // אחרי שה-snapshot נכנס ל-state, המסמך מתרנדר מחוץ למסך; כאן מצלמים ומורידים.
+  // העיכוב נותן ללוגו (base64 שכבר בזיכרון) זמן להיצבע בפועל לפני הצילום.
+  useEffect(() => {
+    if (!printingDeliveryNote) return;
+    const timer = setTimeout(async () => {
+      try {
+        if (!deliveryNoteRef.current) throw new Error('המסמך לא נטען כראוי');
+        const canvas = await html2canvas(deliveryNoteRef.current, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+        const imgData = canvas.toDataURL('image/png');
+        const pdfWidth = 210;
+        const pdfHeight = Math.max(297, (canvas.height * pdfWidth) / canvas.width);
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [pdfWidth, pdfHeight] });
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, (canvas.height * pdfWidth) / canvas.width);
+        pdf.save(`תעודת_משלוח_${formatDeliveryNoteNumber(printingDeliveryNote.snapshot?.number)}_${printingDeliveryNote.fileLabel}.pdf`);
+      } catch (err: any) {
+        alert('שגיאה בהפקת קובץ ה-PDF: ' + (err?.message || ''));
+      }
+      setPrintingDeliveryNote(null);
+      setGeneratingDeliveryNoteId(null);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [printingDeliveryNote]);
+
+  // כיוון מונה ידני — מיועד לאיפוס אחרי בדיקות. חסום מתחת למספר הגבוה שכבר הונפק בפועל,
+  // כי זה בדיוק מה שהיה יוצר שתי תעודות עם אותו מספר.
+  const saveDeliveryNoteCounter = async () => {
+    const n = Math.floor(Number(counterEditValue));
+    if (!Number.isFinite(n) || n < 1) { alert('יש להזין מספר שלם, 1 ומעלה.'); return; }
+    const maxIssued = customerDeliveries.reduce((m: number, d: any) => Math.max(m, Number(d.deliveryNoteNumber) || 0), 0);
+    if (n <= maxIssued) {
+      alert(`כבר קיימת תעודה מספר ${formatDeliveryNoteNumber(maxIssued)} במערכת.\nהמספר הבא חייב להיות לפחות ${formatDeliveryNoteNumber(maxIssued + 1)}, אחרת ייווצרו שתי תעודות עם אותו מספר.`);
+      return;
+    }
+    if (!window.confirm(`לקבוע שהתעודה הבאה תהיה מספר ${formatDeliveryNoteNumber(n)}?\nשינוי המונה מיועד לאיפוס אחרי בדיקות בלבד — בעבודה שוטפת הסדרה צריכה להיות רציפה.`)) return;
+    try {
+      await setDoc(doc(db, 'crm_settings', 'delivery_note_counter'), { next: n }, { merge: true });
+      setCounterEditValue('');
+    } catch (err: any) {
+      alert('שגיאה בשמירת המונה: ' + (err?.message || ''));
+    }
+  };
+
   const executeQuoteApproval = async (e: any) => {
       e.preventDefault();
       setIsSaving(true);
@@ -5368,6 +5685,11 @@ export default function App() {
                       <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo):</label>
                       <input type="url" className="w-full p-1.5 border border-[#DABDBD] rounded bg-[#F7F1F1] text-sm text-[#2A3134] focus:ring-[#7B1315]" placeholder="https://youtube.com/watch?v=..." value={settings.models?.[model]?.videoUrl || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], videoUrl: e.target.value } } })}/>
                     </div>
+                    <div className="mb-4">
+                      <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1"><FileText className="w-3.5 h-3.5"/> תיאור לתעודת משלוח:</label>
+                      <input type="text" className="w-full p-1.5 border border-[#DABDBD] rounded bg-[#F7F1F1] text-sm text-[#2A3134] focus:ring-[#7B1315]" placeholder="למשל: עמדת בר נירוסטה עם קירור" value={settings.models?.[model]?.deliveryDescription || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], deliveryDescription: e.target.value } } })}/>
+                      <p className="text-[11px] text-slate-400 mt-1">יופיע בתעודה כ"{settings.models?.[model]?.deliveryDescription || 'תיאור'} — {model}". ריק = שם הדגם בלבד.</p>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <ModelAssetUploader 
                           label="העלה תמונת הדמיה" 
@@ -5516,7 +5838,31 @@ export default function App() {
                                 </p>
                               )}
                             </div>
-                            <div className="shrink-0">
+                            <div className="shrink-0 flex flex-col items-end gap-1.5">
+                              {/* תעודת משלוח — שלב שקורה לפני היציאה, לכן בולט בממתינים ומוצג ראשון */}
+                              {generatingDeliveryNoteId === d.id ? (
+                                <span className="px-3 py-2 rounded-md text-xs font-bold text-[#7B1315] border border-[#DABDBD] bg-[#F7F1F1] flex items-center gap-1.5">
+                                  <FileText className="w-4 h-4 animate-pulse"/> מפיק תעודה...
+                                </span>
+                              ) : d.deliveryNoteNumber ? (
+                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                  className="px-2.5 py-1.5 rounded-md text-[11px] font-bold text-green-800 bg-green-50 border border-green-200 hover:bg-green-100 disabled:opacity-50 flex items-center gap-1.5"
+                                  title="הורד שוב את אותה תעודה">
+                                  <CheckCircle className="w-3.5 h-3.5"/>
+                                  תעודה {formatDeliveryNoteNumber(d.deliveryNoteNumber)}{d.deliveryNoteIssuedAt ? ` · ${new Date(d.deliveryNoteIssuedAt).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}` : ''}
+                                  <Download className="w-3.5 h-3.5"/>
+                                </button>
+                              ) : deliveriesSubTab === 'awaiting' ? (
+                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                  className="px-3 py-2 rounded-md text-xs font-bold text-[#7B1315] border border-[#7B1315] bg-white hover:bg-[#F7F1F1] disabled:opacity-50 flex items-center gap-1.5">
+                                  <FileText className="w-4 h-4"/> הפק תעודת משלוח
+                                </button>
+                              ) : (
+                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                  className="text-slate-500 hover:text-[#7B1315] px-2 py-1 rounded text-xs font-medium flex items-center gap-1 disabled:opacity-50">
+                                  <FileText className="w-3.5 h-3.5"/> הפק תעודת משלוח
+                                </button>
+                              )}
                               {deliveriesSubTab === 'awaiting' ? (
                                 <button onClick={() => confirmDeliveryArrival(d)} disabled={isSaving}
                                   className="bg-green-600 text-white px-3 py-2 rounded-md text-xs font-bold hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
@@ -5537,6 +5883,17 @@ export default function App() {
                 </>
               );
             })()}
+          </div>
+        )}
+
+        {/* --- רינדור מחוץ למסך של תעודת משלוח לצורך צילום ל-PDF בלבד --- */}
+        {printingDeliveryNote && (
+          <div style={{ position: 'fixed', top: 0, left: '-9999px', zIndex: -1 }}>
+            <DeliveryNoteDocument
+              snapshot={printingDeliveryNote.snapshot}
+              logoUrl={companyLogoUrl}
+              innerRef={deliveryNoteRef}
+            />
           </div>
         )}
 
@@ -6918,6 +7275,28 @@ export default function App() {
                   }} className="mt-3 text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"><Trash2 className="w-3 h-3"/> הסר לוגו</button>
                 </div>
               )}
+            </div>
+
+            {/* תעודות משלוח — פרטי זהות + מונה סידורי */}
+            <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
+              <h2 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2"><Truck className="w-5 h-5 text-[#7B1315]"/> תעודות משלוח</h2>
+              <p className="text-sm text-slate-500 mb-4">פרטי החברה שמופיעים על כל תעודה, ומספור הסדרה.</p>
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 text-sm text-slate-700 leading-relaxed mb-4">
+                <p className="font-bold">{COMPANY_INFO.legalName}</p>
+                <p>ח.פ {COMPANY_INFO.companyNumber} · {COMPANY_INFO.address}</p>
+                <p dir="ltr" className="text-right">{COMPANY_INFO.phones} · {COMPANY_INFO.email}</p>
+              </div>
+              <div className="flex items-end gap-3 flex-wrap">
+                <div>
+                  <p className="text-xs font-bold text-slate-500 mb-1">התעודה הבאה תקבל מספר</p>
+                  <p className="text-2xl font-bold text-[#7B1315] tracking-wider" dir="ltr">{formatDeliveryNoteNumber(nextDeliveryNoteNumber)}</p>
+                </div>
+                <div className="flex items-center gap-2 mr-auto">
+                  <input type="number" min="1" step="1" className="w-24 border border-slate-300 rounded-md p-2 text-sm" placeholder="מספר חדש" value={counterEditValue} onChange={e => setCounterEditValue(e.target.value)} />
+                  <button onClick={saveDeliveryNoteCounter} disabled={!counterEditValue} className="text-sm border border-slate-300 bg-white hover:border-[#7B1315] hover:text-[#7B1315] px-3 py-2 rounded-md font-bold disabled:opacity-40">כוון מונה</button>
+                </div>
+              </div>
+              <p className="text-[11px] text-amber-700 mt-3 leading-relaxed">כל הנפקה — גם בדיקה — תופסת מספר בסדרה הרשמית. כיוון המונה מיועד לאיפוס אחרי בדיקות בלבד: קודם מבטלים את אישור הצעת הבדיקה (זה מוחק את ההובלה והתעודה שלה), ורק אז מכוונים.</p>
             </div>
 
             {/* Morning Integration Settings */}
