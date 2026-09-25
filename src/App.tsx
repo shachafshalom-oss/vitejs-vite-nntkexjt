@@ -2947,8 +2947,20 @@ export default function App() {
     e.preventDefault();
     setIsSaving(true);
     try {
-      const data = { ...editingData, updatedAt: new Date().toISOString() };
-      if (data.id) await updateDoc(doc(db, 'crm_campaigns', data.id), data);
+      // id לא נכתב לתוך המסמך עצמו — הוא מזהה המסמך
+      const { id, ...rest } = editingData;
+      const data: any = { ...rest, metaCampaignId: String(rest.metaCampaignId || '').trim(), updatedAt: new Date().toISOString() };
+      // Meta Campaign ID חייב להיות ייחודי: לפיו website-lead.js משייך לידים מהאתר.
+      // שני קמפיינים עם אותו ID = לידים שמתפצלים באקראי ו-ROI שגוי בשניהם.
+      if (data.metaCampaignId) {
+        const clash = campaigns.find(c => c.id !== id && String(c.metaCampaignId || '') === data.metaCampaignId);
+        if (clash) {
+          alert(`ה-Meta Campaign ID הזה כבר משויך לקמפיין "${clash.name}"${clash.autoCreated ? ' (נוצר אוטומטית מליד באתר)' : ''}.\nכדי לא לפצל לידים בין שני קמפיינים — עדכן את הקמפיין הקיים במקום.`);
+          setIsSaving(false);
+          return;
+        }
+      }
+      if (id) await updateDoc(doc(db, 'crm_campaigns', id), data);
       else { data.createdAt = new Date().toISOString(); await addDoc(collection(db, 'crm_campaigns'), data); }
       setIsCampaignModalOpen(false);
     } catch (err) { alert("שגיאה בשמירה"); }
@@ -6519,7 +6531,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex gap-1 customer-actions">
-                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
+                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: c.campaignId || '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
                           <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
                         </div>
@@ -7212,8 +7224,15 @@ export default function App() {
                       <div>
                         <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">{c.name} {isActive ? <span className="bg-green-100 text-green-800 text-[10px] px-2 py-0.5 rounded-full font-bold">פעיל</span> : <span className="bg-slate-100 text-slate-600 text-[10px] px-2 py-0.5 rounded-full font-bold">הסתיים</span>}</h3>
                         {(c.startDate || c.endDate) && <div className="text-xs text-slate-500 mt-1">{c.startDate ? new Date(c.startDate).toLocaleDateString('he-IL') : '---'} - {c.endDate ? new Date(c.endDate).toLocaleDateString('he-IL') : '---'}</div>}
+                        {/* קמפיין שנוצר מליד באתר מתחיל בעלות 0 — בלי עלות אמיתית, "עלות לבר" שלו שקרית */}
+                        {c.autoCreated && !(Number(c.totalCost) > 0) && <div className="mt-2 inline-block bg-amber-100 text-amber-800 text-[11px] px-2 py-0.5 rounded-full font-bold">נוצר אוטומטית — להשלים עלות</div>}
+                        {c.metaCampaignId && <div className="text-[11px] text-slate-400 mt-1 font-mono" dir="ltr">Meta ID: {c.metaCampaignId}</div>}
                       </div>
-                      <button onClick={() => deleteDocHandler('crm_campaigns', c.id)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4"/></button>
+                      <div className="flex items-center gap-2">
+                        {/* עד עכשיו לא הייתה דרך לערוך קמפיין קיים — נדרש כדי למלא Meta ID ולהשלים עלות */}
+                        <button onClick={() => { setEditingData({ ...c }); setIsCampaignModalOpen(true); }} className="text-slate-400 hover:text-blue-600" title="עריכת קמפיין"><Edit className="w-4 h-4"/></button>
+                        <button onClick={() => deleteDocHandler('crm_campaigns', c.id)} className="text-slate-400 hover:text-red-500" title="מחיקת קמפיין"><Trash2 className="w-4 h-4"/></button>
+                      </div>
                     </div>
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between"><span className="text-slate-500">עלות קמפיין:</span> <span className="font-medium">₪{Number(c.totalCost).toLocaleString()}</span></div>
@@ -7803,6 +7822,7 @@ export default function App() {
             <form onSubmit={saveCampaign} className="space-y-4">
               <div><label className="block text-sm font-medium mb-1">שם הקמפיין <span className="text-red-500">*</span></label><input required type="text" className="border border-slate-300 p-2 rounded w-full" value={editingData.name || ''} onChange={e => setEditingData({...editingData, name: e.target.value})} placeholder="לדוגמה: קמפיין אינסטגרם קיץ" /></div>
               <div><label className="block text-sm font-medium mb-1">עלות כוללת (₪)</label><input type="number" min="0" step="0.01" className="border border-slate-300 p-2 rounded w-full" value={editingData.totalCost || 0} onChange={e => setEditingData({...editingData, totalCost: Number(e.target.value)})} /></div>
+              <div><label className="block text-sm font-medium mb-1">Meta Campaign ID <span className="text-slate-400 font-normal text-xs">(מזהה הקמפיין במנהל המודעות — לשיוך אוטומטי של לידים מהאתר)</span></label><input type="text" inputMode="numeric" dir="ltr" placeholder="120212345678901234" className="border border-slate-300 p-2 rounded w-full font-mono" value={editingData.metaCampaignId || ''} onChange={e => setEditingData({...editingData, metaCampaignId: e.target.value.replace(/\D/g, '')})} /></div>
               <div className="grid grid-cols-2 gap-4">
                 <div><label className="block text-sm font-medium mb-1">תאריך התחלה</label><input type="date" className="border border-slate-300 p-2 rounded w-full" value={editingData.startDate || ''} onChange={e => setEditingData({...editingData, startDate: e.target.value})} /></div>
                 <div><label className="block text-sm font-medium mb-1">תאריך סיום</label><input type="date" className="border border-slate-300 p-2 rounded w-full" value={editingData.endDate || ''} onChange={e => setEditingData({...editingData, endDate: e.target.value})} /></div>
@@ -8180,6 +8200,26 @@ export default function App() {
                     <p className="text-slate-400 font-medium">תאריך יצירת ליד</p>
                     <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><CalendarDays className="w-3.5 h-3.5 text-[#A55F60]"/> {calculatedData.customerStats?.[selectedCustomer.id]?.interestDate || '---'}</p>
                   </div>
+                  {/* קמפיין ומקור: campaignId משויך אוטומטית מליד באתר (UTM) או מייבוא פייסבוק.
+                      attribution נשמר ע"י website-lead.js — מה שהגולש הביא איתו ב-URL. */}
+                  {(selectedCustomer.campaignId || selectedCustomer.attribution?.utm_source) && (() => {
+                    const camp = campaigns.find((x: any) => x.id === selectedCustomer.campaignId);
+                    const attr = selectedCustomer.attribution || {};
+                    const utmLine = [attr.utm_source, attr.utm_medium].filter(Boolean).join(' / ') + (attr.utm_content ? ` · ${attr.utm_content}` : '');
+                    return (
+                      <div>
+                        <p className="text-slate-400 font-medium">קמפיין ומקור</p>
+                        <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5">
+                          <Megaphone className="w-3.5 h-3.5 text-orange-500"/>
+                          {camp ? camp.name : (selectedCustomer.campaignId ? 'קמפיין שנמחק' : 'ללא קמפיין')}
+                        </p>
+                        {camp?.autoCreated && !(Number(camp.totalCost) > 0) && (
+                          <p className="text-[10px] text-amber-700 mt-0.5">נוצר אוטומטית — להשלים עלות בלשונית השיווק</p>
+                        )}
+                        {utmLine.trim() && <p className="text-[11px] text-slate-500 mt-0.5"><bdi>{utmLine}</bdi></p>}
+                      </div>
+                    );
+                  })()}
                   <div>
                     <p className="text-slate-400 font-medium">קשר אחרון</p>
                     <p className="font-bold text-slate-700 flex items-center gap-1 mt-0.5"><Activity className="w-3.5 h-3.5 text-blue-400"/> {calculatedData.customerStats?.[selectedCustomer.id]?.lastContactDate || '---'}</p>
@@ -8922,7 +8962,13 @@ export default function App() {
                   <CustomerCombobox
                     customers={customers}
                     value={quoteData.customerId || ''}
-                    onChange={(id) => setQuoteData({...quoteData, customerId: id})}
+                    onChange={(id) => {
+                      // הקמפיין עוקב אחרי הלקוח שנבחר — אלא אם נבחר ידנית קמפיין אחר
+                      const prevCust = customers.find(x => x.id === quoteData.customerId);
+                      const nextCust = customers.find(x => x.id === id);
+                      const wasAutoFilled = !quoteData.campaignId || quoteData.campaignId === (prevCust?.campaignId || '');
+                      setQuoteData({...quoteData, customerId: id, campaignId: wasAutoFilled ? (nextCust?.campaignId || '') : quoteData.campaignId});
+                    }}
                     onCreateNew={(name) => {
                       setShowQuickImport(false);
                       setQuickImportText('');
