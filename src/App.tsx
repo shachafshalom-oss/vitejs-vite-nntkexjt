@@ -7907,6 +7907,23 @@ export default function App() {
                       <option value="inactive">לקוח עבר (לא פעיל)</option>
                     </select>
                   </div>
+                  {/* שיוך קמפיין: לליד ידני (למשל מישהו שראה מודעה והתקשר), או תיקון ידני של שיוך אוטומטי.
+                      נתוני ה-UTM המקוריים (attribution) לא נמחקים — נשארים בתיק לתיעוד. */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">קמפיין</label>
+                    <select className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.campaignId || ''} onChange={e => setCustomerEditingData({...customerEditingData, campaignId: e.target.value})}>
+                      <option value="">ללא קמפיין</option>
+                      {[...campaigns].sort((a: any, b: any) => String(b.startDate || '').localeCompare(String(a.startDate || ''))).map((c: any) => (
+                        <option key={c.id} value={c.id}>{c.name}{c.autoCreated ? ' (אוטומטי)' : ''}</option>
+                      ))}
+                      {customerEditingData.campaignId && !campaigns.some((c: any) => c.id === customerEditingData.campaignId) && (
+                        <option value={customerEditingData.campaignId}>קמפיין שנמחק</option>
+                      )}
+                    </select>
+                    {customerEditingData.attribution?.utm_source && (
+                      <p className="text-[11px] text-slate-500 mt-1">מקור מקורי: <bdi>{[customerEditingData.attribution.utm_source, customerEditingData.attribution.utm_medium].filter(Boolean).join(' / ')}</bdi></p>
+                    )}
+                  </div>
                   {(customerEditingData.status === 'lead' || !customerEditingData.status) && (
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">שייך לנציג</label>
