@@ -5,7 +5,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -607,6 +607,52 @@ const findDuplicateByPhone = (phone: any, list: any[], excludeId?: string): any 
 const CALENDAR_FEED_LINKS: Record<string, { name: string; url: string }> = {
   'shachafshalom@gmail.com': { name: 'שחף', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=c25b80bb64edec123c05166c38f8d4d3726315a57b633eb2c5c844ee8aeff380' },
   'danielyos205@gmail.com': { name: 'דניאל', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=67cf8cf55dd0e2beb541395eeb30774ae43d2ede1dc32bec4d1698aa6ce2db8b' },
+};
+
+// escape לטקסט חופשי בתוך שדה ICS (RFC 5545) — זהה במכוון ל-icsEscape שב-calendar-feed.js.
+const icsEscape = (str: any): string =>
+  String(str || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r\n|\n|\r/g, '\\n');
+
+// נעיצת תזכורת בודדת ליומן הטלפון — פעולה מיידית, בנוסף (לא במקום) לפיד המנוי האוטומטי.
+// UID זהה בכוונה למה שהפיד מייצר לאותו ליד (lead-<id>@steelandspirit.com) — אם המשתמש גם
+// מנוי לפיד וגם נעץ ידנית, אפליקציית היומן תזהה את זה כאותו אירוע ולא תשכפל אותו.
+const pinReminderToDeviceCalendar = (customer: any) => {
+  if (!customer?.followUpDate) return;
+  const dateCompact = String(customer.followUpDate).replace(/-/g, '');
+  if (!/^\d{8}$/.test(dateCompact)) { alert('תאריך התזכורת לא תקין.'); return; }
+
+  const displayName = customer.businessName || customer.contactName || customer.name || 'ליד';
+  const summary = `מעקב: ${displayName}`;
+  const descParts: string[] = [];
+  if (customer.followUpNote) descParts.push(customer.followUpNote);
+  if (customer.phone) descParts.push(`טלפון: ${customer.phone}`);
+  const description = descParts.join('\n');
+  const dtstamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+  const lines = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Steel & Spirit//CRM Follow-ups//HE',
+    'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT',
+    `UID:lead-${customer.id}@steelandspirit.com`,
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART;VALUE=DATE:${dateCompact}`,
+    `SUMMARY:${icsEscape(summary)}`,
+  ];
+  if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+  lines.push('TRANSP:TRANSPARENT', 'END:VEVENT', 'END:VCALENDAR');
+
+  const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `תזכורת-${displayName}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 };
 
 // --- מועד תחילת האחריות ---
@@ -8219,10 +8265,17 @@ export default function App() {
                         onChange={e => setSelectedCustomer((p: any) => ({...p, followUpNote: e.target.value}))}
                         onBlur={e => saveLeadField(selectedCustomer.id, { followUpNote: e.target.value })} />
                       {selectedCustomer.followUpDate && (
-                        <button className="text-[10px] text-red-400 hover:text-red-600 mt-1"
-                          onClick={() => saveLeadField(selectedCustomer.id, { followUpDate: null, followUpNote: '' })}>
-                          הסר תזכורת
-                        </button>
+                        <div className="flex items-center gap-3 mt-1">
+                          <button className="text-[10px] text-slate-500 hover:text-[#7B1315] flex items-center gap-1"
+                            onClick={() => pinReminderToDeviceCalendar(selectedCustomer)}
+                            title="מוריד קובץ תזכורת בודדת שנפתח ישירות באפליקציית היומן של הטלפון">
+                            <CalendarPlus className="w-3 h-3"/> נעץ ביומן הטלפון
+                          </button>
+                          <button className="text-[10px] text-red-400 hover:text-red-600"
+                            onClick={() => saveLeadField(selectedCustomer.id, { followUpDate: null, followUpNote: '' })}>
+                            הסר תזכורת
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
