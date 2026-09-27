@@ -3,9 +3,9 @@ import { ISRAELI_CITIES } from './israeliCities';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction, deleteField, FieldPath } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -867,6 +867,29 @@ const withModelId = (entry: any, models: any): any => {
   return id ? { ...entry, modelId: id } : { ...entry };
 };
 
+// --- כרטיס דגם: הקמה ושמירה ממוקדת ---
+// נרמול שם להשוואת כפילות: "Prime", "prime" ו-" Prime " הם אותו דגם.
+// בעבר הוספת דגם בשם קיים דרסה אותו (id חדש, מחיר/CBM מאופסים) וניתקה ממנו את כל המלאי.
+const normalizeModelNameKey = (name: any): string =>
+  String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// מחזיר את שם הדגם הקיים שמתנגש עם השם המבוקש ('' אם אין). exceptName = הדגם עצמו (לשינוי שם).
+const findModelNameConflict = (models: any, name: string, exceptName?: string): string =>
+  Object.keys(models || {}).find(n => n !== exceptName && normalizeModelNameKey(n) === normalizeModelNameKey(name)) || '';
+
+// טיוטה ריקה לכרטיס דגם חדש. השדות תואמים בדיוק לשדות שהיו בכרטיס הישן.
+const EMPTY_MODEL_DRAFT = { name: '', supplierId: '', cbm: '', listPrice: '', videoUrl: '', deliveryDescription: '', itemImgUrl: '', blueprintUrl: '' };
+
+// הופך טיוטת כרטיס לרשומת דגם רזה (בלי תמונות — הן ב-crm_model_images).
+const buildLeanModelFromDraft = (draft: any, id: string) => ({
+  id,
+  supplierId: draft?.supplierId || '',
+  cbm: Number(draft?.cbm) || 0,
+  listPrice: Number(draft?.listPrice) || 0,
+  videoUrl: String(draft?.videoUrl || '').trim(),
+  deliveryDescription: String(draft?.deliveryDescription || '').trim(),
+});
+
 const QUICK_IMPORT_KEYWORDS = [
   'שם איש הקשר', 'שם איש קשר', 'שם הלקוח', 'שם לקוח', 'שם הבר/מסעדה', 'שם הבר\\מסעדה', 
   'שם הבר / מסעדה', 'שם הבר \\ מסעדה', 'שם הבר', 'שם המסעדה', 'שם העסק', 'שם עסק',
@@ -1532,7 +1555,6 @@ export default function App() {
   const [importCampaignId, setImportCampaignId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ created: number; skipped: number; duplicatesMarked?: number; errors: string[] } | null>(null);
-  const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isCustomerOverviewOpen, setIsCustomerOverviewOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
@@ -1578,11 +1600,32 @@ export default function App() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [quoteStatusFilter, setQuoteStatusFilter] = useState<string>('all');
 
-  const [newModelName, setNewModelName] = useState('');
   const [editingModelName, setEditingModelName] = useState<{old: string, newVal: string} | null>(null);
   // מצב תיבת "מזג דגם": source = הדגם שייעלם, target = הדגם שיקלוט את הכל.
   const [mergeModelState, setMergeModelState] = useState<{source: string, target: string} | null>(null);
-  const [newModelData, setNewModelData] = useState({ name: '', cbm: 0 });
+  // כרטיס דגם: נפתח לפי ה-id הקבוע ולא לפי השם — ולכן שורד שינוי שם בלי טיפול מיוחד.
+  // mode 'create' = הקמת דגם חדש (id עדיין ריק), 'edit' = עריכת דגם קיים.
+  const [modelCard, setModelCard] = useState<{ mode: 'create' | 'edit'; id: string } | null>(null);
+  // טיוטה נפרדת מ-settings: עריכות לא נשמרות לבד, ועדכוני Firestore של אחרים לא מוחקים אותן.
+  const [modelDraft, setModelDraft] = useState<any>(null);
+  // מצב הטיוטה ברגע הפתיחה/השמירה האחרונה — להשוואה "יש שינויים שלא נשמרו" ולזיהוי שינוי תמונה.
+  const [modelDraftBase, setModelDraftBase] = useState<any>(null);
+  const isModelDraftDirty = !!(modelDraft && modelDraftBase && JSON.stringify(modelDraft) !== JSON.stringify(modelDraftBase));
+
+  // אם הדגם שהכרטיס פתוח עליו נעלם מהקטלוג (מוזג לתוך דגם אחר) — הכרטיס נסגר.
+  useEffect(() => {
+    if (modelCard?.mode !== 'edit') return;
+    if (Object.keys(settings?.models || {}).length === 0) return; // טרם נטען — לא להסיק כלום
+    if (!getModelNameById(settings.models, modelCard.id)) {
+      // במיזוג שהמשתמש עצמו ביצע isSaving=true והסגירה צפויה. אחרת — משתמש אחר מיזג/מחק את הדגם,
+      // ואם היו עריכות שלא נשמרו, מודיעים במקום להעלים אותן בשקט.
+      if (isModelDraftDirty && !isSaving) {
+        alert('הדגם שהכרטיס היה פתוח עליו מוזג או נמחק בידי משתמש אחר.\n\nהשינויים שלא נשמרו בכרטיס בוטלו.');
+      }
+      setModelCard(null); setModelDraft(null); setModelDraftBase(null);
+      setMergeModelState(null); setEditingModelName(null);
+    }
+  }, [settings, modelCard]);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [arrivalPrompt, setArrivalPrompt] = useState<{isOpen: boolean, shipment: any, date: string}>({ isOpen: false, shipment: null, date: '' });
 
@@ -2389,33 +2432,159 @@ export default function App() {
     setAiInsight(result); setIsGeneratingAI(false);
   };
 
-  const handleAddModel = async (e: any) => {
-    e.preventDefault();
-    if (!newModelName.trim()) return;
+  // ==========================================================================
+  // כרטיס דגם — פתיחה, סגירה, הקמה ושמירה ממוקדת
+  // ==========================================================================
+  // עקרון: כל שמירה מהכרטיס כותבת רק את models.<הדגם הזה> במסמך general_settings
+  // (setDoc עם merge ומפה מקוננת — מפתחות מקוננים לא מתפרשים כנתיב, אז "/" ו-"." בשם בטוחים).
+  // שאר הדגמים ושאר ההגדרות (Morning, קטלוג) לא נכתבים — כך אין דריסה בין שחף לדניאל,
+  // ועריכה חצי-גמורה של דגם אחד לא "נשמרת בטעות" יחד עם משהו אחר.
+
+  const openModelCard = (id: string) => {
+    const name = getModelNameById(settings.models, id);
+    if (!name) return;
+    const m = settingsWithImages.models?.[name] || {};
+    // מספרים נשמרים בטיוטה כמחרוזת — כך הקלדה חוזרת של אותו ערך לא נחשבת "שינוי שלא נשמר"
+    const draft = {
+      name,
+      supplierId: m.supplierId || '',
+      cbm: m.cbm ? String(m.cbm) : '',
+      listPrice: m.listPrice ? String(m.listPrice) : '',
+      videoUrl: m.videoUrl || '',
+      deliveryDescription: m.deliveryDescription || '',
+      itemImgUrl: m.itemImgUrl || '',
+      blueprintUrl: m.blueprintUrl || '',
+    };
+    setModelDraft(draft); setModelDraftBase(draft);
+    setEditingModelName(null); setMergeModelState(null);
+    setModelCard({ mode: 'edit', id });
+  };
+
+  const openNewModelCard = () => {
+    setModelDraft({ ...EMPTY_MODEL_DRAFT }); setModelDraftBase({ ...EMPTY_MODEL_DRAFT });
+    setEditingModelName(null); setMergeModelState(null);
+    setModelCard({ mode: 'create', id: '' });
+  };
+
+  const closeModelCard = () => {
+    if (isModelDraftDirty && !window.confirm('יש שינויים שלא נשמרו בכרטיס הדגם.\n\nלסגור בלי לשמור?')) return;
+    setModelCard(null); setModelDraft(null); setModelDraftBase(null);
+    setEditingModelName(null); setMergeModelState(null);
+  };
+
+  // הרשומה שנכתבת ל-Firestore: הדגם הרזה + מחיקת שדות תמונה ישנים שאולי "תקועים" בתוך
+  // general_settings מהמבנה הישן. בלי זה, merge היה משאיר אותם לנצח, ומיגרציית התמונות
+  // הייתה מחזירה תמונה שהמשתמש מחק מהכרטיס.
+  const modelWritePayload = (lean: any) => ({ ...lean, itemImgUrl: deleteField(), blueprintUrl: deleteField() });
+
+  // הקמת דגם — המסלול היחיד להוספת דגם במערכת (מחליף את הטופס בטאב ואת החלון מה-FAB).
+  // בודק כפילות גם מול המצב בשרת (טרנזקציה) — כך שני משתמשים שמקימים באותו רגע
+  // את אותו שם לא דורסים זה את זה. מחזיר את ה-id החדש, או '' אם נחסם/נכשל.
+  const createModel = async (draft: any): Promise<string> => {
+    const name = String(draft?.name || '').trim().replace(/\s+/g, ' ');
+    if (!name) { alert('חובה להזין שם דגם.'); return ''; }
+    const conflictAlert = (conflict: string) => alert(
+      `דגם בשם "${conflict}" כבר קיים במערכת.\n\n` +
+      `הוספה בשם זהה הייתה דורסת את הדגם הקיים (מזהה חדש, מחיר ו-CBM מאופסים) ומנתקת ממנו את כל פריטי המלאי.\n` +
+      `פתח את הדגם הקיים מהרשימה כדי לערוך אותו.`
+    );
+    const localConflict = findModelNameConflict(settings.models, name);
+    if (localConflict) { conflictAlert(localConflict); return ''; }
+
+    const id = generateModelId();
+    const lean = buildLeanModelFromDraft(draft, id);
+    const imgs = { itemImgUrl: draft?.itemImgUrl || '', blueprintUrl: draft?.blueprintUrl || '' };
+    const settingsRef = doc(db, 'crm_settings', 'general_settings');
+    setIsSaving(true);
     try {
-      // כותב general_settings רזה: התמונות של הדגמים לא נכללות (הן ב-crm_model_images). דגם חדש נפתח ללא תמונות.
-      const leanModels = stripModelImages(settings.models);
-      // דגם חדש מקבל id קבוע מיד עם היווצרותו — כך הוא לעולם לא תלוי בשם שלו.
-      const newSettings = { ...settings, models: { ...leanModels, [newModelName.trim()]: { id: generateModelId(), cbm: 0, listPrice: 0, videoUrl: '' } } };
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
-      setNewModelName('');
-    } catch(err: any) {
-      console.error('שגיאה בהוספת דגם:', err);
-      alert(`שגיאה בהוספת דגם: ${err?.message || 'שגיאה לא ידועה'}`);
+      const serverConflict = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(settingsRef);
+        const serverModels = ((snap as any).data?.() || {}).models || {};
+        const c = findModelNameConflict(serverModels, name);
+        if (c) return c;
+        tx.set(settingsRef, { models: { [name]: modelWritePayload(lean) } }, { merge: true });
+        return '';
+      });
+      if (serverConflict) { conflictAlert(serverConflict); return ''; }
+      if (imgs.itemImgUrl || imgs.blueprintUrl) {
+        await setDoc(doc(db, 'crm_model_images', getModelImageDocId(name)), imgs);
+      }
+      // עדכון מקומי מיידי — כדי שהכרטיס יוכל לעבור למצב עריכה לפי ה-id בלי להמתין ל-onSnapshot
+      setSettings((prev: any) => ({ ...prev, models: { ...(prev?.models || {}), [name]: lean } }));
+      if (imgs.itemImgUrl || imgs.blueprintUrl) setModelImages(prev => ({ ...prev, [name]: imgs }));
+      return id;
+    } catch (err: any) {
+      console.error('שגיאה בהקמת דגם:', err);
+      alert(`שגיאה בהקמת דגם: ${err?.message || 'שגיאה לא ידועה'}`);
+      return '';
+    } finally {
+      setIsSaving(false);
     }
+  };
+
+  const saveModelCard = async () => {
+    if (!modelCard || !modelDraft) return;
+
+    if (modelCard.mode === 'create') {
+      const id = await createModel(modelDraft);
+      if (!id) return;
+      const saved = { ...modelDraft, name: String(modelDraft.name).trim().replace(/\s+/g, ' ') };
+      setModelDraft(saved); setModelDraftBase(saved);
+      setModelCard({ mode: 'edit', id });
+      return;
+    }
+
+    const settingsRef = doc(db, 'crm_settings', 'general_settings');
+    setIsSaving(true);
+    try {
+      // השם נקבע לפי ה-id *בשרת* ברגע הכתיבה (טרנזקציה) — אם דניאל שינה שם שנייה קודם,
+      // הכתיבה הולכת לשם החדש ולא יוצרת מחדש את השם הישן עם אותו id (שני דגמים עם id זהה).
+      const name = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(settingsRef);
+        const serverModels = ((snap as any).data?.() || {}).models || {};
+        const serverName = getModelNameById(serverModels, modelCard.id);
+        if (!serverName) return '';
+        tx.set(settingsRef, { models: { [serverName]: modelWritePayload(buildLeanModelFromDraft(modelDraft, modelCard.id)) } }, { merge: true });
+        return serverName;
+      });
+      if (!name) {
+        alert('הדגם הזה כבר לא קיים בקטלוג (ייתכן שמוזג או נמחק בידי משתמש אחר). השינויים לא נשמרו.');
+        setIsSaving(false);
+        return;
+      }
+      // תמונות נכתבות רק אם באמת השתנו — לא כל התמונות של כל הדגמים בכל שמירה
+      const imgChanged =
+        modelDraft.itemImgUrl !== modelDraftBase?.itemImgUrl ||
+        modelDraft.blueprintUrl !== modelDraftBase?.blueprintUrl;
+      if (imgChanged) {
+        await setDoc(doc(db, 'crm_model_images', getModelImageDocId(name)), {
+          itemImgUrl: modelDraft.itemImgUrl || '',
+          blueprintUrl: modelDraft.blueprintUrl || '',
+        });
+      }
+      setModelDraftBase(modelDraft);
+    } catch (err: any) {
+      console.error('שגיאה בשמירת דגם:', err);
+      alert(`שגיאה בשמירת הדגם: ${err?.message || 'שגיאה לא ידועה'}`);
+    }
+    setIsSaving(false);
   };
   
   const renameModel = async (oldName: string, newName: string) => {
-    const trimmed = newName.trim();
+    // אותו נרמול כמו בהקמה: רווחים כפולים מתכווצים לרווח אחד
+    const trimmed = newName.trim().replace(/\s+/g, ' ');
     if (!trimmed) return;
     if (trimmed === oldName) { setEditingModelName(null); return; }
-    if (settings.models?.[trimmed]) {
+    // התנגשות לפי שם מנורמל (אותיות גדולות/קטנות, רווחים) — חוץ מהדגם עצמו,
+    // כך ששינוי "prime" ל-"Prime" עדיין מותר.
+    const nameConflict = findModelNameConflict(settings.models, trimmed, oldName);
+    if (nameConflict) {
       // בעבר כאן פשוט נחסמנו — וזה בדיוק מה שיצר דגמים כפולים שאין דרך לאחד.
       // עכשיו מפנים במפורש לפעולת המיזוג, שיודעת לאחד את שניהם לדגם אחד.
       alert(
-        `דגם בשם "${trimmed}" כבר קיים במערכת.\n\n` +
+        `דגם בשם "${nameConflict}" כבר קיים במערכת.\n\n` +
         `אם מדובר באותו מוצר פיזי ששוכפל בטעות — השתמש בכפתור "מזג" ליד שם הדגם ` +
-        `כדי לאחד את "${oldName}" לתוך "${trimmed}" יחד עם כל פריטי המלאי שלו.`
+        `כדי לאחד את "${oldName}" לתוך "${nameConflict}" יחד עם כל פריטי המלאי שלו.`
       );
       return;
     }
@@ -2428,15 +2597,18 @@ export default function App() {
     const affectedQuotes = quotes.filter(q => q.items?.some(matches));
     const affectedShipments = shipments.filter(s => s.lines?.some(matches));
     const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some(matches));
+    // קטלוגי ספקים (מחיר מפעל לפי דגם) — בעבר לא עודכנו בשינוי שם, והשוואת הספקים איבדה את הדגם בשקט.
+    const affectedSuppliers = suppliers.filter((s: any) => (s.catalog || []).some(matches));
 
-    const total = affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length;
+    const total = affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length + affectedSuppliers.length;
     const confirmed = window.confirm(
       `שינוי שם "${oldName}" ל-"${trimmed}"\n\n` +
       `יעדכן ${total} רשומות:\n` +
       `• ${affectedItems.length} פריטי מלאי\n` +
       `• ${affectedQuotes.length} הצעות מחיר\n` +
       `• ${affectedShipments.length} משלוחים\n` +
-      `• ${affectedLocalPurchases.length} רכישות מקומיות\n\n` +
+      `• ${affectedLocalPurchases.length} רכישות מקומיות\n` +
+      `• ${affectedSuppliers.length} קטלוגי ספקים\n\n` +
       `הפעולה אינה הפיכה. להמשיך?`
     );
     if (!confirmed) return;
@@ -2450,12 +2622,23 @@ export default function App() {
       };
 
       // 1. settings.models — מפתח חדש, מחיקת ישן. נכתב רזה (ללא תמונות; הן ב-crm_model_images)
+      // נוגע רק בשני המפתחות האלה (FieldPath) — לא בשאר הדגמים ולא בשאר ההגדרות.
       const newModels = { ...settings.models };
       newModels[trimmed] = { ...newModels[oldName] };
       delete newModels[oldName];
-      const newSettings = { ...settings, models: stripModelImages(newModels) };
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
-      setSettings(newSettings);
+      const leanRenamed = stripModelImages({ [trimmed]: newModels[trimmed] })[trimmed];
+      await updateDoc(
+        doc(db, 'crm_settings', 'general_settings'),
+        new FieldPath('models', oldName), deleteField(),
+        new FieldPath('models', trimmed), leanRenamed
+      );
+      // עדכון מקומי פונקציונלי — מזיז רק את המפתח, בלי לדרוס את שאר ה-state בעותק ישן
+      // (שנלכד כשנפתח חלון האישור, ועלול להחזיר הגדרות שמשתמש אחר שינה בינתיים).
+      setSettings((prev: any) => {
+        const models = { ...(prev?.models || {}) };
+        if (models[oldName]) { models[trimmed] = { ...models[oldName] }; delete models[oldName]; }
+        return { ...prev, models };
+      });
 
       // 1ב. crm_model_images — העברת מסמך התמונות לשם החדש ומחיקת הישן (מזהה מסמך בטוח בשני הכיוונים)
       await setDoc(doc(db, 'crm_model_images', getModelImageDocId(trimmed)), oldImages);
@@ -2500,6 +2683,14 @@ export default function App() {
         await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
       }
 
+      // 6. crm_suppliers — שורות הקטלוג (מחיר מפעל) של הדגם עוברות לשם החדש, עם המזהה הקבוע
+      for (const s of affectedSuppliers) {
+        const newCatalog = (s.catalog || []).map((c: any) =>
+          matches(c) ? { ...c, model: trimmed, ...(renamedId ? { modelId: renamedId } : {}) } : c
+        );
+        await updateDoc(doc(db, 'crm_suppliers', s.id), { catalog: newCatalog, updatedAt: new Date().toISOString() });
+      }
+
       setEditingModelName(null);
       alert(`✓ שם הדגם שונה ל-"${trimmed}" בהצלחה.`);
     } catch (err: any) {
@@ -2534,8 +2725,10 @@ export default function App() {
     const affectedQuotes = quotes.filter(q => q.items?.some((i: any) => isSameModel(i, srcRef, settings.models)));
     const affectedShipments = shipments.filter(s => s.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
     const affectedLocalPurchases = localPurchases.filter((lp: any) => lp.lines?.some((l: any) => isSameModel(l, srcRef, settings.models)));
+    // קטלוגי ספקים — בעבר לא עודכנו במיזוג, ומחיר המפעל של דגם המקור "נעלם" מהשוואת הספקים.
+    const affectedSuppliers = suppliers.filter((s: any) => (s.catalog || []).some((c: any) => isSameModel(c, srcRef, settings.models)));
 
-    if (!settings.models?.[sourceName] && affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length === 0) {
+    if (!settings.models?.[sourceName] && affectedItems.length + affectedQuotes.length + affectedShipments.length + affectedLocalPurchases.length + affectedSuppliers.length === 0) {
       alert(`"${sourceName}" לא קיים בקטלוג ואין אף רשומה שמשתמשת בו. אין מה למזג.`);
       return;
     }
@@ -2552,7 +2745,8 @@ export default function App() {
       `• ${affectedItems.length} פריטי מלאי (מתוכם ${stockCount} פנויים במחסן, ${soldCount} שנמכרו)\n` +
       `• ${affectedQuotes.length} הצעות מחיר\n` +
       `• ${affectedShipments.length} משלוחים\n` +
-      `• ${affectedLocalPurchases.length} רכישות מקומיות\n\n` +
+      `• ${affectedLocalPurchases.length} רכישות מקומיות\n` +
+      `• ${affectedSuppliers.length} קטלוגי ספקים (ספק שיש לו מחיר לשני הדגמים — נשאר מחיר "${targetName}", אלא אם אין לו מחיר)\n\n` +
       (sourceIsOrphan ? '' : `הדגם "${sourceName}" יימחק מהקטלוג לצמיתות.\n`) +
       `הפעולה אינה הפיכה. להמשיך?`
     );
@@ -2591,6 +2785,31 @@ export default function App() {
         await updateDoc(doc(db, 'crm_local_purchases', lp.id), { lines: newLines, updatedAt: new Date().toISOString() });
       }
 
+      // 4ב. crm_suppliers — כל שורות המקור והיעד אצל הספק מתאחדות לשורה אחת של היעד.
+      // המחיר: של היעד אם יש לו מחיר (>0) — אותו כלל "היעד מנצח" כמו בתמונות. אם ליעד אין מחיר,
+      // נלקח מחיר המקור, כדי שמיזוג לא ימחק מחיר מפעל אמיתי. השורה נשארת במקום של השורה הראשונה.
+      const tgtRef = { model: targetName, modelId: targetId };
+      for (const s of affectedSuppliers) {
+        const catalog = s.catalog || [];
+        const isTgt = (c: any) => isSameModel(c, tgtRef, settings.models);
+        const isSrc = (c: any) => isSameModel(c, srcRef, settings.models);
+        const related = catalog.filter((c: any) => isTgt(c) || isSrc(c));
+        const pricedTarget = related.find((c: any) => isTgt(c) && Number(c.unitCostUSD) > 0);
+        const pricedSource = related.find((c: any) => isSrc(c) && Number(c.unitCostUSD) > 0);
+        const chosen = pricedTarget || pricedSource || related.find(isTgt) || related[0];
+        const mergedRow = { ...chosen, model: targetName, modelId: targetId };
+        const newCatalog: any[] = [];
+        let placed = false;
+        for (const c of catalog) {
+          if (isTgt(c) || isSrc(c)) {
+            if (!placed) { newCatalog.push(mergedRow); placed = true; }
+          } else {
+            newCatalog.push(c);
+          }
+        }
+        await updateDoc(doc(db, 'crm_suppliers', s.id), { catalog: newCatalog, updatedAt: new Date().toISOString() });
+      }
+
       // 5. תמונות — דגם היעד מנצח. משלימים מהמקור רק מה שחסר ליעד.
       const srcImgs = {
         itemImgUrl: settingsWithImages.models?.[sourceName]?.itemImgUrl || '',
@@ -2609,13 +2828,21 @@ export default function App() {
       }
       await deleteDoc(doc(db, 'crm_model_images', getModelImageDocId(sourceName))).catch(() => {});
 
-      // 6. הקטלוג עצמו — היעד מקבל id מובטח, והמקור נמחק
-      const newModels = { ...settings.models };
-      newModels[targetName] = { ...newModels[targetName], id: targetId };
-      delete newModels[sourceName];
-      const newSettings = { ...settings, models: stripModelImages(newModels) };
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
-      setSettings(newSettings);
+      // 6. הקטלוג עצמו — היעד מקבל id מובטח, והמקור נמחק.
+      // נוגע רק בשני הנתיבים האלה (FieldPath) — לא בשאר הדגמים ולא בשאר ההגדרות.
+      // (מחיקת נתיב שלא קיים — למשל מקור יתום — לא נכשלת ב-Firestore.)
+      await updateDoc(
+        doc(db, 'crm_settings', 'general_settings'),
+        new FieldPath('models', sourceName), deleteField(),
+        new FieldPath('models', targetName, 'id'), targetId
+      );
+      // עדכון מקומי פונקציונלי — נוגע רק במקור וביעד (ראה הערה זהה ב-renameModel)
+      setSettings((prev: any) => {
+        const models = { ...(prev?.models || {}) };
+        delete models[sourceName];
+        if (models[targetName]) models[targetName] = { ...models[targetName], id: targetId };
+        return { ...prev, models };
+      });
 
       setModelImages(prev => {
         const next = { ...prev };
@@ -2628,7 +2855,7 @@ export default function App() {
       alert(
         `✓ המיזוג הושלם.\n\n` +
         `${affectedItems.length} פריטי מלאי הוצמדו ל-"${targetName}".\n` +
-        `הדגם "${sourceName}" נמחק מהקטלוג.`
+        (sourceIsOrphan ? `השם היתום "${sourceName}" לא יופיע יותר ברשומות.` : `הדגם "${sourceName}" נמחק מהקטלוג.`)
       );
     } catch (err: any) {
       alert(`שגיאה במיזוג הדגמים: ${err?.message || 'שגיאה לא ידועה'}\n\nייתכן שחלק מהרשומות כבר עודכנו — רענן ובדוק לפני ניסיון חוזר.`);
@@ -2713,24 +2940,6 @@ export default function App() {
       alert(`שגיאה במילוי המזהים: ${err?.message || 'שגיאה לא ידועה'}\n\nחלק מהרשומות ייתכן שכבר עודכנו — ניתן להריץ שוב בבטחה.`);
     }
     setIsSaving(false);
-  };
-
-  const handleAddNewModelWithData = async (e: any) => {
-      e.preventDefault();
-      if (!newModelData.name.trim()) return;
-      setIsSaving(true);
-      try {
-        const leanModels = stripModelImages(settings.models);
-        // דגם חדש מקבל id קבוע מיד עם היווצרותו — כך הוא לעולם לא תלוי בשם שלו.
-        const newSettings = { ...settings, models: { ...leanModels, [newModelData.name.trim()]: { id: generateModelId(), cbm: Number(newModelData.cbm) || 0 } } };
-        await setDoc(doc(db, 'crm_settings', 'general_settings'), newSettings);
-        setNewModelData({ name: '', cbm: 0 });
-        setIsModelModalOpen(false);
-      } catch(err: any) {
-        console.error('שגיאה בהוספת דגם:', err);
-        alert(`שגיאה בהוספת דגם: ${err?.message || 'שגיאה לא ידועה'}`);
-      }
-      setIsSaving(false);
   };
 
   const processQuickImport = () => {
@@ -3616,18 +3825,12 @@ export default function App() {
   const saveSettings = async () => {
     setIsSaving(true);
     try {
-      // 1. general_settings — ללא תמונות הדגמים (רזה, הרחק ממגבלת 1MB)
-      const leanSettings = { ...settings, models: stripModelImages(settings.models) };
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), leanSettings);
-
-      // 2. תמונות הדגמים — מסמך נפרד לכל דגם ב-crm_model_images (מקור האמת: settingsWithImages הממוזג)
-      for (const model of modelsList) {
-        const merged = settingsWithImages.models?.[model] || {};
-        await setDoc(doc(db, 'crm_model_images', getModelImageDocId(model)), {
-          itemImgUrl: merged.itemImgUrl || '',
-          blueprintUrl: merged.blueprintUrl || '',
-        });
-      }
+      // שומר רק את ההגדרות הכלליות — *בלי* הדגמים ובלי התמונות שלהם.
+      // דגמים נשמרים אך ורק מכרטיס הדגם (saveModelCard), דגם-דגם. בעבר כל שמירה כאן כתבה
+      // את כל הקטלוג מתוך ה-state המקומי (ודרסה שינויים של משתמש אחר) ואת כל התמונות מחדש.
+      // merge: true — כל השדות כאן הם ערכים פשוטים, אז מיזוג שקול להחלפה, והדגמים לא נוגעים.
+      const { models: _models, ...nonModelSettings } = settings || {};
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), nonModelSettings, { merge: true });
       alert("הגדרות נשמרו בהצלחה!");
     } catch (err: any) {
       console.error('שגיאה בשמירת הגדרות:', err);
@@ -3674,6 +3877,16 @@ export default function App() {
     setIsSaving(true);
     try {
       const data = { ...supplierEditingData, updatedAt: new Date().toISOString() };
+      // מצמיד לכל שורת קטלוג את המזהה הקבוע של הדגם שנבחר. מחושב מחדש מהשם בכל שמירה —
+      // כי כשמחליפים דגם ב-select השורה עדיין נושאת את ה-modelId של הדגם הקודם.
+      if (Array.isArray(data.catalog)) {
+        data.catalog = data.catalog.map((c: any) => {
+          const { modelId: _staleId, ...rest } = c || {};
+          const id = getModelIdByName(settings.models, rest.model);
+          // שם שלא נמצא בקטלוג — בלי modelId (מזהה ישן היה גורם להתאמה שגויה לדגם הקודם)
+          return id ? { ...rest, modelId: id } : rest;
+        });
+      }
       if (data.id) {
         await updateDoc(doc(db, 'crm_suppliers', data.id), data);
       } else {
@@ -3779,7 +3992,8 @@ export default function App() {
       const url = await getDownloadURL(fileRef);
       const updated = { ...settings, catalogPdfUrl: url };
       setSettings(updated);
-      await setDoc(doc(db, 'crm_settings', 'general_settings'), updated);
+      // כותב רק את השדה הזה — לא את הדגמים ולא הגדרות אחרות
+      await setDoc(doc(db, 'crm_settings', 'general_settings'), { catalogPdfUrl: url }, { merge: true });
       alert('קטלוג הועלה בהצלחה!');
     } catch (err: any) {
       const code = err?.code || err?.serverResponse || '';
@@ -5600,17 +5814,15 @@ export default function App() {
         {/* --- TAB: MODELS --- */}
         {activeTab === 'models' && (
           <div className="max-w-4xl mx-auto space-y-6">
-            <h2 className="text-2xl font-bold text-slate-800 mb-6">ניהול דגמי מוצרים ותמונות</h2>
+            <div className="flex justify-between items-center gap-4 flex-wrap mb-6">
+              <h2 className="text-2xl font-bold text-slate-800">ניהול דגמי מוצרים ותמונות</h2>
+              <button
+                onClick={openNewModelCard}
+                className="bg-[#7B1315] text-white px-5 py-2.5 rounded-md font-bold hover:bg-[#651011] flex items-center gap-2 shadow-sm"
+              ><Plus className="w-4 h-4"/> הקמת דגם חדש</button>
+            </div>
             <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
-              <form onSubmit={handleAddModel} className="flex gap-4 items-end mb-8 border-b pb-8">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">שם הדגם החדש</label>
-                  <input type="text" required value={newModelName} onChange={e => setNewModelName(e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm p-2 border" placeholder="לדוגמה: Premium Bar" />
-                </div>
-                <button type="submit" className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-medium hover:bg-[#651011]">הוסף דגם</button>
-              </form>
-              
-              <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת</h3>
+              <h3 className="font-bold text-slate-700 mb-4">דגמים קיימים במערכת ({modelsList.length})</h3>
 
               {/* שמות דגם יתומים: מופיעים על פריטים/הצעות/משלוחים/רכישות בפועל, */}
               {/* אבל אין להם רשומה בקטלוג (למשל נמחקו ישירות ב-Firestore, מחוץ לממשק). */}
@@ -5622,6 +5834,8 @@ export default function App() {
                 quotes.forEach(q => (q.items || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
                 shipments.forEach(s => (s.lines || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
                 localPurchases.forEach((lp: any) => (lp.lines || []).forEach((l: any) => { if (l.model && !catalogNames.has(l.model)) orphanSet.add(l.model); }));
+                // גם קטלוגי ספקים — אחרת שם יתום שנשאר רק אצל ספק לא ניתן להצמדה מהמסך הזה
+                suppliers.forEach((s: any) => (s.catalog || []).forEach((c: any) => { if (c.model && !catalogNames.has(c.model)) orphanSet.add(c.model); }));
                 const orphans = Array.from(orphanSet);
                 if (orphans.length === 0) return null;
                 return (
@@ -5653,138 +5867,40 @@ export default function App() {
                 );
               })()}
 
-              <div className="space-y-6">
+              {/* רשימה קומפקטית: שורה אחת לכל דגם. לחיצה פותחת את כרטיס הדגם לפי ה-id הקבוע. */}
+              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 overflow-hidden">
+                {modelsList.length === 0 && (
+                  <p className="p-6 text-center text-sm text-slate-400">אין עדיין דגמים בקטלוג. לחץ "הקמת דגם חדש" כדי להתחיל.</p>
+                )}
                 {modelsList.map(model => {
-                  const modelCbm = settings.models?.[model]?.cbm || '';
-                  const itemImgUrl = settingsWithImages.models?.[model]?.itemImgUrl || '';
-                  const blueprintUrl = settingsWithImages.models?.[model]?.blueprintUrl || '';
-                  
+                  const m = settingsWithImages.models?.[model] || {};
+                  const modelId = m.id || '';
+                  const price = Number(m.listPrice) || 0;
                   return (
-                  <div key={model} className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
-                    {/* לוח מיזוג — נפתח כשלוחצים "מזג" על הדגם הזה */}
-                    {mergeModelState?.source === model && (
-                      <div className="mb-4 bg-[#F7F1F1] border-2 border-[#A55F60] rounded-lg p-4">
-                        <p className="font-bold text-[#651011] mb-1">מיזוג דגם כפול</p>
-                        <p className="text-xs text-slate-600 mb-3">
-                          לשימוש כשאותו מוצר פיזי נוצר בטעות פעמיים בשמות שונים.
-                          כל פריטי המלאי, ההצעות, המשלוחים והרכישות של <b>"{model}"</b> יועברו לדגם שתבחר,
-                          והדגם <b>"{model}"</b> יימחק מהקטלוג.
-                        </p>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium text-slate-700">מזג את "{model}" לתוך:</span>
-                          <select
-                            className="border border-[#A55F60] rounded-md p-1.5 text-sm bg-white font-medium"
-                            value={mergeModelState.target}
-                            onChange={e => setMergeModelState({ source: model, target: e.target.value })}
-                          >
-                            <option value="">— בחר דגם יעד —</option>
-                            {modelsList.filter(m => m !== model).map(m => <option key={m} value={m}>{m}</option>)}
-                          </select>
-                          <button
-                            onClick={() => mergeModels(model, mergeModelState.target)}
-                            disabled={isSaving || !mergeModelState.target}
-                            className="bg-[#7B1315] text-white text-xs px-4 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-40"
-                          >בצע מיזוג</button>
-                          <button
-                            onClick={() => setMergeModelState(null)}
-                            className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white"
-                          >ביטול</button>
+                    <button
+                      key={model}
+                      type="button"
+                      onClick={() => modelId
+                        ? openModelCard(modelId)
+                        : alert('לדגם הזה עדיין אין מזהה קבוע. רענן את הדף — המזהה נוצר אוטומטית בטעינה.')}
+                      className="w-full flex items-center gap-3 p-3 bg-white hover:bg-slate-50 transition-colors text-right"
+                      title="פתח כרטיס דגם"
+                    >
+                      {m.itemImgUrl ? (
+                        <img src={m.itemImgUrl} alt="" className="w-11 h-11 rounded-md object-contain bg-slate-50 border border-slate-200 shrink-0" />
+                      ) : (
+                        <div className="w-11 h-11 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+                          <ImageIcon className="w-5 h-5 text-slate-300"/>
                         </div>
-                      </div>
-                    )}
-                    <div className="flex justify-between items-center mb-4">
-                        {/* שם דגם + עריכה inline */}
-                        {editingModelName?.old === model ? (
-                          <div className="flex items-center gap-2 flex-1 ml-4">
-                            <input
-                              autoFocus
-                              type="text"
-                              className="border border-[#A55F60] rounded-md p-1.5 font-bold text-lg text-slate-800 bg-white focus:ring-2 focus:ring-[#7B1315] outline-none w-40"
-                              value={editingModelName.newVal}
-                              onChange={e => setEditingModelName({ old: model, newVal: e.target.value })}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') renameModel(model, editingModelName.newVal);
-                                if (e.key === 'Escape') setEditingModelName(null);
-                              }}
-                            />
-                            <button
-                              onClick={() => renameModel(model, editingModelName.newVal)}
-                              disabled={isSaving}
-                              className="bg-[#7B1315] text-white text-xs px-3 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 whitespace-nowrap"
-                            >שמור שם</button>
-                            <button
-                              onClick={() => setEditingModelName(null)}
-                              className="text-slate-400 hover:text-slate-600 text-xs px-2 py-1.5 rounded-md border border-slate-200 bg-white"
-                            >ביטול</button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-bold text-lg text-slate-800">{model}</h4>
-                            <button
-                              onClick={() => setEditingModelName({ old: model, newVal: model })}
-                              className="text-slate-400 hover:text-[#7B1315] p-1 rounded transition-colors"
-                              title="ערוך שם דגם"
-                            >
-                              <Edit className="w-3.5 h-3.5"/>
-                            </button>
-                            <button
-                              onClick={() => setMergeModelState({ source: model, target: '' })}
-                              className="text-slate-400 hover:text-[#7B1315] p-1 rounded transition-colors text-xs font-bold border border-slate-200 px-2"
-                              title="מזג דגם זה לתוך דגם אחר (לשימוש כשאותו מוצר נוצר פעמיים בשמות שונים)"
-                            >
-                              מזג
-                            </button>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <div className="flex items-center gap-2">
-                              <label className="text-sm font-medium text-slate-600">ספק ראשי:</label>
-                              <select
-                                className="text-sm border border-slate-300 rounded p-1.5 bg-white focus:ring-[#7B1315]"
-                                value={settings.models?.[model]?.supplierId || ''}
-                                onChange={e => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], supplierId: e.target.value }}})}
-                              >
-                                <option value="">— לא שויך —</option>
-                                {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                              </select>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium text-slate-600">CBM:</label>
-                                <input type="number" step="0.01" min="0" className="w-20 p-1.5 text-center border border-slate-300 rounded focus:ring-[#7B1315] focus:border-[#7B1315] sm:text-sm bg-white" value={settings.models?.[model]?.cbm || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], cbm: Number(e.target.value) } } })}/>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-sm font-medium text-green-700">מחיר מחירון (₪):</label>
-                                <input type="number" step="1" min="0" className="w-28 p-1.5 text-center border border-green-300 rounded focus:ring-green-500 focus:border-green-500 sm:text-sm bg-green-50 font-bold text-green-800" placeholder="0" value={settings.models?.[model]?.listPrice || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], listPrice: Number(e.target.value) } } })}/>
-                            </div>
-                        </div>
-                    </div>
-                    <div className="mb-4">
-                      <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo):</label>
-                      <input type="url" className="w-full p-1.5 border border-[#DABDBD] rounded bg-[#F7F1F1] text-sm text-[#2A3134] focus:ring-[#7B1315]" placeholder="https://youtube.com/watch?v=..." value={settings.models?.[model]?.videoUrl || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], videoUrl: e.target.value } } })}/>
-                    </div>
-                    <div className="mb-4">
-                      <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1"><FileText className="w-3.5 h-3.5"/> תיאור לתעודת משלוח:</label>
-                      <input type="text" className="w-full p-1.5 border border-[#DABDBD] rounded bg-[#F7F1F1] text-sm text-[#2A3134] focus:ring-[#7B1315]" placeholder="למשל: עמדת בר נירוסטה עם קירור" value={settings.models?.[model]?.deliveryDescription || ''} onChange={(e) => setSettings({...settings, models: {...settings.models, [model]: { ...settings.models[model], deliveryDescription: e.target.value } } })}/>
-                      <p className="text-[11px] text-slate-400 mt-1">יופיע בתעודה כ"{settings.models?.[model]?.deliveryDescription || 'תיאור'} — {model}". ריק = שם הדגם בלבד.</p>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <ModelAssetUploader 
-                          label="העלה תמונת הדמיה" 
-                          icon={ImageIcon} 
-                          imageUrl={itemImgUrl} 
-                          onUpload={(e: any) => handleImageUpload(e, (base64) => setModelImages(prev => ({...prev, [model]: { ...prev[model], itemImgUrl: base64 } })))} 
-                          onRemove={() => setModelImages(prev => ({...prev, [model]: { ...prev[model], itemImgUrl: '' } }))}
-                        />
-                        <ModelAssetUploader 
-                          label="העלה סרטוט טכני" 
-                          icon={FileText} 
-                          imageUrl={blueprintUrl} 
-                          onUpload={(e: any) => handleImageUpload(e, (base64) => setModelImages(prev => ({...prev, [model]: { ...prev[model], blueprintUrl: base64 } })))} 
-                          onRemove={() => setModelImages(prev => ({...prev, [model]: { ...prev[model], blueprintUrl: '' } }))}
-                        />
-                    </div>
-                  </div>
-                )})}
+                      )}
+                      <span className="font-bold text-slate-800 flex-1 min-w-0 truncate">{model}</span>
+                      {price > 0
+                        ? <span className="text-sm font-bold text-green-700 shrink-0">₪{price.toLocaleString('he-IL')}</span>
+                        : <span className="text-xs text-slate-400 shrink-0">ללא מחיר מחירון</span>}
+                      <ChevronLeft className="w-4 h-4 text-slate-300 shrink-0"/>
+                    </button>
+                  );
+                })}
               </div>
               <div className="mt-6 flex justify-between items-center gap-4 flex-wrap">
                 <button
@@ -5793,7 +5909,7 @@ export default function App() {
                   className="text-sm text-slate-600 hover:text-[#7B1315] border border-slate-300 px-4 py-2 rounded-md font-medium bg-white disabled:opacity-50"
                   title="כותב מזהה דגם קבוע לכל פריט/הצעה/משלוח קיימים. בטוח להרצה חוזרת."
                 >🔗 מלא מזהי דגם לרשומות קיימות</button>
-                <button onClick={saveSettings} className="bg-green-600 text-white px-8 py-2.5 rounded-md font-bold hover:bg-green-700 shadow-md">שמור הגדרות (לוגו ודגמים)</button>
+                <p className="text-xs text-slate-400">שינויים בדגם נשמרים מתוך כרטיס הדגם עצמו.</p>
               </div>
             </div>
           </div>
@@ -7415,7 +7531,11 @@ export default function App() {
                     <button
                       onClick={async () => {
                         try {
-                          await setDoc(doc(db, 'crm_settings', 'general_settings'), { ...settings }, { merge: true });
+                          // כותב רק את שני המפתחות — לא את הדגמים ולא הגדרות אחרות
+                          await setDoc(doc(db, 'crm_settings', 'general_settings'), {
+                            morningApiKeyId: settings?.morningApiKeyId || '',
+                            morningApiKeySecret: settings?.morningApiKeySecret || '',
+                          }, { merge: true });
                           alert('✓ מפתחות ה-API נשמרו בהצלחה ב-Firebase.');
                         } catch { alert('שגיאה בשמירת המפתחות.'); }
                       }}
@@ -7455,7 +7575,7 @@ export default function App() {
                     <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
                       <span className="text-xs text-green-700 font-medium">✓ קטלוג מוגדר</span>
                       <a href={settings.catalogPdfUrl} target="_blank" rel="noreferrer" className="text-xs text-[#7B1315] underline mr-auto">בדוק קישור ▸</a>
-                      <button onClick={async () => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); await setDoc(doc(db, 'crm_settings', 'general_settings'), u); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
+                      <button onClick={async () => { const u = {...settings, catalogPdfUrl: ''}; setSettings(u); await setDoc(doc(db, 'crm_settings', 'general_settings'), { catalogPdfUrl: '' }, { merge: true }); }} className="text-xs text-red-500 hover:text-red-700">הסר</button>
                     </div>
                   )}
                   <div className="flex gap-2">
@@ -7471,8 +7591,7 @@ export default function App() {
                         const url = settings?.catalogPdfUrl?.trim();
                         if (!url) return;
                         try {
-                          const u = { ...settings, catalogPdfUrl: url };
-                          await setDoc(doc(db, 'crm_settings', 'general_settings'), u);
+                          await setDoc(doc(db, 'crm_settings', 'general_settings'), { catalogPdfUrl: url }, { merge: true });
                           alert('✓ הקישור נשמר בהצלחה!');
                         } catch { alert('שגיאה בשמירה.'); }
                       }}
@@ -7580,10 +7699,10 @@ export default function App() {
               }} 
             />
             <FabButton 
-               icon={PlusCircle} iconColor="text-blue-600" label="הוספת דגם חדש (CBM)"
-               onClick={() => { 
-                setIsFabOpen(false); setNewModelData({name:'', cbm:0}); setIsModelModalOpen(true); 
-              }} 
+               icon={PlusCircle} iconColor="text-blue-600" label="הקמת דגם חדש"
+               onClick={() => {
+                setIsFabOpen(false); openNewModelCard();
+              }}
             />
             <FabButton 
                icon={Megaphone} iconColor="text-orange-600" label="קמפיין חדש"
@@ -7901,22 +8020,177 @@ export default function App() {
         </div>
       )}
 
-      {/* ADD MODEL MODAL (from FAB) */}
-      {isModelModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold mb-4 border-b pb-2 flex items-center gap-2"><Layers className="w-5 h-5 text-blue-600"/> הוספת דגם חדש</h3>
-            <form onSubmit={handleAddNewModelWithData} className="space-y-4">
-              <div><label className="block text-sm font-medium mb-1">שם הדגם <span className="text-red-500">*</span></label><input required type="text" className="border border-slate-300 p-2 rounded w-full" value={newModelData.name} onChange={e => setNewModelData({...newModelData, name: e.target.value})} placeholder="לדוגמה: Premium Bar" /></div>
-              <div><label className="block text-sm font-medium mb-1">CBM (נפח ליחידה)</label><input type="number" min="0" step="0.01" className="border border-slate-300 p-2 rounded w-full" value={newModelData.cbm} onChange={e => setNewModelData({...newModelData, cbm: Number(e.target.value)})} /></div>
-              <div className="flex gap-2 mt-6 pt-4 border-t">
-                <button type="submit" disabled={isSaving} className="bg-blue-600 text-white p-2 rounded flex-1 font-bold disabled:opacity-50">{isSaving ? 'שומר...' : 'הוסף דגם'}</button>
-                <button type="button" onClick={() => setIsModelModalOpen(false)} className="bg-slate-200 text-slate-700 p-2 rounded px-4 font-medium">ביטול</button>
+      {/* MODEL CARD PANEL — כרטיס דגם (עריכה לפי id / הקמת דגם חדש). גלובלי, כי נפתח גם מה-FAB מכל טאב. */}
+      {modelCard && modelDraft && (() => {
+        const isCreate = modelCard.mode === 'create';
+        const currentName = isCreate ? '' : getModelNameById(settings.models, modelCard.id);
+        if (!isCreate && !currentName) return null; // הדגם מוזג/נמחק — ה-useEffect יסגור את הכרטיס
+        const setDraft = (patch: any) => setModelDraft((p: any) => ({ ...p, ...patch }));
+        const fieldCls = "w-full p-2 border border-slate-300 rounded-md bg-white text-sm focus:ring-2 focus:ring-[#7B1315] focus:border-[#7B1315] outline-none";
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+
+              {/* כותרת: שם הדגם + שינוי שם + מיזוג + סגירה */}
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center gap-3 bg-slate-50 rounded-t-xl shrink-0">
+                {isCreate ? (
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Layers className="w-5 h-5 text-[#7B1315]"/> הקמת דגם חדש</h3>
+                ) : editingModelName?.old === currentName ? (
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <input
+                      autoFocus
+                      type="text"
+                      className="border border-[#A55F60] rounded-md p-1.5 font-bold text-lg text-slate-800 bg-white focus:ring-2 focus:ring-[#7B1315] outline-none flex-1 min-w-0"
+                      value={editingModelName.newVal}
+                      onChange={e => setEditingModelName({ old: currentName, newVal: e.target.value })}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') renameModel(currentName, editingModelName.newVal);
+                        if (e.key === 'Escape') setEditingModelName(null);
+                      }}
+                    />
+                    <button
+                      onClick={() => renameModel(currentName, editingModelName.newVal)}
+                      disabled={isSaving}
+                      className="bg-[#7B1315] text-white text-xs px-3 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 whitespace-nowrap"
+                    >שמור שם</button>
+                    <button
+                      onClick={() => setEditingModelName(null)}
+                      className="text-slate-400 hover:text-slate-600 text-xs px-2 py-1.5 rounded-md border border-slate-200 bg-white"
+                    >ביטול</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Layers className="w-5 h-5 text-[#7B1315] shrink-0"/>
+                    <h3 className="text-lg font-bold text-slate-800 truncate">{currentName}</h3>
+                    <button
+                      onClick={() => setEditingModelName({ old: currentName, newVal: currentName })}
+                      className="text-slate-400 hover:text-[#7B1315] p-1 rounded transition-colors shrink-0"
+                      title="ערוך שם דגם (מעדכן את כל הרשומות שמשתמשות בו)"
+                    ><Edit className="w-4 h-4"/></button>
+                    <button
+                      onClick={() => setMergeModelState({ source: currentName, target: '' })}
+                      className="text-slate-400 hover:text-[#7B1315] rounded transition-colors text-xs font-bold border border-slate-200 bg-white px-2 py-1 shrink-0"
+                      title="מזג דגם זה לתוך דגם אחר (לשימוש כשאותו מוצר נוצר פעמיים בשמות שונים)"
+                    >מזג</button>
+                  </div>
+                )}
+                <button onClick={closeModelCard} className="text-slate-400 hover:text-slate-600 shrink-0" title="סגור"><X className="w-5 h-5"/></button>
               </div>
-            </form>
+
+              <div className="p-5 overflow-y-auto flex-1 space-y-5">
+                {/* לוח מיזוג — נפתח כשלוחצים "מזג" */}
+                {!isCreate && mergeModelState?.source === currentName && (
+                  <div className="bg-[#F7F1F1] border-2 border-[#A55F60] rounded-lg p-4">
+                    <p className="font-bold text-[#651011] mb-1">מיזוג דגם כפול</p>
+                    <p className="text-xs text-slate-600 mb-3">
+                      לשימוש כשאותו מוצר פיזי נוצר בטעות פעמיים בשמות שונים.
+                      כל פריטי המלאי, ההצעות, המשלוחים, הרכישות וקטלוגי הספקים של <b>"{currentName}"</b> יועברו לדגם שתבחר,
+                      והדגם <b>"{currentName}"</b> יימחק מהקטלוג.
+                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-slate-700">מזג את "{currentName}" לתוך:</span>
+                      <select
+                        className="border border-[#A55F60] rounded-md p-1.5 text-sm bg-white font-medium"
+                        value={mergeModelState.target}
+                        onChange={e => setMergeModelState({ source: currentName, target: e.target.value })}
+                      >
+                        <option value="">— בחר דגם יעד —</option>
+                        {modelsList.filter(m => m !== currentName).map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                      <button
+                        onClick={() => mergeModels(currentName, mergeModelState.target)}
+                        disabled={isSaving || !mergeModelState.target}
+                        className="bg-[#7B1315] text-white text-xs px-4 py-1.5 rounded-md font-bold hover:bg-[#651011] disabled:opacity-40"
+                      >בצע מיזוג</button>
+                      <button
+                        onClick={() => setMergeModelState(null)}
+                        className="text-slate-500 hover:text-slate-700 text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white"
+                      >ביטול</button>
+                    </div>
+                  </div>
+                )}
+
+                {isCreate && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">שם הדגם <span className="text-red-500">*</span></label>
+                    <input
+                      autoFocus
+                      type="text"
+                      className={fieldCls + " font-bold"}
+                      placeholder="לדוגמה: Premium Bar"
+                      value={modelDraft.name}
+                      onChange={e => setDraft({ name: e.target.value })}
+                    />
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">ספק ראשי</label>
+                    <select className={fieldCls} value={modelDraft.supplierId} onChange={e => setDraft({ supplierId: e.target.value })}>
+                      <option value="">— לא שויך —</option>
+                      {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">CBM (נפח ליחידה)</label>
+                    <input type="number" step="0.01" min="0" className={fieldCls} value={modelDraft.cbm} onChange={e => setDraft({ cbm: e.target.value })}/>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-green-700 mb-1">מחיר מחירון (₪)</label>
+                    <input type="number" step="1" min="0" placeholder="0" className={fieldCls + " bg-green-50 border-green-300 font-bold text-green-800"} value={modelDraft.listPrice} onChange={e => setDraft({ listPrice: e.target.value })}/>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1">🎥 קישור סרטון (YouTube / Vimeo)</label>
+                  <input type="url" className={fieldCls} placeholder="https://youtube.com/watch?v=..." value={modelDraft.videoUrl} onChange={e => setDraft({ videoUrl: e.target.value })}/>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-[#651011] flex items-center gap-1.5 mb-1"><FileText className="w-3.5 h-3.5"/> תיאור לתעודת משלוח</label>
+                  <input type="text" className={fieldCls} placeholder="למשל: עמדת בר נירוסטה עם קירור" value={modelDraft.deliveryDescription} onChange={e => setDraft({ deliveryDescription: e.target.value })}/>
+                  <p className="text-[11px] text-slate-400 mt-1">יופיע בתעודה כ"{modelDraft.deliveryDescription || 'תיאור'} — {isCreate ? (modelDraft.name || 'שם הדגם') : currentName}". ריק = שם הדגם בלבד.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <ModelAssetUploader
+                    label="העלה תמונת הדמיה"
+                    icon={ImageIcon}
+                    imageUrl={modelDraft.itemImgUrl}
+                    onUpload={(e: any) => handleImageUpload(e, (base64) => setDraft({ itemImgUrl: base64 }))}
+                    onRemove={() => setDraft({ itemImgUrl: '' })}
+                  />
+                  <ModelAssetUploader
+                    label="העלה סרטוט טכני"
+                    icon={FileText}
+                    imageUrl={modelDraft.blueprintUrl}
+                    onUpload={(e: any) => handleImageUpload(e, (base64) => setDraft({ blueprintUrl: base64 }))}
+                    onRemove={() => setDraft({ blueprintUrl: '' })}
+                  />
+                </div>
+              </div>
+
+              {/* תחתית: מצב שמירה + פעולות */}
+              <div className="p-4 border-t border-slate-100 flex justify-between items-center gap-3 shrink-0 bg-white rounded-b-xl">
+                <span className={`text-xs font-medium ${isModelDraftDirty ? 'text-amber-600' : 'text-slate-400'}`}>
+                  {isCreate ? 'דגם חדש — טרם נשמר' : isModelDraftDirty ? 'יש שינויים שלא נשמרו' : 'כל השינויים שמורים'}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button onClick={closeModelCard} className="px-4 py-2 rounded-md text-sm font-medium text-slate-600 border border-slate-300 bg-white hover:bg-slate-50">
+                    {isModelDraftDirty ? 'ביטול' : 'סגור'}
+                  </button>
+                  <button
+                    onClick={saveModelCard}
+                    disabled={isSaving || (!isCreate && !isModelDraftDirty)}
+                    className="px-6 py-2 rounded-md text-sm font-bold text-white bg-[#7B1315] hover:bg-[#651011] disabled:opacity-40"
+                  >{isSaving ? 'שומר...' : isCreate ? 'צור דגם' : 'שמור דגם'}</button>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* CUSTOMER ADD/EDIT MODAL */}
       {isCustomerModalOpen && customerEditingData && (
