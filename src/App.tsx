@@ -600,6 +600,15 @@ const findDuplicateByPhone = (phone: any, list: any[], excludeId?: string): any 
   return list.find(c => c.id !== excludeId && normalizePhone(c.phone) === target) || null;
 };
 
+// --- פיד יומן מנוי (ICS) לתזכורות מעקב, לפי נציג ---
+// הטוקן הוא חלק מהכתובת עצמה (ראה netlify/functions/calendar-feed.js) — לא סוד אמיתי,
+// אלא כתובת ארוכה ובלתי-ניחושית, בדיוק כמו קישור "יומן פרטי" של גוגל קלנדר.
+// גלוי בבאנדל הפרונט — זה בסדר: רק שחף ודניאל מחוברים ל-CRM ורואים זה את זה ממילא.
+const CALENDAR_FEED_LINKS: Record<string, { name: string; url: string }> = {
+  'shachafshalom@gmail.com': { name: 'שחף', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=c25b80bb64edec123c05166c38f8d4d3726315a57b633eb2c5c844ee8aeff380' },
+  'danielyos205@gmail.com': { name: 'דניאל', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=67cf8cf55dd0e2beb541395eeb30774ae43d2ede1dc32bec4d1698aa6ce2db8b' },
+};
+
 // --- מועד תחילת האחריות ---
 // האחריות נספרת ממועד מסירת המוצר ללקוח (warrantyStartDate), ולא ממועד המכירה.
 // saleDate נשאר שדה הכספים בלבד — הוא מזין את ההכנסה החודשית, ושינוי שלו היה מעוות דוחות.
@@ -4801,6 +4810,16 @@ export default function App() {
                 <span className="hidden sm:inline">{pushState === 'granted' ? 'התראות פעילות' : 'הפעל התראות'}</span>
               </button>
             )}
+            <button
+              onClick={() => {
+                const link = CALENDAR_FEED_LINKS[user?.email || ''];
+                if (!link) { alert('לא נמצא קישור יומן עבור המשתמש הזה.'); return; }
+                navigator.clipboard.writeText(link.url);
+                alert(`קישור היומן של ${link.name} הועתק!\n\nבאפליקציית היומן בטלפון: הוסף יומן חדש ← מנוי / מ-כתובת URL ← הדבק את הקישור.\nהיומן יתעדכן ברקע לבד כשמוסיפים/משנים תזכורות מעקב.`);
+              }}
+              className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-[#7B1315] transition-colors"
+              title="העתק קישור מנוי ליומן התזכורות שלך"
+            ><CalendarDays className="w-4 h-4"/> <span className="hidden sm:inline">יומן תזכורות</span></button>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4"/> <span className="hidden sm:inline">יציאה</span></button>
           </div>
         </div>
