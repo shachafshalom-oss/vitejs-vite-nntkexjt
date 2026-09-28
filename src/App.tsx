@@ -1736,6 +1736,26 @@ export default function App() {
     setIsCustomerOverviewOpen(false);
   };
 
+  // שדות התזכורת בתיק הליד נערכים "מקומית" ונשמרים ביציאה מהשדה (onBlur).
+  // בזמן הקלדה — הסנכרון למטה לא ידרוס אותם.
+  const followUpEditingRef = useRef<{ date: boolean; note: boolean }>({ date: false, note: false });
+
+  // תיק הליד/לקוח הפתוח מציג עותק (selectedCustomer). בלי סנכרון, אחרי עריכה ושמירה הוא
+  // נשאר עם הנתונים הישנים — ופתיחת עריכה נוספת טענה את העותק הישן ודרסה את השינוי האמיתי.
+  // כאן העותק מתעדכן מכל snapshot של crm_customers (גם שינויים של המשתמש השני).
+  useEffect(() => {
+    if (!selectedCustomer?.id) return;
+    const fresh = customers.find((c: any) => c.id === selectedCustomer.id);
+    if (!fresh) return;
+    setSelectedCustomer((prev: any) => {
+      if (!prev || prev.id !== fresh.id) return prev;
+      const next = { ...prev, ...fresh };
+      if (followUpEditingRef.current.date) next.followUpDate = prev.followUpDate;
+      if (followUpEditingRef.current.note) next.followUpNote = prev.followUpNote;
+      return next;
+    });
+  }, [customers]);
+
   // --- Date Calculations ---
   // פונקציית עזר לשמירה על שעון מקומי מדויק (מונעת באגים של UTC בישראל)
   const getLocalYYYYMMDD = (d: Date) => {
@@ -8442,7 +8462,7 @@ export default function App() {
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <div className="flex items-center gap-1">
-                <button onClick={() => { setCustomerEditingData(selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
+                <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
                 <button onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
             </div>
@@ -8531,13 +8551,15 @@ export default function App() {
                       <p className="text-[11px] text-slate-400 font-medium mb-1 flex items-center gap-1"><CalendarDays className="w-3 h-3"/> תאריך חזרה ללקוח</p>
                       <input type="date" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-[#A55F60]"
                         value={selectedCustomer.followUpDate || ''}
+                        onFocus={() => { followUpEditingRef.current.date = true; }}
                         onChange={e => setSelectedCustomer((p: any) => ({...p, followUpDate: e.target.value}))}
-                        onBlur={e => saveLeadField(selectedCustomer.id, { followUpDate: e.target.value || null })} />
+                        onBlur={e => { followUpEditingRef.current.date = false; saveLeadField(selectedCustomer.id, { followUpDate: e.target.value || null }); }} />
                       <input type="text" className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-[#A55F60] mt-1"
                         value={selectedCustomer.followUpNote || ''}
                         placeholder="הערה לתזכורת..."
+                        onFocus={() => { followUpEditingRef.current.note = true; }}
                         onChange={e => setSelectedCustomer((p: any) => ({...p, followUpNote: e.target.value}))}
-                        onBlur={e => saveLeadField(selectedCustomer.id, { followUpNote: e.target.value })} />
+                        onBlur={e => { followUpEditingRef.current.note = false; saveLeadField(selectedCustomer.id, { followUpNote: e.target.value }); }} />
                       {selectedCustomer.followUpDate && (
                         <div className="flex items-center gap-3 mt-1">
                           <button className="text-[10px] text-slate-500 hover:text-[#7B1315] flex items-center gap-1"
