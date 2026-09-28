@@ -1414,6 +1414,7 @@ const CustomerCombobox = ({ customers, value, onChange, onCreateNew, placeholder
       <input
         type="text"
         className="w-full border-purple-300 rounded-md p-2.5 text-base bg-white shadow-sm font-medium text-slate-800 focus:border-purple-500 focus:ring-purple-500"
+        data-testid="customer-combobox-input"
         placeholder={placeholder || 'הקלד לחיפוש או לחץ לבחירה מהרשימה...'}
         value={displayValue}
         onFocus={() => { setQuery(''); setIsOpen(true); setHighlightedIndex(0); }}
@@ -1458,8 +1459,8 @@ const CustomerCombobox = ({ customers, value, onChange, onCreateNew, placeholder
 };
 
 // 3. רכיב כפתור מהיר לתפריט הראשי (FAB)
-const FabButton = ({ onClick, icon: Icon, iconColor, label }: any) => (
-  <button onClick={onClick} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
+const FabButton = ({ onClick, icon: Icon, iconColor, label, testId }: any) => (
+  <button data-testid={testId} onClick={onClick} className="flex items-center gap-2 bg-white text-slate-700 px-4 py-2 rounded-full shadow-lg border border-slate-200 hover:bg-slate-50 transition-colors whitespace-nowrap font-medium text-sm">
     <Icon className={`w-4 h-4 ${iconColor}`}/> {label}
   </button>
 );
@@ -5300,13 +5301,13 @@ export default function App() {
             <div className="bg-[#EDDEDE] p-1.5 rounded hidden sm:block"><Package className="h-5 w-5 text-[#651011]" /></div>
             <h1 className="text-sm font-bold text-slate-600 hidden sm:block">Steel & Spirit CRM</h1>
             <div className="flex bg-slate-200 rounded-lg p-0.5 gap-0.5">
-              <button
+              <button data-testid="space-sales"
                 onClick={() => navigateTo('sales', 'sales_dashboard')}
                 className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'sales' ? 'bg-[#7B1315] text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 <Activity className="w-3.5 h-3.5"/> <span>מכירות</span>
               </button>
-              <button
+              <button data-testid="space-operations"
                 onClick={() => navigateTo('operations', 'operations_dashboard')}
                 className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all ${activeSpace === 'operations' ? 'bg-green-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
@@ -5378,7 +5379,7 @@ export default function App() {
                 { id: 'suppliers', icon: Building2, label: 'ספקים' },
                 { id: 'settings', icon: Settings, label: 'הגדרות' },
               ]).map(t => (
-                <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? (activeSpace === 'sales' ? 'bg-[#EDDEDE] text-[#651011] shadow-sm' : 'bg-green-100 text-green-700 shadow-sm') : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
+                <button key={t.id} data-testid={`nav-${t.id}`} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === t.id ? (activeSpace === 'sales' ? 'bg-[#EDDEDE] text-[#651011] shadow-sm' : 'bg-green-100 text-green-700 shadow-sm') : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}>
                   <t.icon className="w-4 h-4" /> <span>{t.label}</span>
                 </button>
               ))}
@@ -5849,7 +5850,7 @@ export default function App() {
           <div>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-slate-800">מאגר הצעות מחיר</h2>
-              <button 
+              <button data-testid="quote-new" 
                 onClick={() => { 
                   setIsFabOpen(false); 
                   setQuoteData({ customerId: '', items: [{ model: modelsList[0] || '', modelId: getModelIdByName(settings?.models, modelsList[0] || ''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: '', warrantyMonths: 0 }); 
@@ -5906,7 +5907,7 @@ export default function App() {
                         <td className="px-4 py-4 font-bold text-slate-800">{customer.businessName || customer.contactName || customer.name}</td>
                         <td className="px-4 py-4 font-bold text-[#651011]">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
-                          <select 
+                          <select data-testid={`quote-status-${q.id}`} 
                             className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800 border-indigo-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
                             value={q.status ? q.status : 'pending'} 
                             onChange={(e) => handleQuoteStatusChange(q, e.target.value)}
@@ -6089,6 +6090,7 @@ export default function App() {
             <div className="flex justify-between items-center gap-4 flex-wrap mb-6">
               <h2 className="text-2xl font-bold text-slate-800">ניהול דגמי מוצרים ותמונות</h2>
               <button
+                data-testid="model-new"
                 onClick={openNewModelCard}
                 className="bg-[#7B1315] text-white px-5 py-2.5 rounded-md font-bold hover:bg-[#651011] flex items-center gap-2 shadow-sm"
               ><Plus className="w-4 h-4"/> הקמת דגם חדש</button>
@@ -6156,6 +6158,7 @@ export default function App() {
                         ? openModelCard(modelId)
                         : alert('לדגם הזה עדיין אין מזהה קבוע. רענן את הדף — המזהה נוצר אוטומטית בטעינה.')}
                       className="w-full flex items-center gap-3 p-3 bg-white hover:bg-slate-50 transition-colors text-right"
+                      data-testid="model-row"
                       title="פתח כרטיס דגם"
                     >
                       {m.itemImgUrl ? (
@@ -6310,7 +6313,7 @@ export default function App() {
                                   <FileText className="w-4 h-4 animate-pulse"/> מפיק תעודה...
                                 </span>
                               ) : d.deliveryNoteNumber ? (
-                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                <button data-testid={`delivery-note-again-${d.id}`} onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
                                   className="px-2.5 py-1.5 rounded-md text-[11px] font-bold text-green-800 bg-green-50 border border-green-200 hover:bg-green-100 disabled:opacity-50 flex items-center gap-1.5"
                                   title="הורד שוב את אותה תעודה">
                                   <CheckCircle className="w-3.5 h-3.5"/>
@@ -6318,18 +6321,18 @@ export default function App() {
                                   <Download className="w-3.5 h-3.5"/>
                                 </button>
                               ) : deliveriesSubTab === 'awaiting' ? (
-                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                <button data-testid={`delivery-note-${d.id}`} onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
                                   className="px-3 py-2 rounded-md text-xs font-bold text-[#7B1315] border border-[#7B1315] bg-white hover:bg-[#F7F1F1] disabled:opacity-50 flex items-center gap-1.5">
                                   <FileText className="w-4 h-4"/> הפק תעודת משלוח
                                 </button>
                               ) : (
-                                <button onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
+                                <button data-testid={`delivery-note-${d.id}`} onClick={() => handleGenerateDeliveryNote(d)} disabled={!!generatingDeliveryNoteId}
                                   className="text-slate-500 hover:text-[#7B1315] px-2 py-1 rounded text-xs font-medium flex items-center gap-1 disabled:opacity-50">
                                   <FileText className="w-3.5 h-3.5"/> הפק תעודת משלוח
                                 </button>
                               )}
                               {deliveriesSubTab === 'awaiting' ? (
-                                <button onClick={() => confirmDeliveryArrival(d)} disabled={isSaving}
+                                <button data-testid={`delivery-arrived-${d.id}`} onClick={() => confirmDeliveryArrival(d)} disabled={isSaving}
                                   className="bg-green-600 text-white px-3 py-2 rounded-md text-xs font-bold hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
                                   <CheckCircle className="w-4 h-4"/> {isPickup ? 'אשר איסוף' : 'אשר הגעה ללקוח'}
                                 </button>
@@ -6421,7 +6424,7 @@ export default function App() {
                 >
                   <Package className="w-4 h-4"/> הוסף מלאי מקומי
                 </button>
-                <button 
+                <button data-testid="shipment-new" 
                   onClick={() => { 
                     setEditingData({ name: '', date: new Date().toISOString().split('T')[0], status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
                     setIsShipmentModalOpen(true); 
@@ -6455,7 +6458,7 @@ export default function App() {
                       <tr key={s.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3"><div className="font-bold text-slate-800">{s.name}</div><div className="text-xs text-slate-500">{new Date(s.date).toLocaleDateString('he-IL')}</div></td>
                         <td className="px-4 py-3">
-                          <select className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${s.status === 'in_warehouse' ? 'bg-green-50 text-green-700' : 'bg-white'}`} value={s.status ? s.status : 'ordered'} onChange={(e) => handleShipmentStatusSelect(s, e.target.value)}>
+                          <select data-testid={`shipment-status-${s.id}`} className={`text-xs font-bold rounded-md border-slate-300 p-1.5 shadow-sm ${s.status === 'in_warehouse' ? 'bg-green-50 text-green-700' : 'bg-white'}`} value={s.status ? s.status : 'ordered'} onChange={(e) => handleShipmentStatusSelect(s, e.target.value)}>
                             {Object.entries(SHIPMENT_STATUS_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                           </select>
                         </td>
@@ -6463,7 +6466,7 @@ export default function App() {
                         <td className="px-4 py-3 text-slate-600"><div className="font-medium">${factoryTotalUSD.toLocaleString()}</div><div className="text-xs">(₪{(factoryTotalUSD * Number(s.exchangeRate)).toLocaleString()})</div></td>
                         <td className="px-4 py-3 text-slate-600"><div className="font-medium text-[#651011]">₪{shippingTotalILS.toLocaleString()}</div></td>
                         <td className="px-4 py-3 text-left">
-                          <button onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-[#7B1315] bg-[#F7F1F1] p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button>
+                          <button data-testid={`shipment-edit-${s.id}`} onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-[#7B1315] bg-[#F7F1F1] p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteDocHandler('crm_shipments', s.id)} className="text-red-500 bg-red-50 p-1.5 rounded"><Trash2 className="w-4 h-4"/></button>
                         </td>
                       </tr>
@@ -6540,7 +6543,7 @@ export default function App() {
                 <tbody className="divide-y divide-slate-200">
                   {calculatedData.groupedInventory.map((group: any) => (
                     <React.Fragment key={group.id}>
-                      <tr className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-[#F7F1F1]/30' : ''}`} onClick={() => setExpandedGroups(p => ({ ...p, [group.id]: !p[group.id] }))}>
+                      <tr data-testid="inv-group" className={`hover:bg-slate-50 cursor-pointer ${expandedGroups[group.id] ? 'bg-[#F7F1F1]/30' : ''}`} onClick={() => setExpandedGroups(p => ({ ...p, [group.id]: !p[group.id] }))}>
                         <td className="px-4 py-4 font-bold text-slate-800 text-base">{group.model}</td>
                         <td className="px-4 py-4 text-slate-600"><div>{group.shipmentName}</div>{group.arrivalDate && <div className="text-xs text-slate-400">הגיע: {new Date(group.arrivalDate).toLocaleDateString('he-IL')}</div>}</td>
                         <td className="px-4 py-4"><span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[group.status]}`}>{STATUS_MAP[group.status]}</span></td>
@@ -6588,7 +6591,7 @@ export default function App() {
                                         ) : '-'}
                                       </td>
                                       <td className="px-3 py-2 text-left">
-                                        <button 
+                                        <button data-testid={`item-edit-${item.id}`} 
                                           onClick={(e) => { 
                                             e.stopPropagation(); 
                                             setEditingData({...item, isGlobalSale: false}); 
@@ -6628,7 +6631,7 @@ export default function App() {
                 >
                   <Upload className="w-4 h-4"/> ייבוא מפייסבוק
                 </button>
-                <button
+                <button data-testid="lead-new"
                   onClick={() => {
                     setShowQuickImport(false);
                     setQuickImportText('');
@@ -6736,7 +6739,7 @@ export default function App() {
                 // עם סטטוס הליד מימין וההערה ממשיכה משמאלו. שיוך נציג ועריכת תזכורת
                 // מלאה כבר קיימים בפאנל הפרטים שנפתח בלחיצה — לא משוכפלים כאן.
                 return (
-                  <div key={c.id}
+                  <div data-testid="lead-row" key={c.id}
                     onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
                     className="flex flex-col gap-1 px-3 py-2.5 bg-white border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors">
 
@@ -6968,7 +6971,7 @@ export default function App() {
                 const displayStatus = isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
                 const badgeColor = isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
                 return (
-                  <div key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
+                  <div data-testid="customer-card" key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
                     if ((e.target as HTMLElement).closest('.customer-actions')) return;
                     setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true);
                   }}>
@@ -7924,7 +7927,7 @@ export default function App() {
 
       {/* --- GLOBAL FLOATING ACTION BUTTON (FAB) --- */}
       <div className="fixed bottom-6 left-6 z-40 flex flex-col-reverse items-center gap-3">
-        <button onClick={() => setIsFabOpen(!isFabOpen)} className="bg-[#7B1315] text-white p-4 rounded-full shadow-xl hover:bg-[#651011] transition-transform transform hover:scale-105 active:scale-95 flex items-center justify-center">
+        <button data-testid="fab-toggle" onClick={() => setIsFabOpen(!isFabOpen)} className="bg-[#7B1315] text-white p-4 rounded-full shadow-xl hover:bg-[#651011] transition-transform transform hover:scale-105 active:scale-95 flex items-center justify-center">
           <Plus className={`w-6 h-6 transition-transform duration-300 ${isFabOpen ? 'rotate-45' : ''}`} />
         </button>
         
@@ -7939,7 +7942,7 @@ export default function App() {
               }} 
             />
             <FabButton 
-               icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)"
+               icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)" testId="fab-global-sale"
                onClick={() => { 
                 setIsFabOpen(false); 
                 setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', modelId: getModelIdByName(settings?.models, calculatedData.availableModelsInStock[0] || ''), salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
@@ -7971,7 +7974,7 @@ export default function App() {
               }} 
             />
             <FabButton 
-               icon={PlusCircle} iconColor="text-blue-600" label="הקמת דגם חדש"
+               icon={PlusCircle} iconColor="text-blue-600" label="הקמת דגם חדש" testId="fab-new-model"
                onClick={() => {
                 setIsFabOpen(false); openNewModelCard();
               }}
@@ -8128,7 +8131,7 @@ export default function App() {
               )}
 
               <div className="flex gap-2 mt-6 pt-4 border-t">
-                <button type="submit" disabled={isSaving} className="flex-1 bg-green-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:opacity-50">{isSaving ? 'שומר...' : editingData.isGlobalSale ? 'בצע מכירה וגרא מהמלאי' : 'שמור שינויים'}</button>
+                <button data-testid="item-save" type="submit" disabled={isSaving} className="flex-1 bg-green-600 text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-green-700 disabled:opacity-50">{isSaving ? 'שומר...' : editingData.isGlobalSale ? 'בצע מכירה וגרא מהמלאי' : 'שמור שינויים'}</button>
                 <button type="button" onClick={() => setIsItemModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
               </div>
             </form>
@@ -8199,7 +8202,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-2 mt-6 pt-4 border-t">
-                <button type="submit" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50">{isSaving ? 'שומר...' : editingData.id ? 'עדכן משלוח' : 'צור משלוח חדש'}</button>
+                <button data-testid="shipment-save" type="submit" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50">{isSaving ? 'שומר...' : editingData.id ? 'עדכן משלוח' : 'צור משלוח חדש'}</button>
                 <button type="button" onClick={() => setIsShipmentModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
               </div>
             </form>
@@ -8320,7 +8323,7 @@ export default function App() {
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col">
               <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
                 <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 min-w-0"><GitMerge className="w-5 h-5 text-[#7B1315] shrink-0"/> <span className="truncate">מיזוג לידים לתוך: {survivorName}</span></h3>
-                <button onClick={() => setLeadMerge(null)} className="text-slate-400 hover:text-slate-600 shrink-0" title="סגור חלון מיזוג"><X className="w-5 h-5"/></button>
+                <button onClick={() => setLeadMerge(null)} className="text-slate-400 hover:text-slate-600 shrink-0" data-testid="lead-merge-close" title="סגור חלון מיזוג"><X className="w-5 h-5"/></button>
               </div>
               <div className="p-4 overflow-y-auto flex-1 space-y-4">
                 <p className="text-xs text-slate-500 leading-relaxed">
@@ -8333,6 +8336,7 @@ export default function App() {
                       <p className="text-xs font-bold text-amber-800">אותו טלפון ({samePhoneLeads.length})</p>
                       <button
                         onClick={() => setLeadMerge(m => m ? { ...m, selected: Array.from(new Set([...m.selected, ...samePhoneLeads.map((c: any) => c.id)])) } : m)}
+                        data-testid="lead-merge-select-all"
                         className="text-[11px] font-bold text-[#7B1315] underline"
                       >סמן את כולם</button>
                     </div>
@@ -8345,6 +8349,7 @@ export default function App() {
                   <input
                     type="text"
                     className="w-full border border-slate-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
+                    data-testid="lead-merge-search"
                     placeholder="שם, עסק, טלפון או מייל"
                     value={leadMerge.search}
                     onChange={e => setLeadMerge(m => m ? { ...m, search: e.target.value } : m)}
@@ -8373,6 +8378,7 @@ export default function App() {
                 <div className="flex gap-2">
                   <button onClick={() => setLeadMerge(null)} className="px-4 py-2 rounded-md text-sm font-medium text-slate-600 border border-slate-300 bg-white hover:bg-slate-50">ביטול</button>
                   <button
+                    data-testid="lead-merge-submit"
                     onClick={() => mergeLeads(leadMerge.selected)}
                     disabled={isSaving || leadMerge.selected.length === 0}
                     className="px-5 py-2 rounded-md text-sm font-bold text-white bg-[#7B1315] hover:bg-[#651011] disabled:opacity-40"
@@ -8438,7 +8444,7 @@ export default function App() {
                     >מזג</button>
                   </div>
                 )}
-                <button onClick={closeModelCard} className="text-slate-400 hover:text-slate-600 shrink-0" title="סגור"><X className="w-5 h-5"/></button>
+                <button data-testid="model-card-close" onClick={closeModelCard} className="text-slate-400 hover:text-slate-600 shrink-0" title="סגור"><X className="w-5 h-5"/></button>
               </div>
 
               <div className="p-5 overflow-y-auto flex-1 space-y-5">
@@ -8545,6 +8551,7 @@ export default function App() {
                     {isModelDraftDirty ? 'ביטול' : 'סגור'}
                   </button>
                   <button
+                    data-testid="model-card-save"
                     onClick={saveModelCard}
                     disabled={isSaving || (!isCreate && !isModelDraftDirty)}
                     className="px-6 py-2 rounded-md text-sm font-bold text-white bg-[#7B1315] hover:bg-[#651011] disabled:opacity-40"
@@ -8669,7 +8676,7 @@ export default function App() {
             </div>
             <div className="p-4 border-t border-slate-100 flex gap-3 bg-slate-50 rounded-b-xl shrink-0">
               <button type="button" onClick={() => setIsCustomerModalOpen(false)} className="px-6 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50 transition-colors">ביטול</button>
-              <button type="submit" form="customerForm" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50 transition-colors">
+              <button data-testid="customer-save" type="submit" form="customerForm" disabled={isSaving} className="flex-1 bg-[#7B1315] text-white py-2.5 rounded-lg font-bold shadow-md hover:bg-[#651011] disabled:opacity-50 transition-colors">
                 {isSaving ? 'שומר במערכת...' : 'שמור פרטי לקוח'}
               </button>
             </div>
@@ -8807,10 +8814,10 @@ export default function App() {
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <div className="flex items-center gap-1">
                 {selectedCustomer.status === 'lead' && (
-                  <button onClick={() => openLeadMerge()} className="text-slate-400 hover:text-[#7B1315] p-1" title="מזג לידים כפולים לתוך ליד זה"><GitMerge className="w-5 h-5"/></button>
+                  <button onClick={() => openLeadMerge()} className="text-slate-400 hover:text-[#7B1315] p-1" data-testid="lead-merge-open" title="מזג לידים כפולים לתוך ליד זה"><GitMerge className="w-5 h-5"/></button>
                 )}
-                <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
-                <button onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+                <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" data-testid="lead-panel-edit" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
+                <button data-testid="lead-panel-close" title="סגור" onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
             </div>
             
@@ -8865,7 +8872,7 @@ export default function App() {
                 {selectedCustomer.status === 'lead' && (
                   <div className="space-y-3 pt-2">
                     {/* Convert to customer button */}
-                    <button
+                    <button data-testid="lead-make-active"
                       className="w-full bg-green-600 text-white text-sm font-bold py-2 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2 shadow-sm"
                       onClick={async () => {
                         if (!window.confirm(`להמיר את "${selectedCustomer.businessName || selectedCustomer.contactName}" ללקוח פעיל?`)) return;
@@ -8881,7 +8888,7 @@ export default function App() {
                       <p className="text-[11px] text-slate-400 font-medium mb-1.5">שלב הליד</p>
                       <div className="flex flex-wrap gap-1">
                         {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => (
-                          <button key={k}
+                          <button key={k} data-testid={`lead-stage-${k}`}
                             className={`text-[10px] px-2 py-1 rounded-full font-medium border transition-colors ${selectedCustomer.leadStage === k ? LEAD_STAGE_COLORS[k] + ' border-current font-bold' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'}`}
                             onClick={() => saveLeadField(selectedCustomer.id, k === 'not_relevant' ? { leadStage: k, followUpDate: null, followUpNote: '' } : { leadStage: k })}
                           >{v}</button>
@@ -9076,9 +9083,9 @@ export default function App() {
                       )}
                     </div>
                     <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0">
-                      <textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none resize-none" rows={3} placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..." value={newNoteText} onChange={e => setNewNoteText(e.target.value)}></textarea>
+                      <textarea data-testid="lead-note-input" className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none resize-none" rows={3} placeholder="תאר את פרטי השיחה, מה הלקוח ביקש, מתי לחזור אליו..." value={newNoteText} onChange={e => setNewNoteText(e.target.value)}></textarea>
                       <div className="flex justify-end mt-2">
-                        <button onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 transition-colors shadow-sm">
+                        <button data-testid="lead-note-save" onClick={addInteractionNote} disabled={!newNoteText.trim() || isSaving} className="bg-[#7B1315] text-white px-6 py-2 rounded-md font-bold hover:bg-[#651011] disabled:opacity-50 transition-colors shadow-sm">
                           {isSaving ? 'שומר...' : 'שמור הערה ועדכן תאריך'}
                         </button>
                       </div>
@@ -9666,7 +9673,7 @@ export default function App() {
                       )}
                   </div>
 
-                  <button type="submit" disabled={isSaving} className="w-full bg-green-600 text-white py-3 rounded-md font-bold hover:bg-green-700 mt-4 disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-lg">
+                  <button data-testid="quote-approve-submit" type="submit" disabled={isSaving} className="w-full bg-green-600 text-white py-3 rounded-md font-bold hover:bg-green-700 mt-4 disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-lg">
                       {isSaving ? 'מעדכן מלאי ומאשר...' : 'אשר הצעת מחיר וגרא פריטים מהמלאי'}
                   </button>
               </form>
@@ -9797,7 +9804,7 @@ export default function App() {
                   </select>
                 </div>
 
-                <button onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF || !quoteData.customerId} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
+                <button data-testid="quote-save" onClick={handleGenerateQuotePDF} disabled={isGeneratingPDF || !quoteData.customerId} className="w-full bg-green-600 text-white p-4 rounded-lg font-bold flex justify-center items-center gap-2 hover:bg-green-700 disabled:opacity-50 transition-colors shadow-lg mt-8 text-lg">
                   {isGeneratingPDF ? 'מייצר מסמך ושומר...' : !quoteData.customerId ? 'אנא בחר לקוח תחילה' : <><Download className="w-6 h-6"/> שמור, והורד PDF</>}
                 </button>
               </div>
@@ -9821,7 +9828,7 @@ export default function App() {
             <label className="block text-sm mb-1">תאריך הגעה בפועל</label>
             <input type="date" className="w-full border p-2 rounded mb-4" value={arrivalPrompt.date} onChange={e => setArrivalPrompt({...arrivalPrompt, date: e.target.value})} />
             <div className="flex gap-2">
-              <button 
+              <button data-testid="shipment-arrival-confirm" 
                 onClick={() => { 
                   confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || new Date().toISOString().split('T')[0]); 
                   setArrivalPrompt({ isOpen: false, shipment: null, date: '' }); 
