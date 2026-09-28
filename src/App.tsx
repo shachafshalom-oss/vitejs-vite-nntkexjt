@@ -3,9 +3,9 @@ import { ISRAELI_CITIES } from './israeliCities';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction, deleteField, FieldPath } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
+import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -598,6 +598,105 @@ const findDuplicateByPhone = (phone: any, list: any[], excludeId?: string): any 
   const target = normalizePhone(phone);
   if (!target || target.length < 7) return null;
   return list.find(c => c.id !== excludeId && normalizePhone(c.phone) === target) || null;
+};
+
+// ============================================================================
+// === מיזוג לידים כפולים — חישוב טהור (בלי Firestore), כדי שיהיה ניתן לבדוק ===
+// ============================================================================
+// כללים (אושרו ע"י שחף):
+// • השורד = הליד שממנו לחצו "מזג". שדה מלא אצלו לעולם לא נדרס.
+// • שדה ריק אצל השורד מתמלא מהנספג (מהוותיק לחדש). ערך שונה בשדה פרטי קשר נרשם ביומן.
+// • יומני ההתכתבות מתאחדים לפי תאריך, עם שורת מערכת לכל ליד שנספג.
+// • עותק גיבוי של כל נספג נשמר ב-mergedFrom בתוך השורד (לשחזור ידני).
+
+// שדות מערכת — לא עוברים מהנספג לשורד (מזהים, זמנים, דגלי התראה, קישורי כפילות).
+const LEAD_MERGE_SKIP_FIELDS = new Set([
+  'id', 'interactionLogs', 'createdAt', 'updatedAt', 'createdBy', 'status',
+  'possibleDuplicateOfId', 'possibleDuplicateAt', 'pushSentAt', 'metaEventId', 'mergedFrom',
+]);
+
+// שדות שאם לנספג יש בהם ערך שונה מהשורד — הערך נרשם ביומן, כדי שלא ילך לאיבוד בשקט.
+// כולל שלב/נציג/סוג/תזכורת: כשהשורד הוא פנייה חדשה מהאתר (שלב "חדש", נציג לפי תור),
+// הערכים האמיתיים של הליד הוותיק מופיעים לפחות ביומן.
+const LEAD_MERGE_REPORT_FIELDS: Record<string, string> = {
+  businessName: 'שם העסק', contactName: 'איש קשר', companyName: 'שם חברה', hp: 'ח.פ',
+  phone: 'טלפון', email: 'מייל', address: 'כתובת', notes: 'הערות',
+  leadStage: 'שלב', assignedTo: 'נציג', businessType: 'סוג עסק', followUpDate: 'תזכורת',
+};
+
+const formatLeadMergeValue = (field: string, v: any, lead: any): string => {
+  if (field === 'leadStage') return LEAD_STAGE_MAP[v] || String(v);
+  if (field === 'assignedTo') return AGENTS.find(a => a.email === v)?.name || String(v);
+  if (field === 'followUpDate') return `${new Date(v).toLocaleDateString('he-IL')}${lead?.followUpNote ? ` (${lead.followUpNote})` : ''}`;
+  return String(v);
+};
+
+const isEmptyLeadValue = (v: any): boolean =>
+  v === undefined || v === null || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0);
+
+const sameLeadValue = (field: string, a: any, b: any): boolean =>
+  field === 'phone'
+    ? normalizePhone(a) === normalizePhone(b)
+    : String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+
+// מחשב את מה שייכתב לליד השורד. לא נוגע ב-Firestore.
+const planLeadMerge = (survivor: any, absorbedList: any[], userEmail: string, nowIso: string) => {
+  const absorbedIds = new Set(absorbedList.map(a => a.id));
+  const ordered = [...absorbedList].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+
+  const filled: Record<string, any> = {};
+  const mergeLogs: any[] = [];
+  // גיבויים קודמים (של השורד ושל נספגים שבעצמם מיזגו לתוכם בעבר) — שטוחים, בלי קינון
+  const mergedFrom: any[] = [...(Array.isArray(survivor.mergedFrom) ? survivor.mergedFrom : [])];
+
+  for (const a of ordered) {
+    Object.keys(a).forEach(key => {
+      if (LEAD_MERGE_SKIP_FIELDS.has(key) || key === 'followUpNote') return;
+      if (isEmptyLeadValue(survivor[key]) && isEmptyLeadValue(filled[key]) && !isEmptyLeadValue(a[key])) {
+        filled[key] = a[key];
+        // תאריך תזכורת והערה שלו עוברים יחד, מאותו ליד
+        if (key === 'followUpDate' && isEmptyLeadValue(survivor.followUpNote) && !isEmptyLeadValue(a.followUpNote)) filled.followUpNote = a.followUpNote;
+      }
+    });
+
+    const diffs = Object.entries(LEAD_MERGE_REPORT_FIELDS)
+      .filter(([f]) => !isEmptyLeadValue(a[f]) && !isEmptyLeadValue(survivor[f]) && !sameLeadValue(f, a[f], survivor[f]))
+      .map(([f, label]) => `${label}: ${formatLeadMergeValue(f, a[f], a)}`);
+
+    const name = a.businessName || a.contactName || 'ליד ללא שם';
+    const created = a.createdAt ? new Date(a.createdAt).toLocaleDateString('he-IL') : 'לא ידוע';
+    mergeLogs.push({
+      date: nowIso,
+      text: `מוזג לתוך ליד זה: "${name}"${a.phone ? ` (${a.phone})` : ''}, נוצר ${created}` +
+        (diffs.length ? ` · ערכים שונים שלא נכנסו לפרטי הליד: ${diffs.join(' | ')}` : ''),
+      user: userEmail || 'משתמש מערכת',
+      type: 'system',
+    });
+
+    const { id: _id, interactionLogs: _logs, mergedFrom: prevMerged, ...snapshot } = a;
+    if (Array.isArray(prevMerged)) mergedFrom.push(...prevMerged);
+    mergedFrom.push({ id: a.id, mergedAt: nowIso, mergedBy: userEmail || '', logCount: Array.isArray(a.interactionLogs) ? a.interactionLogs.length : 0, snapshot });
+  }
+
+  const allLogs = [
+    ...(Array.isArray(survivor.interactionLogs) ? survivor.interactionLogs : []),
+    ...ordered.flatMap(a => (Array.isArray(a.interactionLogs) ? a.interactionLogs : [])),
+  ].sort((x, y) => String(x?.date || '').localeCompare(String(y?.date || '')));
+
+  const update: Record<string, any> = {
+    ...filled,
+    interactionLogs: [...allLogs, ...mergeLogs],
+    mergedFrom,
+    updatedAt: nowIso,
+  };
+  // נציג שהגיע מהנספג — הליד כבר טופל; בלי זה lead-notifier ישלח "ליד חדש שויך אליך"
+  if (filled.assignedTo) update.pushSentAt = nowIso;
+  // השורד הצביע על אחד הנספגים כ"פנייה חוזרת" — הקישור כבר לא רלוונטי
+  if (survivor.possibleDuplicateOfId && absorbedIds.has(survivor.possibleDuplicateOfId)) {
+    update.possibleDuplicateOfId = null;
+    update.possibleDuplicateAt = null;
+  }
+  return update;
 };
 
 // --- פיד יומן מנוי (ICS) לתזכורות מעקב, לפי נציג ---
@@ -1746,7 +1845,22 @@ export default function App() {
   useEffect(() => {
     if (!selectedCustomer?.id) return;
     const fresh = customers.find((c: any) => c.id === selectedCustomer.id);
-    if (!fresh) return;
+    if (!fresh) {
+      // הליד הפתוח נעלם (משתמש אחר מיזג או מחק אותו). בלי זה התיק נשאר על "רוח רפאים",
+      // ולחיצות על שלב/תזכורת נראות כאילו נשמרו אבל נכשלות בשקט.
+      if (isCustomerOverviewOpen && customers.length > 0) {
+        const into = customers.find((c: any) => Array.isArray(c.mergedFrom) && c.mergedFrom.some((m: any) => m?.id === selectedCustomer.id));
+        setLeadMerge(null);
+        if (into) {
+          setSelectedCustomer(into);
+          alert(`הליד שהיה פתוח מוזג לתוך "${into.businessName || into.contactName || 'ליד'}" — התיק עבר אליו.`);
+        } else {
+          setIsCustomerOverviewOpen(false);
+          alert('הליד שהיה פתוח כבר לא קיים במערכת (נמחק), והתיק נסגר.');
+        }
+      }
+      return;
+    }
     setSelectedCustomer((prev: any) => {
       if (!prev || prev.id !== fresh.id) return prev;
       const next = { ...prev, ...fresh };
@@ -1755,6 +1869,124 @@ export default function App() {
       return next;
     });
   }, [customers]);
+
+  // ==========================================================================
+  // מיזוג לידים כפולים
+  // ==========================================================================
+  // חלון בחירה: selected = הלידים שיספגו לתוך הליד הפתוח (selectedCustomer = השורד).
+  const [leadMerge, setLeadMerge] = useState<{ selected: string[]; search: string } | null>(null);
+
+  const openLeadMerge = (preselectIds: string[] = []) => {
+    if (!selectedCustomer || selectedCustomer.status !== 'lead') return;
+    setLeadMerge({ selected: preselectIds.filter(id => id !== selectedCustomer.id), search: '' });
+  };
+
+  // לידים עם אותו טלפון מנורמל — מוצעים בראש החלון
+  const samePhoneLeads = useMemo(() => {
+    if (!leadMerge || !selectedCustomer) return [];
+    const target = normalizePhone(selectedCustomer.phone);
+    if (!target || target.length < 7) return [];
+    return customers.filter((c: any) => c.status === 'lead' && c.id !== selectedCustomer.id && normalizePhone(c.phone) === target);
+  }, [leadMerge, selectedCustomer, customers]);
+
+  const mergeLeads = async (absorbedIds: string[]) => {
+    const survivorLocal = customers.find((c: any) => c.id === selectedCustomer?.id);
+    if (!survivorLocal || survivorLocal.status !== 'lead') { alert('הליד הזה כבר לא קיים או שאינו ליד — אי אפשר למזג לתוכו.'); return; }
+    const absorbedLocal = absorbedIds
+      .map(id => customers.find((c: any) => c.id === id))
+      .filter((c: any) => c && c.id !== survivorLocal.id && c.status === 'lead');
+    if (absorbedLocal.length === 0) return;
+    const ids: string[] = absorbedLocal.map((a: any) => a.id);
+    const idSet = new Set(ids);
+
+    // ספירות לחלון האישור (מהנתונים המקומיים — לתצוגה בלבד)
+    const countQuotes = quotes.filter((q: any) => idSet.has(q.customerId)).length;
+    const countItems = items.filter((i: any) => idSet.has(i.customerId)).length;
+    const countDeliveries = customerDeliveries.filter((d: any) => idSet.has(d.customerId)).length;
+    const countProjects = customProjects.filter((p: any) => idSet.has(p.customerId)).length;
+    const logCount = absorbedLocal.reduce((n: number, a: any) => n + (Array.isArray(a.interactionLogs) ? a.interactionLogs.length : 0), 0);
+
+    const survivorName = survivorLocal.businessName || survivorLocal.contactName || 'ליד';
+    const confirmed = window.confirm(
+      `מיזוג לידים\n\n` +
+      `ישרוד: "${survivorName}"${survivorLocal.phone ? ` (${survivorLocal.phone})` : ''} — הפרטים, השלב והנציג שלו לא נדרסים, שדות ריקים יתמלאו\n\n` +
+      `יימחקו ויתמזגו לתוכו (${absorbedLocal.length}):\n` +
+      absorbedLocal.map((a: any) => `• ${a.businessName || a.contactName || 'ליד ללא שם'}${a.phone ? ` (${a.phone})` : ''} — ${LEAD_STAGE_MAP[a.leadStage || 'new'] || a.leadStage}`).join('\n') + `\n\n` +
+      `יועברו לשורד:\n` +
+      `• ${logCount} רשומות ביומן ההתכתבויות\n` +
+      `• ${countQuotes} הצעות מחיר\n` +
+      `• ${countItems} פריטים\n` +
+      `• ${countDeliveries} הובלות\n` +
+      `• ${countProjects} פרויקטים קסטום\n\n` +
+      `עותק גיבוי של כל ליד שנמחק נשמר בתוך תיק השורד.\n` +
+      `הפעולה אינה הפיכה מהמסך. להמשיך?`
+    );
+    if (!confirmed) return;
+
+    setIsSaving(true);
+    try {
+      // 1. הקישורים נשלפים מהשרת עכשיו (לא מה-state), כדי לתפוס גם מה שנוצר בזמן שחלון האישור היה פתוח
+      const chunk = (arr: string[]) => Array.from({ length: Math.ceil(arr.length / 30) }, (_, i) => arr.slice(i * 30, i * 30 + 30));
+      const findRefs = async (col: string, field: string): Promise<string[]> => {
+        const out: string[] = [];
+        for (const part of chunk(ids)) {
+          const snap = await getDocs(query(collection(db, col), where(field, 'in', part)));
+          snap.docs.forEach(d => out.push(d.id));
+        }
+        return out;
+      };
+      const [quoteIds, itemIds, deliveryIds, projectIds, dupIds] = await Promise.all([
+        findRefs('crm_quotes', 'customerId'),
+        findRefs('crm_items', 'customerId'),
+        findRefs('crm_customer_deliveries', 'customerId'),
+        findRefs('crm_custom_projects', 'customerId'),
+        findRefs('crm_customers', 'possibleDuplicateOfId'),
+      ]);
+      const repointIds = dupIds.filter(id => !idSet.has(id) && id !== survivorLocal.id);
+      const opCount = 1 + ids.length + quoteIds.length + itemIds.length + deliveryIds.length + projectIds.length + repointIds.length;
+      if (opCount > 450) { alert(`מיזוג גדול מדי לפעולה אחת (${opCount} רשומות). מזג בכמה סבבים קטנים יותר.`); setIsSaving(false); return; }
+
+      // 2. טרנזקציה: קוראת את השורד והנספגים מהשרת ברגע הכתיבה, ובונה את המיזוג מהם.
+      // אם מישהו הפך אחד מהם ללקוח או מחק אותו בינתיים — המיזוג לא מתבצע בכלל.
+      // הערה שנוספה בינתיים לאחד הלידים נכללת אוטומטית (כי הקריאה טרייה). הכול-או-כלום.
+      const nowIso = new Date().toISOString();
+      const survivorRef = doc(db, 'crm_customers', survivorLocal.id);
+      const outcome = await runTransaction(db, async (tx) => {
+        const sSnap = await tx.get(survivorRef);
+        const aSnaps = await Promise.all(ids.map(id => tx.get(doc(db, 'crm_customers', id))));
+        if (!sSnap.exists() || sSnap.data()?.status !== 'lead') return 'survivor-changed';
+        const fresh = aSnaps.map(snap => (snap.exists() ? { id: snap.id, ...snap.data() } : null));
+        if (fresh.some((a: any) => !a || a.status !== 'lead')) return 'absorbed-changed';
+
+        const update = planLeadMerge({ id: survivorLocal.id, ...sSnap.data() }, fresh as any[], user?.email || '', nowIso);
+        tx.update(survivorRef, update);
+        quoteIds.forEach(id => tx.update(doc(db, 'crm_quotes', id), { customerId: survivorLocal.id, updatedAt: nowIso }));
+        itemIds.forEach(id => tx.update(doc(db, 'crm_items', id), { customerId: survivorLocal.id, updatedAt: nowIso }));
+        deliveryIds.forEach(id => tx.update(doc(db, 'crm_customer_deliveries', id), { customerId: survivorLocal.id, updatedAt: nowIso }));
+        projectIds.forEach(id => tx.update(doc(db, 'crm_custom_projects', id), { customerId: survivorLocal.id, updatedAt: nowIso }));
+        repointIds.forEach(id => tx.update(doc(db, 'crm_customers', id), { possibleDuplicateOfId: survivorLocal.id }));
+        ids.forEach(id => tx.delete(doc(db, 'crm_customers', id)));
+        return 'ok';
+      });
+
+      if (outcome !== 'ok') {
+        alert(
+          outcome === 'survivor-changed'
+            ? 'הליד השורד שונה בינתיים (נמחק או הפך ללקוח). שום שינוי לא נשמר.'
+            : 'אחד הלידים שסימנת שונה בינתיים (נמחק או הפך ללקוח). שום שינוי לא נשמר — בדוק ונסה שוב.'
+        );
+        setIsSaving(false);
+        return;
+      }
+
+      setLeadMerge(null);
+      alert(`✓ המיזוג הושלם.\n\n${ids.length} לידים מוזגו לתוך "${survivorName}".`);
+    } catch (err: any) {
+      console.error('שגיאה במיזוג לידים:', err);
+      alert(`שגיאה במיזוג הלידים: ${err?.message || 'שגיאה לא ידועה'}\n\nשום שינוי לא נשמר.`);
+    }
+    setIsSaving(false);
+  };
 
   // --- Date Calculations ---
   // פונקציית עזר לשמירה על שעון מקומי מדויק (מונעת באגים של UTC בישראל)
@@ -3372,8 +3604,14 @@ export default function App() {
             user: user?.email || 'משתמש מערכת',
             type: 'system',
           };
-          data.interactionLogs = [...(currentForLog.interactionLogs || []), stageLog];
+          data.interactionLogs = arrayUnion(stageLog);
+        } else {
+          delete data.interactionLogs;
         }
+        // טופס העריכה מחזיק עותק של היומן ושל גיבויי המיזוג מהרגע שנפתח. כתיבה שלהם הייתה
+        // מחזירה אותם לגרסה הישנה — ומוחקת הערות/מיזוג שנעשו בינתיים. לכן הם לא נכתבים מכאן:
+        // היומן מתעדכן רק בהוספה (arrayUnion), וגיבויי המיזוג לא נכתבים מהטופס בכלל.
+        delete data.mergedFrom;
         await updateDoc(doc(db, 'crm_customers', data.id), data);
       } else { 
         data.createdAt = new Date().toISOString(); 
@@ -3442,7 +3680,15 @@ export default function App() {
         payload.interactionLogs = [...(current?.interactionLogs || []), stageLog];
       }
 
-      await updateDoc(doc(db, 'crm_customers', customerId), { ...payload, updatedAt: new Date().toISOString() });
+      // ביומן — רק הוספה (arrayUnion), לא החלפת המערך כולו: כך הערה או מיזוג שנעשו
+      // בינתיים ע"י המשתמש השני לא נמחקים. ה-state המקומי מקבל את המערך המלא.
+      const { interactionLogs: localLogs, ...rest } = payload;
+      const newLogs = Array.isArray(localLogs) ? localLogs.slice((current?.interactionLogs || []).length) : [];
+      await updateDoc(doc(db, 'crm_customers', customerId), {
+        ...rest,
+        ...(newLogs.length ? { interactionLogs: arrayUnion(...newLogs) } : {}),
+        updatedAt: new Date().toISOString(),
+      });
       if (selectedCustomer?.id === customerId) {
         setSelectedCustomer((prev: any) => ({ ...prev, ...payload }));
       }
@@ -3457,8 +3703,9 @@ export default function App() {
       const newLog = { date: new Date().toISOString(), text: newNoteText, user: user?.email || 'משתמש מערכת' };
       const currentLogs = Array.isArray(selectedCustomer.interactionLogs) ? selectedCustomer.interactionLogs : [];
       const updatedLogs = [...currentLogs, newLog];
-      
-      await updateDoc(customerRef, { interactionLogs: updatedLogs, updatedAt: new Date().toISOString() });
+
+      // arrayUnion — הוספה בלבד, לא דורס הערות/מיזוג שנעשו בינתיים ע"י המשתמש השני
+      await updateDoc(customerRef, { interactionLogs: arrayUnion(newLog), updatedAt: new Date().toISOString() });
       setSelectedCustomer({...selectedCustomer, interactionLogs: updatedLogs});
       setNewNoteText('');
     } catch (err) { alert("שגיאה בהוספת הערה"); }
@@ -4052,7 +4299,12 @@ export default function App() {
 
       payload.interactionLogs = updatedLogs;
       payload.updatedAt = new Date().toISOString();
-      await updateDoc(doc(db, 'crm_customers', customer.id), payload);
+      // ל-Firestore — רק הרשומות החדשות (arrayUnion); ה-state המקומי מקבל את המערך המלא
+      const { interactionLogs: _full, ...restPayload } = payload;
+      await updateDoc(doc(db, 'crm_customers', customer.id), {
+        ...restPayload,
+        interactionLogs: arrayUnion(...updatedLogs.slice(currentLogs.length)),
+      });
       setCustomers((prev: any[]) => prev.map(c => c.id === customer.id ? { ...c, ...payload } : c));
       if (selectedCustomer?.id === customer.id) setSelectedCustomer((prev: any) => prev ? { ...prev, ...payload } : prev);
     } catch {}
@@ -8040,6 +8292,98 @@ export default function App() {
         </div>
       )}
 
+      {/* LEAD MERGE PICKER — בחירת לידים כפולים שיתמזגו לתוך הליד הפתוח (השורד) */}
+      {leadMerge && selectedCustomer && isCustomerOverviewOpen && (() => {
+        const survivorName = selectedCustomer.businessName || selectedCustomer.contactName || 'ליד';
+        const q = leadMerge.search.trim().toLowerCase();
+        const samePhoneIds = new Set(samePhoneLeads.map((c: any) => c.id));
+        const searchResults = q.length < 2 ? [] : customers
+          .filter((c: any) => c.status === 'lead' && c.id !== selectedCustomer.id && !samePhoneIds.has(c.id))
+          .filter((c: any) =>
+            `${c.businessName || ''} ${c.contactName || ''} ${c.email || ''}`.toLowerCase().includes(q) ||
+            (normalizePhone(q) && normalizePhone(c.phone).includes(normalizePhone(q).replace(/^0/, ''))))
+          .slice(0, 30);
+        const toggle = (id: string) => setLeadMerge(m => m ? { ...m, selected: m.selected.includes(id) ? m.selected.filter(x => x !== id) : [...m.selected, id] } : m);
+        const row = (c: any) => (
+          <label key={c.id} className="flex items-center gap-3 p-2.5 rounded-md hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-b-0">
+            <input type="checkbox" className="w-4 h-4 accent-[#7B1315] shrink-0" checked={leadMerge.selected.includes(c.id)} onChange={() => toggle(c.id)} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-slate-800 truncate">{c.businessName || c.contactName || 'ליד ללא שם'}</p>
+              <p className="text-[11px] text-slate-500 truncate">
+                {c.phone || 'ללא טלפון'} · {LEAD_STAGE_MAP[c.leadStage || 'new'] || c.leadStage} · {c.createdAt ? new Date(c.createdAt).toLocaleDateString('he-IL') : ''}{c.assignedTo ? ` · ${c.assignedTo.split('@')[0]}` : ''}
+              </p>
+            </div>
+          </label>
+        );
+        return (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col">
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
+                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 min-w-0"><GitMerge className="w-5 h-5 text-[#7B1315] shrink-0"/> <span className="truncate">מיזוג לידים לתוך: {survivorName}</span></h3>
+                <button onClick={() => setLeadMerge(null)} className="text-slate-400 hover:text-slate-600 shrink-0" title="סגור חלון מיזוג"><X className="w-5 h-5"/></button>
+              </div>
+              <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  הלידים שתסמן יימחקו ויתמזגו לתוך הליד הזה. הפרטים שלו לא נדרסים — שדות ריקים יתמלאו, וכל ההתכתבויות יעברו אליו. נשמר עותק גיבוי.
+                </p>
+
+                {samePhoneLeads.length > 0 && (
+                  <div>
+                    <div className="flex justify-between items-center mb-1.5">
+                      <p className="text-xs font-bold text-amber-800">אותו טלפון ({samePhoneLeads.length})</p>
+                      <button
+                        onClick={() => setLeadMerge(m => m ? { ...m, selected: Array.from(new Set([...m.selected, ...samePhoneLeads.map((c: any) => c.id)])) } : m)}
+                        className="text-[11px] font-bold text-[#7B1315] underline"
+                      >סמן את כולם</button>
+                    </div>
+                    <div className="border border-amber-200 bg-amber-50/40 rounded-lg">{samePhoneLeads.map(row)}</div>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-xs font-bold text-slate-600 mb-1.5">חיפוש ליד אחר</p>
+                  <input
+                    type="text"
+                    className="w-full border border-slate-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none"
+                    placeholder="שם, עסק, טלפון או מייל"
+                    value={leadMerge.search}
+                    onChange={e => setLeadMerge(m => m ? { ...m, search: e.target.value } : m)}
+                  />
+                  {q.length >= 2 && (
+                    searchResults.length > 0
+                      ? <div className="border border-slate-200 rounded-lg mt-2">{searchResults.map(row)}</div>
+                      : <p className="text-xs text-slate-400 mt-2">לא נמצאו לידים תואמים.</p>
+                  )}
+                </div>
+
+                {/* לידים שסומנו אבל לא מופיעים כרגע ברשימות למעלה (למשל אחרי שינוי חיפוש) */}
+                {(() => {
+                  const shown = new Set([...samePhoneLeads.map((c: any) => c.id), ...searchResults.map((c: any) => c.id)]);
+                  const hidden = leadMerge.selected.map(id => customers.find((c: any) => c.id === id)).filter((c: any) => c && !shown.has(c.id));
+                  return hidden.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-bold text-slate-600 mb-1.5">מסומנים</p>
+                      <div className="border border-slate-200 rounded-lg">{hidden.map(row)}</div>
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+              <div className="p-4 border-t border-slate-100 flex justify-between items-center gap-3 shrink-0">
+                <span className="text-xs text-slate-500">{leadMerge.selected.length > 0 ? `${leadMerge.selected.length} לידים מסומנים` : 'לא סומנו לידים'}</span>
+                <div className="flex gap-2">
+                  <button onClick={() => setLeadMerge(null)} className="px-4 py-2 rounded-md text-sm font-medium text-slate-600 border border-slate-300 bg-white hover:bg-slate-50">ביטול</button>
+                  <button
+                    onClick={() => mergeLeads(leadMerge.selected)}
+                    disabled={isSaving || leadMerge.selected.length === 0}
+                    className="px-5 py-2 rounded-md text-sm font-bold text-white bg-[#7B1315] hover:bg-[#651011] disabled:opacity-40"
+                  >{isSaving ? 'ממזג...' : `מזג ${leadMerge.selected.length || ''} לידים`}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* MODEL CARD PANEL — כרטיס דגם (עריכה לפי id / הקמת דגם חדש). גלובלי, כי נפתח גם מה-FAB מכל טאב. */}
       {modelCard && modelDraft && (() => {
         const isCreate = modelCard.mode === 'create';
@@ -8462,6 +8806,9 @@ export default function App() {
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <div className="flex items-center gap-1">
+                {selectedCustomer.status === 'lead' && (
+                  <button onClick={() => openLeadMerge()} className="text-slate-400 hover:text-[#7B1315] p-1" title="מזג לידים כפולים לתוך ליד זה"><GitMerge className="w-5 h-5"/></button>
+                )}
                 <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
                 <button onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
@@ -8490,9 +8837,22 @@ export default function App() {
                           <History className="w-3.5 h-3.5"/> השאיר פנייה בעבר
                         </p>
                         {prev ? (
-                          <button onClick={() => setSelectedCustomer(prev)} className="text-[11px] text-amber-700 underline mt-1">
-                            {prev.businessName || prev.contactName || 'פנייה קודמת'} · {prev.createdAt ? new Date(prev.createdAt).toLocaleDateString('he-IL') : ''}
-                          </button>
+                          <>
+                            <button onClick={() => setSelectedCustomer(prev)} className="text-[11px] text-amber-700 underline mt-1">
+                              {prev.businessName || prev.contactName || 'פנייה קודמת'} · {prev.createdAt ? new Date(prev.createdAt).toLocaleDateString('he-IL') : ''}
+                            </button>
+                            {prev.status === 'lead' && selectedCustomer.status === 'lead' && (
+                              // הכיוון מכוון: הפנייה החדשה מתמזגת לתוך הוותיקה. הפנייה החדשה מהאתר נוצרת
+                              // עם שלב "חדש" ונציג לפי תור — אם היא הייתה השורדת, השלב והנציג האמיתיים
+                              // של הליד הוותיק היו נדרסים. התיק עובר לליד הוותיק, והוא השורד.
+                              <button
+                                onClick={() => { const current = selectedCustomer; setSelectedCustomer(prev); setLeadMerge({ selected: [current.id], search: '' }); }}
+                                className="block mx-auto mt-1.5 text-[11px] font-bold text-[#7B1315] border border-[#DABDBD] bg-white rounded px-2 py-0.5 hover:bg-[#F7F1F1]"
+                              >
+                                מזג פנייה זו לתוך הפנייה הקודמת
+                              </button>
+                            )}
+                          </>
                         ) : (
                           <p className="text-[11px] text-amber-700 mt-1">הפנייה הקודמת כבר לא קיימת במערכת</p>
                         )}
