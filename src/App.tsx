@@ -986,8 +986,16 @@ const resolveModelId = (entry: any, models: any): string =>
 // תאריך עסקי = תאריך בשעון ישראל. לא UTC (בין 00:00 ל-03:00 UTC עוד "אתמול" — מכירה בלילה
 // של ה-1 לחודש נספרה בחודש הקודם), ולא שעון המכשיר (למשל בנסיעה לסין).
 // =========================================================================
-const ISRAEL_DATE_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
-const israelDateStr = (d: Date | string | number = new Date()): string => ISRAEL_DATE_FMT.format(new Date(d));
+// formatToParts ולא format: הפורמט של format() תלוי בנתוני השפה של הדפדפן, והרכבה ידנית
+// מבטיחה YYYY-MM-DD בכל דפדפן. תאריך לא תקין מחזיר '' (ולא זורק שגיאה באמצע רינדור).
+const ISRAEL_DATE_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
+const israelDateStr = (d: Date | string | number = new Date()): string => {
+  const date = new Date(d);
+  if (isNaN(date.getTime())) return '';
+  const parts: Record<string, string> = {};
+  ISRAEL_DATE_FMT.formatToParts(date).forEach(p => { parts[p.type] = p.value; });
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 const israelToday = (): string => israelDateStr(new Date());
 
 // מפתח דגם לשורות משלוח: לפי מזהה קבוע, ובנפילה-לאחור לפי שם (דגם יתום / נתון ישן).
@@ -2092,8 +2100,10 @@ export default function App() {
   const todayStr = getLocalYYYYMMDD(today);
   const currentMonthStr = todayStr.substring(0, 7); 
   
-  let lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const lastMonthStr = getLocalYYYYMMDD(lastMonthDate).substring(0, 7);
+  // החודש הקודם נגזר מהחודש הנוכחי בשעון ישראל (ולא משעון המכשיר) — כך שגם בנסיעה לסין הוא נכון
+  const [curYear, curMonth] = currentMonthStr.split('-').map(Number);
+  const lastMonthStr = curMonth === 1 ? `${curYear - 1}-12` : `${curYear}-${String(curMonth - 1).padStart(2, '0')}`;
+  const israelMonthIdx = curMonth - 1; // אינדקס החודש הנוכחי (0-11) בשעון ישראל
 
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -2423,8 +2433,8 @@ export default function App() {
 
     // --- Finance Year Aggregation Setup ---
     const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } }));
-    const currentYear = today.getFullYear();
-    const currentMonthNum = today.getMonth() + 1;
+    const currentYear = curYear; // שנה וחודש נוכחיים בשעון ישראל
+    const currentMonthNum = curMonth;
 
     const enrichedItems = items.map(item => {
       const sStat = shipmentStats[item.shipmentId];
@@ -3530,6 +3540,8 @@ export default function App() {
           addOnCost: Number(data.addOnCost) || 0,
           campaignId: data.campaignId || '',
           customerId: data.customerId || '',
+          // מכירה מהירה לא עוברת בהובלה — שדות מסירה ישנים מהיסטוריה של היחידה מתאפסים
+          awaitingDelivery: false, warrantyStartDate: null,
           updatedAt: new Date().toISOString()
         };
         await updateDoc(doc(db, 'crm_items', availableItem.id), updatePayload);
@@ -3554,8 +3566,9 @@ export default function App() {
         // יחידה שנמכרה דרך הצעת מחיר, או שכבר נמסרה ללקוח, לא מוחזרת למחסן מכאן — אחרת עוקפים את
         // בדיקות ביטול האישור (הובלה שנמסרה, תעודת משלוח ממוספרת) והיחידה נשארת "מכורה" בהצעה.
         if (wasJustSoldAndNowNot) {
-          const linkedQuote = quotes.find((q: any) => q.status === 'approved' && Array.isArray(q.approvedItemIds) && q.approvedItemIds.includes(data.id));
-          const linkedDelivery = customerDeliveries.find((d: any) => Array.isArray(d.itemIds) && d.itemIds.includes(data.id) && (d.deliveryStatus === 'delivered' || Number(d.deliveryNoteNumber) > 0));
+          // רק קישור ששייך ללקוח הנוכחי של היחידה (נתונים ישנים: יחידה שהוחזרה ונמכרה שוב ללקוח אחר)
+          const linkedQuote = quotes.find((q: any) => q.status === 'approved' && q.customerId === originalItem.customerId && Array.isArray(q.approvedItemIds) && q.approvedItemIds.includes(data.id));
+          const linkedDelivery = customerDeliveries.find((d: any) => d.customerId === originalItem.customerId && Array.isArray(d.itemIds) && d.itemIds.includes(data.id) && (d.deliveryStatus === 'delivered' || Number(d.deliveryNoteNumber) > 0));
           if (linkedQuote) {
             const cust = customers.find((c: any) => c.id === linkedQuote.customerId);
             const err: any = new Error(`היחידה נמכרה דרך הצעת מחיר ל${cust?.businessName || cust?.contactName || 'לקוח'}, ולכן לא ניתן להחזיר אותה למחסן מכאן.\nכדי לבטל את המכירה — בטל את אישור ההצעה בטאב הצעות המחיר (שם גם נבדק אם ההזמנה כבר נמסרה).`);
@@ -4114,6 +4127,8 @@ export default function App() {
               return img; // already URL or already compressed
             })
           );
+          // מוצר שהתמונות שלו לא השתנו חוזר כמו שהוא — אחרת הוא נראה "השתנה" והשמירה דורסת מוצרים (CP-4)
+          if (safeImgs.every((img: string, j: number) => img === pr.images?.[j])) return pr;
           return { ...pr, images: safeImgs };
         })
       );
@@ -5885,9 +5900,9 @@ export default function App() {
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
                 <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Wallet className="w-3.5 h-3.5 text-red-500"/> הוצאות חודש נוכחי</p>
-                <p className="text-2xl font-black text-red-600">₪{Math.round(calculatedData.monthlyFinance[today.getMonth()]?.expense || 0).toLocaleString()}</p>
-                <p className={`text-xs mt-0.5 font-bold ${(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[today.getMonth()]?.expense||0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  רווח: ₪{Math.round(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[today.getMonth()]?.expense||0)).toLocaleString()}
+                <p className="text-2xl font-black text-red-600">₪{Math.round(calculatedData.monthlyFinance[israelMonthIdx]?.expense || 0).toLocaleString()}</p>
+                <p className={`text-xs mt-0.5 font-bold ${(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[israelMonthIdx]?.expense||0)) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  רווח: ₪{Math.round(calculatedData.currentMonthIncome - (calculatedData.monthlyFinance[israelMonthIdx]?.expense||0)).toLocaleString()}
                 </p>
               </div>
             </div>
