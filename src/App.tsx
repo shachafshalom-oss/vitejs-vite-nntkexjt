@@ -982,6 +982,14 @@ const resolveModelId = (entry: any, models: any): string =>
 
 // הפרדיקט המרכזי: האם שתי רשומות מתייחסות לאותו דגם?
 // עובד גם כששני הצדדים במצבי מיגרציה שונים (לאחד יש id ולשני אין).
+// =========================================================================
+// תאריך עסקי = תאריך בשעון ישראל. לא UTC (בין 00:00 ל-03:00 UTC עוד "אתמול" — מכירה בלילה
+// של ה-1 לחודש נספרה בחודש הקודם), ולא שעון המכשיר (למשל בנסיעה לסין).
+// =========================================================================
+const ISRAEL_DATE_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
+const israelDateStr = (d: Date | string | number = new Date()): string => ISRAEL_DATE_FMT.format(new Date(d));
+const israelToday = (): string => israelDateStr(new Date());
+
 // מפתח דגם לשורות משלוח: לפי מזהה קבוע, ובנפילה-לאחור לפי שם (דגם יתום / נתון ישן).
 const shipmentLineKey = (entry: any, models: any): string => {
   const id = resolveModelId(entry, models);
@@ -1628,7 +1636,7 @@ export default function App() {
   const [isCustomProjectModalOpen, setIsCustomProjectModalOpen] = useState(false);
   const [customProjectView, setCustomProjectView] = useState<any>(null); // project being viewed
   const [customProjectForm, setCustomProjectForm] = useState<any>({
-    name: '', clientName: '', date: new Date().toISOString().split('T')[0], status: 'preparation',
+    name: '', clientName: '', date: israelToday(), status: 'preparation',
     products: [],
     params: { exchangeRate: 3, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 },
     marginPercent: 30,
@@ -1701,7 +1709,7 @@ export default function App() {
 
   // Local Stock UI States
   const [isLocalStockModalOpen, setIsLocalStockModalOpen] = useState(false);
-  const [localStockForm, setLocalStockForm] = useState<any>({ type: 'manual', supplierId: '', lines: [{ model: '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+  const [localStockForm, setLocalStockForm] = useState<any>({ type: 'manual', supplierId: '', lines: [{ model: '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: israelToday(), notes: '' });
 
   // Supplier UI States
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -1757,7 +1765,7 @@ export default function App() {
   const [financeYear, setFinanceYear] = useState<number>(new Date().getFullYear());
   const [financeMonth, setFinanceMonth] = useState<number>(new Date().getMonth() + 1);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
-  const [expenseData, setExpenseData] = useState<any>({ title: '', amount: 0, type: 'variable', startDate: new Date().toISOString().split('T')[0], installments: 1 });
+  const [expenseData, setExpenseData] = useState<any>({ title: '', amount: 0, type: 'variable', startDate: israelToday(), installments: 1 });
 
   // Quote States
   const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
@@ -2078,9 +2086,7 @@ export default function App() {
 
   // --- Date Calculations ---
   // פונקציית עזר לשמירה על שעון מקומי מדויק (מונעת באגים של UTC בישראל)
-  const getLocalYYYYMMDD = (d: Date) => {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
+  const getLocalYYYYMMDD = (d: Date) => israelDateStr(d);
 
   const today = new Date();
   const todayStr = getLocalYYYYMMDD(today);
@@ -3360,7 +3366,7 @@ export default function App() {
 
   const handleShipmentStatusSelect = (shipment: any, newStatus: string) => {
     if (newStatus === 'in_warehouse') {
-      setArrivalPrompt({ isOpen: true, shipment, date: shipment.arrivalDate || new Date().toISOString().split('T')[0] });
+      setArrivalPrompt({ isOpen: true, shipment, date: shipment.arrivalDate || israelToday() });
     } else {
       if (window.confirm(`לעבור לסטטוס "${SHIPMENT_STATUS_MAP[newStatus]}"?`)) confirmShipmentStatusUpdate(shipment, newStatus, null);
     }
@@ -3515,7 +3521,7 @@ export default function App() {
         
         const updatePayload = {
           status: 'sold',
-          saleDate: data.saleDate || new Date().toISOString().split('T')[0],
+          saleDate: data.saleDate || israelToday(),
           warrantyMonths: Number(data.warrantyMonths) || 0,
           salePrice: Number(data.salePrice) || 0,
           discountAmount: Number(data.discount) || 0,
@@ -3545,7 +3551,7 @@ export default function App() {
         const originalItem = items.find(i => i.id === data.id);
         const wasJustSoldAndNowNot = originalItem && originalItem.status === 'sold' && data.status !== 'sold';
 
-        if (data.status === 'sold' && !data.saleDate) data.saleDate = new Date().toISOString().split('T')[0];
+        if (data.status === 'sold' && !data.saleDate) data.saleDate = israelToday();
         // ביטול מכירה מנקה גם תוספות והנחה — אחרת הן נגררות למכירה הבאה של היחידה (OPS-2)
         if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; }
         await updateDoc(doc(db, 'crm_items', data.id), data);
@@ -3844,7 +3850,7 @@ export default function App() {
       const data = { ...expenseData, createdAt: new Date().toISOString() };
       await addDoc(collection(db, 'crm_expenses'), data);
       setIsExpenseModalOpen(false);
-      setExpenseData({ title: '', amount: 0, type: 'variable', startDate: new Date().toISOString().split('T')[0], installments: 1 });
+      setExpenseData({ title: '', amount: 0, type: 'variable', startDate: israelToday(), installments: 1 });
     } catch (err) { alert("שגיאה בשמירת הוצאה"); }
     setIsSaving(false);
   };
@@ -4209,7 +4215,7 @@ export default function App() {
       }
 
       setIsLocalStockModalOpen(false);
-      setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+      setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: israelToday(), notes: '' });
       alert(`✓ מלאי מקומי נוסף בהצלחה! נוצרו ${form.lines.reduce((s: number, l: any) => s + Number(l.qty), 0)} פריטים.`);
     } catch (err: any) { alert('שגיאה בהוספת מלאי מקומי: ' + err.message); }
     setIsSaving(false);
@@ -4490,11 +4496,7 @@ export default function App() {
     const keySecret = settings?.morningApiKeySecret;
     if (!keyId || !keySecret) return { url: null, error: 'אין מפתחות API של Morning מוגדרים בהגדרות.' };
     if (!income || income.length === 0) return { url: null, error: 'אין שורות לשידור — המסמך ריק.' };
-    const today = new Date();
-    const dd = String(today.getDate()).padStart(2,'0');
-    const mm = String(today.getMonth()+1).padStart(2,'0');
-    const yyyy = today.getFullYear();
-    const dateStr = `${yyyy}-${mm}-${dd}`; // Morning מצפה לתאריך בפורמט ISO (YYYY-MM-DD), לא DD/MM/YYYY כמו ב-Finbot
+    const dateStr = israelToday(); // Morning מצפה לתאריך בפורמט ISO (YYYY-MM-DD), לא DD/MM/YYYY כמו ב-Finbot
 
     const taxRaw = (customer?.hp || '').toString().replace(/\D/g, '').slice(0, 9);
     const emails = customer?.email ? [String(customer.email).slice(0, 50)] : [];
@@ -5042,7 +5044,7 @@ export default function App() {
     if (!window.confirm(`לסמן שההזמנה של ${delivery.customerName || 'הלקוח'} ${actionLabel}?\nפעולה זו תתחיל את ספירת האחריות על כל הפריטים בהזמנה.`)) return;
     setIsSaving(true);
     try {
-      const arrivalDate = new Date().toISOString().split('T')[0];
+      const arrivalDate = israelToday();
       const itemIds: string[] = Array.isArray(delivery.itemIds) ? delivery.itemIds : [];
       await Promise.all(itemIds.map((itemId: string) =>
         updateDoc(doc(db, 'crm_items', itemId), {
@@ -5137,7 +5139,7 @@ export default function App() {
   const backfillAsDelivered = async (quote: any) => {
     const itemIds: string[] = Array.isArray(quote.approvedItemIds) ? quote.approvedItemIds : [];
     const relatedItems = items.filter((i: any) => itemIds.includes(i.id));
-    const historicalDate = relatedItems.find((i: any) => i.saleDate)?.saleDate || quote.updatedAt?.split('T')[0] || quote.createdAt?.split('T')[0];
+    const historicalDate = relatedItems.find((i: any) => i.saleDate)?.saleDate || (quote.updatedAt ? israelDateStr(quote.updatedAt) : '') || (quote.createdAt ? israelDateStr(quote.createdAt) : '');
     if (!historicalDate) { alert('לא נמצא תאריך מכירה לפריטים — סמן ידנית או פנה אליי.'); return; }
     if (!window.confirm(`לסמן כנמסרה בתאריך ${new Date(historicalDate).toLocaleDateString('he-IL')}?\nזהו תאריך המכירה המקורי — האחריות תיספר ממנו, לא מהיום.`)) return;
     setIsSaving(true);
@@ -6607,7 +6609,7 @@ export default function App() {
               <div className="flex gap-2">
                 <button 
                   onClick={() => { 
-                    setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+                    setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: israelToday(), notes: '' });
                     setIsLocalStockModalOpen(true); 
                   }} 
                   className="bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-700 flex items-center gap-2"
@@ -6616,7 +6618,7 @@ export default function App() {
                 </button>
                 <button data-testid="shipment-new" 
                   onClick={() => { 
-                    setEditingData({ name: '', date: new Date().toISOString().split('T')[0], status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
+                    setEditingData({ name: '', date: israelToday(), status: 'ordered', exchangeRate: 3.7, shippingCostUSD: 0, shippingCostILS: 0, totalCbm: 0, lines: [{model: modelsList[0] || '', qty: 1, unitCostUSD: 0}] }); 
                     setIsShipmentModalOpen(true); 
                   }} 
                   className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
@@ -7222,7 +7224,7 @@ export default function App() {
                 <h2 className="text-2xl font-bold text-slate-800">פרויקטים קסטום</h2>
                 <p className="text-sm text-slate-400 mt-0.5">חישוב עלויות פנימי לפרויקטים מיוחדים</p>
               </div>
-              <button data-testid="cp-new" onClick={() => { setCustomProjectForm({ name: '', clientName: '', customerId: '', date: new Date().toISOString().split('T')[0], status: 'preparation', products: [], params: { exchangeRate: 3, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 }, marginPercent: 30, notes: '' }); setIsCustomProjectModalOpen(true); }}
+              <button data-testid="cp-new" onClick={() => { setCustomProjectForm({ name: '', clientName: '', customerId: '', date: israelToday(), status: 'preparation', products: [], params: { exchangeRate: 3, containerShippingUSD: 0, customsPercent: 12, portFeesILS: 0, localTransportILS: 0, installationILS: 0 }, marginPercent: 30, notes: '' }); setIsCustomProjectModalOpen(true); }}
                 className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-2 shadow-sm">
                 <Plus className="w-4 h-4"/> פרויקט חדש
               </button>
@@ -7832,7 +7834,7 @@ export default function App() {
               <h2 className="text-2xl font-bold text-slate-800">מעקב קמפיינים שיווקיים</h2>
               <button 
                 onClick={() => { 
-                  setEditingData({ name: '', totalCost: 0, startDate: new Date().toISOString().split('T')[0], endDate: '' }); 
+                  setEditingData({ name: '', totalCost: 0, startDate: israelToday(), endDate: '' }); 
                   setIsCampaignModalOpen(true); 
                 }} 
                 className="bg-[#7B1315] text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
@@ -7844,7 +7846,7 @@ export default function App() {
               {campaigns.map(c => {
                 const stat = calculatedData.campaignStats[c.id];
                 const costPerItem = (stat && stat.itemCount > 0) ? stat.cost / stat.itemCount : 0;
-                const isActive = (!c.startDate || c.startDate <= new Date().toISOString().split('T')[0]) && (!c.endDate || c.endDate >= new Date().toISOString().split('T')[0]);
+                const isActive = (!c.startDate || c.startDate <= israelToday()) && (!c.endDate || c.endDate >= israelToday());
                 return (
                   <div key={c.id} className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
                     <div className="flex justify-between items-start mb-4">
@@ -8108,7 +8110,7 @@ export default function App() {
                icon={Package} iconColor="text-green-600" label="הוספת מלאי מקומי"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: new Date().toISOString().split('T')[0], notes: '' });
+                setLocalStockForm({ type: 'manual', supplierId: '', lines: [{ model: modelsList[0] || '', qty: 1, unitCost: 0 }], currency: 'ILS', exchangeRate: 3.7, includesVat: false, date: israelToday(), notes: '' });
                 setIsLocalStockModalOpen(true); 
               }} 
             />
@@ -8116,7 +8118,7 @@ export default function App() {
                icon={ShoppingCart} iconColor="text-green-600" label="מכירה חדשה (עדכון מלאי)" testId="fab-global-sale"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: new Date().toISOString().split('T')[0], warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', modelId: getModelIdByName(settings?.models, calculatedData.availableModelsInStock[0] || ''), salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
+                setEditingData({ isGlobalSale: true, status: 'sold', saleDate: israelToday(), warrantyMonths: 0, model: calculatedData.availableModelsInStock[0] || '', modelId: getModelIdByName(settings?.models, calculatedData.availableModelsInStock[0] || ''), salePrice: Number(settings?.models?.[calculatedData.availableModelsInStock[0]]?.listPrice) || 0, discount: 0, addOnPrice: 0, repairCost: 0, addOnCost: 0, campaignId: '', customerId: '' }); 
                 setIsItemModalOpen(true); 
               }} 
             />
@@ -8140,7 +8142,7 @@ export default function App() {
                icon={Receipt} iconColor="text-red-500" label="הוספת הוצאה חדשה"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setExpenseData({ title: '', amount: 0, type: 'variable', startDate: new Date().toISOString().split('T')[0], installments: 1 }); 
+                setExpenseData({ title: '', amount: 0, type: 'variable', startDate: israelToday(), installments: 1 }); 
                 setIsExpenseModalOpen(true); 
               }} 
             />
@@ -8154,7 +8156,7 @@ export default function App() {
                icon={Megaphone} iconColor="text-orange-600" label="קמפיין חדש"
                onClick={() => { 
                 setIsFabOpen(false); 
-                setEditingData({ name: '', totalCost: 0, startDate: new Date().toISOString().split('T')[0], endDate: '' }); 
+                setEditingData({ name: '', totalCost: 0, startDate: israelToday(), endDate: '' }); 
                 setIsCampaignModalOpen(true); 
               }} 
             />
@@ -10011,7 +10013,7 @@ export default function App() {
             <div className="flex gap-2">
               <button data-testid="shipment-arrival-confirm" 
                 onClick={() => { 
-                  confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || new Date().toISOString().split('T')[0]); 
+                  confirmShipmentStatusUpdate(arrivalPrompt.shipment, 'in_warehouse', arrivalPrompt.date || israelToday()); 
                   setArrivalPrompt({ isOpen: false, shipment: null, date: '' }); 
                 }} 
                 className="bg-[#7B1315] text-white p-2 rounded flex-1"

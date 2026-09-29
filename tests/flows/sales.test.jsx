@@ -193,7 +193,7 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(Dd.deliveryStatus === 'delivered' && Dd.deliveredBy === SH, 'ההובלה לא סומנה כנמסרה');
   const item = T.docs('crm_items')[sold[0].id];
   T.check(item.awaitingDelivery === false && !!item.warrantyStartDate, 'האחריות לא התחילה במסירה');
-  T.knownBug('SALES-3', `תאריך תחילת אחריות נרשם לפי UTC — בין 00:00 ל-03:00 בלילה נרשם אתמול (צפוי ${ISRAEL_TODAY}, נרשם ${item.warrantyStartDate})`, item.warrantyStartDate === ISRAEL_TODAY);
+  T.check(item.warrantyStartDate === ISRAEL_TODAY, `SALES-3: תאריך תחילת אחריות נרשם לפי UTC — בין 00:00 ל-03:00 בלילה נרשם אתמול (צפוי ${ISRAEL_TODAY}, נרשם ${item.warrantyStartDate})`);
 
   // ───────────── 8. תרחישי קצה ─────────────
   T.describe('8. הצעה עם שתי שורות מאותו דגם כשיש רק יחידה אחת במלאי');

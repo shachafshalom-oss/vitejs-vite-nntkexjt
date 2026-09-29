@@ -215,14 +215,14 @@ async function openInventoryGroup(model) {
   await T.flush(10);
   const nightArrival = T.docs('crm_shipments').S_NIGHT.arrivalDate;
   T.check(T.docs('crm_items').NX.status === 'in_warehouse', 'פריט משלוח הלילה לא נקלט');
-  T.knownBug('DATE-1', `תאריך הגעה ברירת מחדל נקבע לפי UTC — בלילה נרשם אתמול (צפוי ${NIGHT_TODAY}, בחלון ${defaultArrival}, נשמר ${nightArrival})`, nightArrival === NIGHT_TODAY);
+  T.check(nightArrival === NIGHT_TODAY, `DATE-1: תאריך הגעה ברירת מחדל נקבע לפי UTC — בלילה נרשם אתמול (צפוי ${NIGHT_TODAY}, בחלון ${defaultArrival}, נשמר ${nightArrival})`);
   await T.click(T.byId('fab-toggle'));
   await T.click(T.byId('fab-global-sale'));
   await T.select(T.fieldByLabel('בחר דגם למכירה', itemModal()), 'Night');
   await T.click(T.byId('item-save'));
   const NX = T.docs('crm_items').NX;
   T.check(NX.status === 'sold', 'מכירת הלילה לא בוצעה');
-  T.knownBug('DATE-2', `תאריך מכירה במכירה מהירה נקבע לפי UTC — בלילה נרשם אתמול, והמכירה נספרת בדוחות ביום (ולעיתים בחודש) הקודם (צפוי ${NIGHT_TODAY}, נשמר ${NX.saleDate})`, NX.saleDate === NIGHT_TODAY);
+  T.check(NX.saleDate === NIGHT_TODAY, `DATE-2: תאריך מכירה במכירה מהירה נקבע לפי UTC — בלילה נרשם אתמול, והמכירה נספרת בדוחות ביום (ולעיתים בחודש) הקודם (צפוי ${NIGHT_TODAY}, נשמר ${NX.saleDate})`);
 
   // ───────────── 9. מיזוג דגמים שנמצאים באותו משלוח ─────────────
   T.describe('9. מיזוג דגמים כששניהם באותו משלוח — שורה אחת, ושמירה לא מוחקת יחידות');
