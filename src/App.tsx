@@ -1630,6 +1630,31 @@ export default function App() {
   const [autosaveStatus, setAutosaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({}); // debounce key -> status
   const autosaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  // העותקים המקומיים של מוצרי/מחירי פרויקט קסטום (inlineProductEdits / inlineSalePrices) משקפים
+  // עריכה שעוד לא נשמרה. כשאין לפרויקט שמירה ממתינה — הם מסתנכרנים לשרת. בלי זה:
+  // אחרי שמירה מחלון העריכה (או ממכשיר אחר) הדוח הציג נתונים ישנים, ועריכה הבאה החזירה אותם (CP-6),
+  // ומחירים ידניים ישנים יכלו להגיע ל-PDF/Morning.
+  useEffect(() => {
+    const hasPending = (id: string) => ['params', 'products', 'saleprices', 'delivery'].some(k => autosaveTimers.current[`${k}:${id}`]);
+    setInlineProductEdits(prev => {
+      const ids = Object.keys(prev).filter(id => !hasPending(id));
+      if (!ids.length) return prev;
+      const next = { ...prev };
+      ids.forEach(id => { delete next[id]; });
+      return next;
+    });
+    setInlineSalePrices(prev => {
+      let changed = false;
+      const next = { ...prev };
+      Object.keys(prev).forEach(id => {
+        if (hasPending(id)) return;
+        const server = customProjects.find((p: any) => p.id === id)?.salePriceOverrides || {};
+        if (JSON.stringify(prev[id]) !== JSON.stringify(server)) { next[id] = { ...server }; changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [customProjects]);
+
   // מחזיק תמונות דגמים ישנות שנמצאו "תקועות" בתוך general_settings (המבנה הישן), עד שייזרעו ל-crm_model_images.
   // מאפשר מיגרציה חד-פעמית ובטוחה: זריעה תחילה ל-collection החדש, ורק אחר כך ניקוי general_settings בכתיבה הבאה.
   const pendingInlineModelImagesRef = useRef<Record<string, { itemImgUrl?: string; blueprintUrl?: string }>>({});
@@ -4049,6 +4074,7 @@ export default function App() {
     if (autosaveTimers.current[statusKey]) clearTimeout(autosaveTimers.current[statusKey]);
     setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saving' }));
     autosaveTimers.current[statusKey] = setTimeout(async () => {
+      delete autosaveTimers.current[statusKey]; // השמירה כבר לא "ממתינה" — מאפשר סנכרון לשרת אחריה
       try {
         await updateProjectField(projId, fields);
         setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saved' }));
@@ -4487,6 +4513,10 @@ export default function App() {
   // סדר עדיפויות זהה לזה של ייצוא ה-PDF וה-Excel, כדי שהסכום בדרישת התשלום
   // יהיה בדיוק הסכום שהלקוח ראה בהצעה: 1) override שמור ב-Firestore
   // 2) override שנערך במסך ועדיין לא נשמר 3) חישוב לפי המרווח.
+  // המחירים הידניים בתוקף לפרויקט: העותק המקומי (כולל עריכה שעוד לא נשמרה) אם קיים, אחרת השמור.
+  // העותק המקומי שלם — לא משלימים ממנו מפתחות מהשמור (אחרי מחיקת שורה השמור עוד לא מוזז).
+  const effectiveSaleOverrides = (proj: any): Record<string, number> => inlineSalePrices[proj.id] ?? proj.salePriceOverrides ?? {};
+
   const buildProjectSaleLines = (proj: any, paramsOverride?: any, productsOverride?: any[]) => {
     const params = paramsOverride || proj.params || {};
     const products = productsOverride || inlineProductEdits[proj.id] || proj.products || [];
@@ -4494,10 +4524,11 @@ export default function App() {
 
     const lines = products.map((pr: any, i: number) => {
       let unitPrice: number;
-      if (proj.salePriceOverrides?.[`${i}`] !== undefined) {
-        unitPrice = Number(proj.salePriceOverrides[`${i}`]);
-      } else if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
-        unitPrice = Number(inlineSalePrices[proj.id][`${i}`]);
+      // אותו סדר עדיפויות כמו המסך: מחיר שנערך כאן (כולל כזה שעוד לא נשמר) → מחיר שמור → חישוב.
+      // העותק המקומי מסונכרן לשרת כשאין שמירה ממתינה, כך שהוא תמיד הגרסה העדכנית ביותר.
+      const overrides = effectiveSaleOverrides(proj);
+      if (overrides[`${i}`] !== undefined) {
+        unitPrice = Number(overrides[`${i}`]);
       } else {
         unitPrice = projectUnitPricing(pr, params, totals, proj).calcSaleUnit;
       }
@@ -4790,6 +4821,12 @@ export default function App() {
     // רק שולח קריאה ל-Morning (עם קידומת [TEST] לשם הלקוח) ומעדכן את סטטוס ההצעה עצמה.
     // מקדים במפורש את נתיב 1/2 כדי שלעולם לא ייכנס בטעות ללוגיקת האישור/ביטול המלאה.
     if (newStatus === 'approved_test') {
+      // הצעה שכבר אושרה עם גריעת מלאי לא עוברת ל"בדיקה" — אחרת אישור חוזר גורע יחידות נוספות
+      // ומנתק את היחידות של האישור הראשון מההצעה.
+      if (quote.status === 'approved') {
+        alert('ההצעה כבר אושרה עם גריעת מלאי, ולכן אי אפשר לסמן אותה כ"אישור בדיקה".\nכדי לבדוק שידור ל-Morning — בטל קודם את האישור.');
+        return;
+      }
       setIsSaving(true);
       try {
         const testItems = quote.items.map((item: any) => ({
@@ -4861,36 +4898,39 @@ export default function App() {
 
     // נתיב 2: Reverse — מ-approved (עם גריעה) לכל סטטוס אחר
     if (quote.status === 'approved') {
-      // הזמנה שכבר נמסרה, או שהונפקה לה תעודת משלוח ממוספרת, לא מבטלים מכאן (SALES-6):
-      // היחידות נמצאות אצל הלקוח (לא חוזרות למלאי), ותעודה ממוספרת היא מסמך רשמי שלא נמחק.
-      // הבדיקה מול השרת ולא מול המסך — ייתכן שדניאל סימן מסירה לפני רגע ממכשיר אחר.
-      let relatedDeliveries: any[] = [];
-      try {
-        const delSnap = await getDocs(query(collection(db, 'crm_customer_deliveries'), where('quoteId', '==', quote.id)));
-        relatedDeliveries = delSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
-      } catch (err) {
-        alert('לא ניתן לבדוק את מצב ההובלה של ההזמנה כרגע. הביטול לא בוצע — נסה שוב.');
-        return;
-      }
-      const delivered = relatedDeliveries.find(d => d.deliveryStatus === 'delivered');
-      if (delivered) {
-        alert(`לא ניתן לבטל את האישור: ההזמנה כבר נמסרה ללקוח${delivered.deliveredAt ? ` (${new Date(delivered.deliveredAt).toLocaleDateString('he-IL')})` : ''}.\n` +
-          'היחידות נמצאות אצל הלקוח ולכן לא יוחזרו למלאי, ותעודת המשלוח נשמרת. החזרת מוצר מטופלת ידנית.');
-        return;
-      }
-      const noted = relatedDeliveries.find(d => Number(d.deliveryNoteNumber) > 0);
-      if (noted) {
-        alert(`לא ניתן לבטל את האישור: כבר הונפקה להזמנה תעודת משלוח מספר ${formatDeliveryNoteNumber(noted.deliveryNoteNumber)}.\n` +
-          'תעודה ממוספרת היא מסמך רשמי ולא נמחקת. אם ההזמנה בוטלה בפועל — יש לטפל בה ידנית.');
-        return;
-      }
       if (!window.confirm(`ביטול האישור יחזיר את כל הפריטים למלאי והלקוח יחזור לסטטוסו הקודם.\nהאם להמשיך?`)) return;
       setIsSaving(true);
       try {
-        const approvedItemIds: string[] = Array.isArray(quote.approvedItemIds) ? quote.approvedItemIds : [];
-        if (approvedItemIds.length > 0) {
-          await Promise.all(approvedItemIds.map((itemId: string) =>
-            updateDoc(doc(db, 'crm_items', itemId), {
+        // הזמנה שכבר נמסרה, או שהונפקה לה תעודת משלוח ממוספרת, לא מבטלים מכאן (SALES-6):
+        // היחידות נמצאות אצל הלקוח (לא חוזרות למלאי), ותעודה ממוספרת היא מסמך רשמי שלא נמחק.
+        // הבדיקה נעשית *אחרי* שאלת האישור ובתוך טרנזקציה — כך גם מסירה שסומנה ממכשיר אחר
+        // בזמן שהחלון היה פתוח נתפסת, והביטול כולו נשמר יחד או שלא נשמר כלום.
+        const delSnap = await getDocs(query(collection(db, 'crm_customer_deliveries'), where('quoteId', '==', quote.id)));
+        const deliveryIds: string[] = delSnap.docs.map((d: any) => d.id);
+        const quoteRef = doc(db, 'crm_quotes', quote.id);
+        const nowIso = new Date().toISOString();
+        const outcome: any = await runTransaction(db, async (tx) => {
+          const quoteSnap = await tx.get(quoteRef);
+          const delSnaps = await Promise.all(deliveryIds.map(id => tx.get(doc(db, 'crm_customer_deliveries', id))));
+          const q: any = quoteSnap.exists() ? quoteSnap.data() : null;
+          if (!q || q.status !== 'approved') return { kind: 'changed' };
+          const itemIds: string[] = Array.isArray(q.approvedItemIds) ? q.approvedItemIds : [];
+          const itemSnaps = await Promise.all(itemIds.map(id => tx.get(doc(db, 'crm_items', id))));
+          const customerRef = q.customerId ? doc(db, 'crm_customers', q.customerId) : null;
+          const customerSnap = customerRef ? await tx.get(customerRef) : null;
+
+          const dels = delSnaps.filter(ds => ds.exists()).map(ds => ({ id: ds.id, ...(ds.data() as any) }));
+          const delivered = dels.find(d => d.deliveryStatus === 'delivered');
+          if (delivered) return { kind: 'delivered', delivery: delivered };
+          const noted = dels.find(d => Number(d.deliveryNoteNumber) > 0);
+          if (noted) return { kind: 'noted', delivery: noted };
+
+          // מחזירים למלאי רק יחידה שעדיין מכורה ללקוח של ההצעה — יחידה שנמכרה בינתיים ללקוח אחר לא נוגעים בה
+          let skipped = 0;
+          itemSnaps.forEach(snap => {
+            const it: any = snap.exists() ? snap.data() : null;
+            if (!it || it.status !== 'sold' || it.customerId !== q.customerId) { skipped++; return; }
+            tx.update(doc(db, 'crm_items', snap.id), {
               status: 'in_warehouse',
               saleDate: null, warrantyMonths: 0, salePrice: 0,
               // גם ההנחה מהמכירה שבוטלה מתאפסת — אחרת היא נגררת למכירה הבאה של היחידה (SALES-7)
@@ -4898,28 +4938,33 @@ export default function App() {
               // ניקוי מצב ההובלה והאחריות — אחרת פריט שחזר למחסן היה נושא איתו
               // תאריך תחילת אחריות ממכירה שבוטלה.
               awaitingDelivery: false, warrantyStartDate: null,
-              updatedAt: new Date().toISOString()
-            })
-          ));
-        }
-        // מחיקת רשומת ההובלה שנפתחה באישור — אחרת נשארת "הובלת רפאים" בטאב ההובלות.
-        // (מגיעים לכאן רק כשההובלה לא נמסרה ולא הונפקה לה תעודה — נבדק למעלה)
-        await Promise.all(relatedDeliveries.map(d => deleteDoc(doc(db, 'crm_customer_deliveries', d.id))));
-        // החזרת סטטוס לקוח
-        if (quote.customerId) {
-          const prevStatus = quote.previousCustomerStatus || 'lead';
-          await updateDoc(doc(db, 'crm_customers', quote.customerId), {
-            status: prevStatus,
-            updatedAt: new Date().toISOString()
+              updatedAt: nowIso
+            });
           });
-        }
-        await updateDoc(doc(db, 'crm_quotes', quote.id), {
-          status: newStatus,
-          approvedItemIds: [],
-          updatedAt: new Date().toISOString()
+          // מחיקת רשומת ההובלה שנפתחה באישור — אחרת נשארת "הובלת רפאים" בטאב ההובלות.
+          dels.forEach(d => tx.delete(doc(db, 'crm_customer_deliveries', d.id)));
+          // החזרת סטטוס לקוח
+          if (customerRef && customerSnap?.exists()) {
+            tx.update(customerRef, { status: q.previousCustomerStatus || 'lead', updatedAt: nowIso });
+          }
+          tx.update(quoteRef, { status: newStatus, approvedItemIds: [], updatedAt: nowIso });
+          return { kind: 'ok', skipped };
         });
-        alert('הסטטוס עודכן. הפריטים הוחזרו למלאי והלקוח הוחזר לסטטוסו הקודם.');
-      } catch (err) { alert('שגיאה בביטול האישור.'); }
+
+        if (outcome.kind === 'delivered') {
+          const d = outcome.delivery;
+          alert(`לא ניתן לבטל את האישור: ההזמנה כבר נמסרה ללקוח${d.deliveredAt ? ` (${new Date(d.deliveredAt).toLocaleDateString('he-IL')})` : ''}.\n` +
+            'היחידות נמצאות אצל הלקוח ולכן לא יוחזרו למלאי, ותעודת המשלוח נשמרת. החזרת מוצר מטופלת ידנית.');
+        } else if (outcome.kind === 'noted') {
+          alert(`לא ניתן לבטל את האישור: כבר הונפקה להזמנה תעודת משלוח מספר ${formatDeliveryNoteNumber(outcome.delivery.deliveryNoteNumber)}.\n` +
+            'תעודה ממוספרת היא מסמך רשמי ולא נמחקת. אם ההזמנה בוטלה בפועל — יש לטפל בה ידנית.');
+        } else if (outcome.kind === 'changed') {
+          alert('ההצעה כבר לא במצב "אושרה" (ייתכן שעודכנה ממכשיר אחר). לא בוצע שינוי — רענן ובדוק.');
+        } else {
+          alert('הסטטוס עודכן. הפריטים הוחזרו למלאי והלקוח הוחזר לסטטוסו הקודם.' +
+            (outcome.skipped ? `\n\nשים לב: ${outcome.skipped} יחידות לא הוחזרו למלאי כי הן כבר לא מכורות ללקוח הזה.` : ''));
+        }
+      } catch (err) { alert('שגיאה בביטול האישור. לא בוצע שינוי — נסה שוב.'); }
       setIsSaving(false);
       return;
     }
@@ -5264,7 +5309,10 @@ export default function App() {
             throw new Error('המלאי השתנה בינתיים (כנראה נמכרה יחידה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
           }
           if (!quoteSnap.exists()) throw new Error('הצעת המחיר לא נמצאה (ייתכן שנמחקה). האישור לא נשמר.');
-          if ((quoteSnap.data() as any)?.status === 'approved') throw new Error('הצעת המחיר כבר אושרה. האישור לא נשמר פעם נוספת.');
+          const serverQuote: any = quoteSnap.data() || {};
+          if (serverQuote.status === 'approved' || (Array.isArray(serverQuote.approvedItemIds) && serverQuote.approvedItemIds.length > 0)) {
+            throw new Error('הצעת המחיר כבר אושרה (יש לה יחידות שנגרעו). האישור לא נשמר פעם נוספת.');
+          }
           if (!customerSnap.exists()) throw new Error('הלקוח לא נמצא (ייתכן שנמחק או מוזג). האישור לא נשמר.');
           const serverCustomer: any = customerSnap.data() || {};
           // שמירת סטטוס הלקוח לפני האישור — לפי השרת, לא לפי המסך
@@ -7454,7 +7502,7 @@ export default function App() {
                                   const updated = base.filter((_: any, idx: number) => idx !== i);
                                   // המחירים הידניים זזים יחד עם המוצרים, ונשמרים באותה כתיבה — כך הם לא יכולים
                                   // להיות לא מסונכרנים. שמירה ממתינה של מחירים (לפני המחיקה) מבוטלת כי היא כבר לא נכונה.
-                                  const shiftedOverrides = shiftSaleOverridesAfterDelete(inlineSalePrices[proj.id] || proj.salePriceOverrides || {}, i);
+                                  const shiftedOverrides = shiftSaleOverridesAfterDelete(effectiveSaleOverrides(proj), i);
                                   if (autosaveTimers.current[salePricesStatusKey]) {
                                     clearTimeout(autosaveTimers.current[salePricesStatusKey]);
                                     delete autosaveTimers.current[salePricesStatusKey];
@@ -7535,17 +7583,17 @@ export default function App() {
                                         aria-label={`מחיר מכירה ליחידה עבור ${pr.itemHe}`}
                                         data-testid={`cp-row-sale-${i}`}
                                         className="w-24 text-xs font-black text-center text-green-700 bg-green-50 border border-transparent hover:border-green-300 focus:border-green-500 focus:bg-white rounded-lg px-1 py-0.5 outline-none transition-colors"
-                                        value={inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : Math.round(salePricePerUnit)}
+                                        value={effectiveSaleOverrides(proj)[`${i}`] !== undefined ? effectiveSaleOverrides(proj)[`${i}`] : Math.round(salePricePerUnit)}
                                         onChange={e => {
                                           const newVal = Number(e.target.value);
-                                          const updatedOverrides = { ...(inlineSalePrices[proj.id] || proj.salePriceOverrides || {}), [`${i}`]: newVal };
+                                          const updatedOverrides = { ...effectiveSaleOverrides(proj), [`${i}`]: newVal };
                                           setInlineSalePrices(prev => ({ ...prev, [proj.id]: updatedOverrides }));
                                           debouncedSaveProjectField(proj.id, salePricesStatusKey, { salePriceOverrides: updatedOverrides });
                                         }}
                                         title="עריכת מחיר מכירה — נשמר אוטומטית לפרויקט"
                                       />
                                       <div className="text-[11px] text-green-500 mt-0.5">
-                                        ₪{Math.round((inlineSalePrices[proj.id]?.[`${i}`] !== undefined ? inlineSalePrices[proj.id][`${i}`] : salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
+                                        ₪{Math.round((effectiveSaleOverrides(proj)[`${i}`] !== undefined ? effectiveSaleOverrides(proj)[`${i}`] : salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
                                       </div>
                                     </td>
                                     <td className="px-3 py-2 text-center">
@@ -7580,8 +7628,8 @@ export default function App() {
                                   {(() => {
                                     const products = effectiveProducts;
                                     const totalSale = products.reduce((sum: number, pr: any, i: number) => {
-                                      const unitPrice = inlineSalePrices[proj.id]?.[`${i}`] !== undefined
-                                        ? inlineSalePrices[proj.id][`${i}`]
+                                      const unitPrice = effectiveSaleOverrides(proj)[`${i}`] !== undefined
+                                        ? effectiveSaleOverrides(proj)[`${i}`]
                                         : projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                                       return sum + unitPrice * Number(pr.qty);
                                     }, 0);
@@ -7610,11 +7658,9 @@ export default function App() {
                               const products = effectiveProducts;
                               const initPrices: Record<string, number> = {};
                               products.forEach((pr: any, i: number) => {
-                                // Priority: 1) saved in Firestore, 2) in-memory override, 3) calc from margin
-                                if (proj.salePriceOverrides?.[`${i}`] !== undefined) {
-                                  initPrices[`${i}`] = proj.salePriceOverrides[`${i}`];
-                                } else if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
-                                  initPrices[`${i}`] = inlineSalePrices[proj.id][`${i}`];
+                                // Priority (same as screen and Morning): 1) edited here, 2) saved, 3) calc from margin
+                                if (effectiveSaleOverrides(proj)[`${i}`] !== undefined) {
+                                  initPrices[`${i}`] = effectiveSaleOverrides(proj)[`${i}`];
                                 } else {
                                   initPrices[`${i}`] = projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                                 }
@@ -7640,11 +7686,9 @@ export default function App() {
                                 const { landedUnit, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj);
                                 const landedTotal = landedUnit * Number(pr.qty);
                                 // Use manually set sale price if exists (same priority as screen/PDF)
-                                const saleUnit = proj.salePriceOverrides?.[`${i}`] !== undefined
-                                  ? proj.salePriceOverrides[`${i}`]
-                                  : inlineSalePrices[proj.id]?.[`${i}`] !== undefined
-                                    ? inlineSalePrices[proj.id][`${i}`]
-                                    : calcSaleUnit;
+                                const saleUnit = effectiveSaleOverrides(proj)[`${i}`] !== undefined
+                                  ? effectiveSaleOverrides(proj)[`${i}`]
+                                  : calcSaleUnit;
                                 const saleTotal = saleUnit * Number(pr.qty);
                                 const sz2 = getProductSize(pr);
                                 return {
@@ -7676,8 +7720,8 @@ export default function App() {
                                 { 'פרמטר': 'התקנה (₪)', 'ערך': Math.round(totals.installationILS) },
                                 { 'פרמטר': '---', 'ערך': '---' },
                                 { 'פרמטר': 'עלות כוללת (₪)', 'ערך': Math.round(totals.totalCostILS) },
-                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:calcSaleUnit; return s+su*Number(pr.qty); }, 0)) },
-                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { landedUnit: lu, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:calcSaleUnit; return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=effectiveSaleOverrides(proj)[`${i}`]!==undefined?effectiveSaleOverrides(proj)[`${i}`]:calcSaleUnit; return s+su*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { landedUnit: lu, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=effectiveSaleOverrides(proj)[`${i}`]!==undefined?effectiveSaleOverrides(proj)[`${i}`]:calcSaleUnit; return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
                                 { 'פרמטר': 'סה"כ CBM', 'ערך': Number(totals.totalCBM.toFixed(3)) },
                                 { 'פרמטר': 'סה"כ יחידות', 'ערך': totals.totalQty },
                               ];

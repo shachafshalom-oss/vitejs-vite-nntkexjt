@@ -272,7 +272,8 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   const deliveryKept = T.docs('crm_customer_deliveries')[D.id];
   T.check(deliveryKept && deliveryKept.deliveryNoteNumber === 1 && deliveryKept.deliveryStatus === 'delivered', 'SALES-6: ההובלה/תעודת המשלוח הממוספרת נמחקה');
   T.check(leadDoc().status === 'active', 'SALES-6: הלקוח הוחזר לליד למרות שהביטול נחסם');
-  T.check(T.ui.alerts.slice(alertsBefore12).some(a => a.includes('כבר נמסרה')) && T.ui.confirms.length === confirmsBefore12, 'לא הוצגה הודעה ברורה שההזמנה נמסרה (או שנשאלה שאלת אישור מיותרת)');
+  // הבדיקה רצה אחרי שאלת האישור (בכוונה — כדי לתפוס גם מסירה שסומנה בזמן שהחלון פתוח)
+  T.check(T.ui.alerts.slice(alertsBefore12).some(a => a.includes('כבר נמסרה')) && T.ui.confirms.length === confirmsBefore12 + 1, 'לא הוצגה הודעה ברורה שההזמנה נמסרה');
   // תעודה הונפקה אבל ההזמנה עוד לא נמסרה (איסוף עצמי, תעודה 00002)
   alertsBefore12 = T.ui.alerts.length;
   await T.selectAction(T.byId(`quote-status-${q3.id}`), 'pending');
@@ -304,6 +305,19 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   const q5delivery = T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id)[0];
   T.check(q5delivery && JSON.stringify(q5delivery.itemIds) === JSON.stringify(q5ids), 'ההובלה לא נוצרה עם שתי היחידות');
   T.check(q5ids.some(id => Number(T.docs('crm_items')[id].discountAmount) === 300), 'ההנחה לא נרשמה על הפריט');
+  // "אישור בדיקה" על הצעה שכבר אושרה עם גריעה — נחסם (אחרת אישור חוזר גורע יחידות נוספות)
+  let alertsBefore13 = T.ui.alerts.length;
+  await T.selectAction(T.byId(`quote-status-${q5.id}`), 'approved_test');
+  T.check(T.docs('crm_quotes')[q5.id].status === 'approved' && T.ui.alerts.slice(alertsBefore13).some(a => a.includes('בדיקה')), 'הצעה שאושרה עם גריעה עברה ל"אישור בדיקה" — אישור חוזר יגרע יחידות פעמיים');
+  // דניאל מסמן מסירה בזמן שחלון "לבטל את האישור?" פתוח — הביטול חייב להיחסם
+  const q5DeliveryId = T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id)[0]?.id;
+  alertsBefore13 = T.ui.alerts.length;
+  T.answerConfirms(() => { T.api().updateDoc(T.api().doc(null, 'crm_customer_deliveries', q5DeliveryId), { deliveryStatus: 'delivered', deliveredAt: '2026-10-07T08:00:00.000Z' }); return true; });
+  await T.selectAction(T.byId(`quote-status-${q5.id}`), 'pending');
+  T.check(T.docs('crm_quotes')[q5.id].status === 'approved' && q5ids.every(id => T.docs('crm_items')[id].status === 'sold') && !!T.docs('crm_customer_deliveries')[q5DeliveryId], 'SALES-6: הזמנה שסומנה כנמסרה בזמן שחלון האישור היה פתוח — בכל זאת בוטלה');
+  T.check(T.ui.alerts.slice(alertsBefore13).some(a => a.includes('כבר נמסרה')), 'לא הוצגה הודעה שההזמנה נמסרה בינתיים');
+  await T.act(async () => { await T.api().updateDoc(T.api().doc(null, 'crm_customer_deliveries', q5DeliveryId), { deliveryStatus: 'awaiting', deliveredAt: null }); });
+  await T.flush(4);
   // ביטול לפני שהונפקה תעודה — מותר, וכל היחידות חוזרות נקיות למלאי
   T.answerConfirms(true);
   await T.selectAction(T.byId(`quote-status-${q5.id}`), 'pending');

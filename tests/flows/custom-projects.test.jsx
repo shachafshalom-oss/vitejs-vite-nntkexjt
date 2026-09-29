@@ -275,10 +275,21 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   // מחיר לכיור ומחיקת הדלפק מיד אחריו — לפני שהשמירה האוטומטית של המחיר רצה
   await T.type(T.byId('cp-row-sale-2'), 1500);  // כיור
   await T.click(T.byId('cp-row-delete-0'));     // מוחקים את הדלפק
-  await T.sleep(AUTOSAVE_WAIT);
-  T.check(P2().products.length === 2 && P2().products[0].id === 'X2', 'מחיקת שורה לא נשמרה');
   const afterDelete = [P2_PRODUCTS[1], P2_PRODUCTS[2]];
   const shelfCalc = expectUnitSale(P2_PARAMS, P2_PRODUCTS[1], afterDelete, 25);
+  // מיד אחרי המחיקה (לפני שהשמירה האוטומטית רצה): גם ה-PDF וגם Morning חייבים לראות את המחירים שזזו
+  await T.click(T.byId('cp-pdf-open'));
+  const pdfRightAway = [0, 1].map(i => Number(T.byId(`cp-pdf-sale-${i}`)?.value));
+  await T.click(T.byId('cp-pdf-cancel'));
+  await T.selectAction(T.byId('cp-detail-status'), 'deposit_paid');
+  await T.click(T.byId('cp-pay-test'));
+  await T.flush(4);
+  const morningRightAway = (morningCalls[morningCalls.length - 1]?.income || []).filter(l => l.price > 0).map(l => l.price);
+  await closePayModal();
+  T.check(pdfRightAway.join(',') === `${shelfCalc},1500`, `CP-3: חלון ה-PDF שנפתח מיד אחרי מחיקה מציג מחירים שלא זזו: ${pdfRightAway.join(',')}`);
+  T.check(morningRightAway.join(',') === `${shelfCalc},1500`, `CP-3: מסמך Morning שנשלח מיד אחרי מחיקה מחייב מחירים שלא זזו: ${morningRightAway.join(',')}`);
+  await T.sleep(AUTOSAVE_WAIT);
+  T.check(P2().products.length === 2 && P2().products[0].id === 'X2', 'מחיקת שורה לא נשמרה');
   const shownAfterDelete = [0, 1].map(i => Number(T.byId(`cp-row-sale-${i}`).value));
   T.check(shownAfterDelete.join(',') === `${shelfCalc},1500`, `CP-3: אחרי מחיקת הדלפק, המדף צריך לחזור למחיר המחושב (${shelfCalc}) והכיור להישאר 1,500: מוצג ${shownAfterDelete.join(',')}`);
   T.check(JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ 1: 1500 }), `CP-3: המחירים הידניים שנשמרו לא זזו עם המוצרים: ${JSON.stringify(P2().salePriceOverrides)}`);
@@ -317,7 +328,7 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   const shownUsd = T.byId('cp-row-usd-0').value;
   await T.type(T.byId('cp-row-qty-0'), 2);
   await T.sleep(AUTOSAVE_WAIT);
-  T.knownBug('CP-6', `אחרי שמירה בחלון העריכה, דוח העלויות מציג את המוצרים הישנים (מחיר ${shownUsd}$ במקום 350$), ועריכה ישירה הבאה מחזירה אותם ל-Firestore (נשמר ${P2().products[0].unitPriceUSD}$)`, shownUsd === '350' && P2().products[0].unitPriceUSD === 350);
+  T.check(shownUsd === '350' && P2().products[0].unitPriceUSD === 350, `CP-6: אחרי שמירה בחלון העריכה, דוח העלויות מציג את המוצרים הישנים (מחיר ${shownUsd}$ במקום 350$), ועריכה ישירה הבאה מחזירה אותם ל-Firestore (נשמר ${P2().products[0].unitPriceUSD}$)`);
   await T.click(T.byId('cp-detail-close'));
 
   // CP-3 (חלון העריכה): מחיקת מוצר בחלון מזיזה גם את המחירים הידניים

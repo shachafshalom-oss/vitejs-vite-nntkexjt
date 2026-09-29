@@ -27,7 +27,8 @@ if (!g.URL.revokeObjectURL) g.URL.revokeObjectURL = () => {};
 // מה שהמשתמש "רואה" ו"עונה" — נבדק ע"י הבדיקות
 const ui = (g.__ui = { alerts: [], confirms: [], confirmAnswers: [], fetches: [], opened: [], clipboard: [] });
 g.alert = dom.window.alert = (m) => { ui.alerts.push(String(m)); };
-g.confirm = dom.window.confirm = (m) => { ui.confirms.push(String(m)); return ui.confirmAnswers.length ? ui.confirmAnswers.shift() : true; };
+// תשובה יכולה להיות פונקציה — היא רצה "בזמן שחלון האישור פתוח" (למשל שינוי ממכשיר אחר), והערך שלה הוא התשובה
+g.confirm = dom.window.confirm = (m) => { ui.confirms.push(String(m)); const a = ui.confirmAnswers.length ? ui.confirmAnswers.shift() : true; return typeof a === 'function' ? a(m) : a; };
 g.prompt = dom.window.prompt = () => null;
 dom.window.open = g.open = (url) => { ui.opened.push(String(url)); return null; };
 Object.defineProperty(dom.window.navigator, 'clipboard', { value: { writeText: async (t) => { ui.clipboard.push(String(t)); } }, configurable: true });
