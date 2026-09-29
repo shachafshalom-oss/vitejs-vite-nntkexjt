@@ -4090,11 +4090,18 @@ export default function App() {
     return { totalCBM, totalQty, totalFactoryUSD, totalFactoryILS, containerShippingILS, customsILS, portFeesILS, localTransportILS, installationILS, fixedOverheadILS, totalCostILS, suggestedPrice, shippingPerCBM, overheadPerUnit };
   };
 
+  // עותק של הפרויקט כפי שהיה ברגע פתיחת חלון העריכה. בשמירה נכתבים רק השדות שהמשתמש שינה
+  // בחלון — אחרת השמירה דרסה שינויים שנשמרו בזמן שהחלון היה פתוח (CP-4), וכתבה את id למסמך (CP-5).
+  const customProjectBaseRef = useRef<any>(null);
+  useEffect(() => {
+    if (isCustomProjectModalOpen) customProjectBaseRef.current = JSON.parse(JSON.stringify(customProjectForm || {}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCustomProjectModalOpen]);
+
   const saveCustomProject = async (e?: any) => {
     if (e) e.preventDefault();
     setIsSaving(true);
     try {
-      const totals = calcProjectTotals(customProjectForm);
 
       // Compress any images that are still large base64 before saving to Firestore
       const safeProducts = await Promise.all(
@@ -4111,18 +4118,28 @@ export default function App() {
         })
       );
 
-      const data: any = {
-        ...customProjectForm,
-        products: safeProducts,
-        ...totals,
-        updatedAt: new Date().toISOString(),
-      };
+      const { id: projId, ...formFields } = { ...customProjectForm, products: safeProducts };
+      const TOTAL_KEYS = ['totalCBM', 'totalQty', 'totalFactoryUSD', 'totalFactoryILS', 'containerShippingILS', 'customsILS', 'portFeesILS', 'localTransportILS', 'installationILS', 'fixedOverheadILS', 'totalCostILS', 'suggestedPrice', 'shippingPerCBM', 'overheadPerUnit'];
 
-      if (data.id) {
-        await updateDoc(doc(db, 'crm_custom_projects', data.id), data);
+      if (projId) {
+        // רק מה שהשתנה בחלון מול הרגע שבו נפתח
+        const base = customProjectBaseRef.current || {};
+        const changes: any = {};
+        Object.keys(formFields).forEach(k => {
+          if (k === 'updatedAt' || k === 'createdAt' || TOTAL_KEYS.includes(k)) return;
+          if (JSON.stringify((formFields as any)[k]) !== JSON.stringify(base[k])) changes[k] = (formFields as any)[k];
+        });
+        if (Object.keys(changes).length) {
+          // הסיכומים מחושבים מהפרויקט העדכני בשרת + השינויים מהחלון — לא מהעותק שנפתח
+          if (['products', 'params', 'marginPercent'].some(k => k in changes)) {
+            const current = customProjects.find((p: any) => p.id === projId) || base;
+            Object.assign(changes, calcProjectTotals({ ...current, ...changes }));
+          }
+          await updateDoc(doc(db, 'crm_custom_projects', projId), { ...changes, updatedAt: new Date().toISOString() });
+        }
       } else {
-        data.createdAt = new Date().toISOString();
-        await addDoc(collection(db, 'crm_custom_projects'), data);
+        const nowIso = new Date().toISOString();
+        await addDoc(collection(db, 'crm_custom_projects'), { ...formFields, ...calcProjectTotals(formFields), createdAt: nowIso, updatedAt: nowIso });
       }
       setIsCustomProjectModalOpen(false);
       setCustomProjectView(null);
