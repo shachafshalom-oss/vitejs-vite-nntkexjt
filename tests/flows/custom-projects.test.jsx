@@ -269,14 +269,25 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   await T.sleep(AUTOSAVE_WAIT);
   T.check(near(P2().totalCostILS, expectTotals(P2_PARAMS, P2_PRODUCTS, 25).total), 'עריכות בנפרד (עם הפסקה) לא החזירו סיכום נכון');
 
-  // CP-3: מחיר ידני נשמר לפי מספר שורה — מחיקת שורה מעבירה את המחיר לפריט אחר
-  await T.type(T.byId('cp-row-sale-0'), 20000);
+  // CP-3: מחיר ידני נשמר לפי מספר שורה — מחיקת שורה חייבת להזיז את המחירים יחד עם המוצרים
+  await T.type(T.byId('cp-row-sale-0'), 20000); // דלפק
   await T.sleep(AUTOSAVE_WAIT);
-  await T.click(T.byId('cp-row-delete-0'));
+  // מחיר לכיור ומחיקת הדלפק מיד אחריו — לפני שהשמירה האוטומטית של המחיר רצה
+  await T.type(T.byId('cp-row-sale-2'), 1500);  // כיור
+  await T.click(T.byId('cp-row-delete-0'));     // מוחקים את הדלפק
   await T.sleep(AUTOSAVE_WAIT);
   T.check(P2().products.length === 2 && P2().products[0].id === 'X2', 'מחיקת שורה לא נשמרה');
-  const shelfShown = Number(T.byId('cp-row-sale-0').value);
-  T.knownBug('CP-3', `מחיקת מוצר מעבירה את מחיר המכירה הידני שלו למוצר שאחריו (המדף מוצג ב-₪${shelfShown} — המחיר של הדלפק שנמחק — ויחויב כך ב-Morning)`, shelfShown !== 20000 && !(P2().salePriceOverrides && Number(P2().salePriceOverrides['0']) === 20000));
+  const afterDelete = [P2_PRODUCTS[1], P2_PRODUCTS[2]];
+  const shelfCalc = expectUnitSale(P2_PARAMS, P2_PRODUCTS[1], afterDelete, 25);
+  const shownAfterDelete = [0, 1].map(i => Number(T.byId(`cp-row-sale-${i}`).value));
+  T.check(shownAfterDelete.join(',') === `${shelfCalc},1500`, `CP-3: אחרי מחיקת הדלפק, המדף צריך לחזור למחיר המחושב (${shelfCalc}) והכיור להישאר 1,500: מוצג ${shownAfterDelete.join(',')}`);
+  T.check(JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ 1: 1500 }), `CP-3: המחירים הידניים שנשמרו לא זזו עם המוצרים: ${JSON.stringify(P2().salePriceOverrides)}`);
+  await T.selectAction(T.byId('cp-detail-status'), 'deposit_paid');
+  await T.click(T.byId('cp-pay-test'));
+  await T.flush(10);
+  const sentAfterDelete = (morningCalls[morningCalls.length - 1]?.income || []).filter(l => l.price > 0).map(l => l.price);
+  T.check(sentAfterDelete.join(',') === `${shelfCalc},1500`, `CP-3: מסמך Morning אחרי מחיקה מחייב מחירים שגויים: ${sentAfterDelete.join(',')}`);
+  await closePayModal();
   await T.click(T.byId('cp-detail-close'));
 
   // CP-4 + CP-5: חלון העריכה שומר את כל הפרויקט כפי שהיה ברגע הפתיחה
@@ -308,6 +319,17 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   await T.sleep(AUTOSAVE_WAIT);
   T.knownBug('CP-6', `אחרי שמירה בחלון העריכה, דוח העלויות מציג את המוצרים הישנים (מחיר ${shownUsd}$ במקום 350$), ועריכה ישירה הבאה מחזירה אותם ל-Firestore (נשמר ${P2().products[0].unitPriceUSD}$)`, shownUsd === '350' && P2().products[0].unitPriceUSD === 350);
   await T.click(T.byId('cp-detail-close'));
+
+  // CP-3 (חלון העריכה): מחיקת מוצר בחלון מזיזה גם את המחירים הידניים
+  const overridesBeforeModal = P2().salePriceOverrides || {};
+  const lastIdx = P2().products.length - 1;
+  await T.click(T.byId('cp-edit-P2'));
+  const lastPrice = Number(overridesBeforeModal[lastIdx]);
+  T.check(lastPrice > 0, `צפוי מחיר ידני על המוצר האחרון לפני התרחיש: ${JSON.stringify(overridesBeforeModal)}`);
+  await T.click(T.$('button[type="button"]', T.allById('cp-form-row')[0]) && T.$$('button[type="button"]', T.allById('cp-form-row')[0]).pop());
+  await T.submit(form());
+  await T.flush(10);
+  T.check(P2().products.length === lastIdx && JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ [lastIdx - 1]: lastPrice }), `CP-3: מחיקה בחלון העריכה לא הזיזה את המחירים הידניים: ${JSON.stringify(P2().salePriceOverrides)}`);
 
   T.check(!globalThis.__unhandled, `היו ${globalThis.__unhandled} שגיאות לא מטופלות`);
   T.finish();

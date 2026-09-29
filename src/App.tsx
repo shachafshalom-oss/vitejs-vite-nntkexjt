@@ -108,6 +108,18 @@ const projectCustomsPct = (params: any): number => {
   const v = (raw === undefined || raw === null || raw === '') ? 12 : Number(raw);
   return (Number.isFinite(v) ? v : 12) / 100;
 };
+// מחירים ידניים של פרויקט שמורים לפי מספר שורה ("0", "1", ...). כשמוחקים שורה, המחירים
+// של השורות שאחריה חייבים לזוז שורה אחת למעלה — אחרת מחיר של מוצר שנמחק "עובר" למוצר
+// הבא ומחויב כך ב-Morning (CP-3).
+const shiftSaleOverridesAfterDelete = (overrides: any, removedIdx: number): Record<string, number> => {
+  const out: Record<string, number> = {};
+  Object.entries(overrides || {}).forEach(([k, v]) => {
+    const idx = Number(k);
+    if (!Number.isInteger(idx) || idx === removedIdx) return;
+    out[String(idx > removedIdx ? idx - 1 : idx)] = v as number;
+  });
+  return out;
+};
 const projectMarginMult = (proj: any): number => 1 + Number(proj?.marginPercent || 30) / 100;
 // עלות landed ליחידה ומחיר המכירה המחושב ליחידה (לפני מחיר ידני, מעוגל לשקל —
 // בדיוק הסכום שנשלח ל-Morning). totals = calcProjectTotals של אותו פרויקט ואותם פרמטרים.
@@ -7440,8 +7452,17 @@ export default function App() {
                                   if (!window.confirm(`למחוק את "${pr.itemHe}"?`)) return;
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
                                   const updated = base.filter((_: any, idx: number) => idx !== i);
+                                  // המחירים הידניים זזים יחד עם המוצרים, ונשמרים באותה כתיבה — כך הם לא יכולים
+                                  // להיות לא מסונכרנים. שמירה ממתינה של מחירים (לפני המחיקה) מבוטלת כי היא כבר לא נכונה.
+                                  const shiftedOverrides = shiftSaleOverridesAfterDelete(inlineSalePrices[proj.id] || proj.salePriceOverrides || {}, i);
+                                  if (autosaveTimers.current[salePricesStatusKey]) {
+                                    clearTimeout(autosaveTimers.current[salePricesStatusKey]);
+                                    delete autosaveTimers.current[salePricesStatusKey];
+                                    setAutosaveStatus(prev => { const next = { ...prev }; delete next[salePricesStatusKey]; return next; });
+                                  }
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
-                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
+                                  setInlineSalePrices(prev => ({ ...prev, [proj.id]: shiftedOverrides }));
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, salePriceOverrides: shiftedOverrides, ...calcProjectTotals({ ...proj, products: updated }) });
                                 };
                                 return (
                                   <React.Fragment key={i}>
@@ -10444,7 +10465,7 @@ export default function App() {
                         </div>
                       </div>
                       <input type="number" min="1" className="w-12 text-xs border border-slate-300 rounded p-1 text-center" value={pr.qty} onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],qty:Number(e.target.value)}; setCustomProjectForm({...customProjectForm,products:p}); }} />
-                      <button type="button" onClick={() => setCustomProjectForm({...customProjectForm, products: customProjectForm.products.filter((_:any,j:number)=>j!==i)})} className="text-slate-300 hover:text-red-400"><X className="w-3.5 h-3.5"/></button>
+                      <button type="button" onClick={() => setCustomProjectForm({...customProjectForm, products: customProjectForm.products.filter((_:any,j:number)=>j!==i), ...(customProjectForm.salePriceOverrides ? { salePriceOverrides: shiftSaleOverridesAfterDelete(customProjectForm.salePriceOverrides, i) } : {})})} className="text-slate-300 hover:text-red-400"><X className="w-3.5 h-3.5"/></button>
                     </div>
                   ))}
                 </div>
