@@ -261,16 +261,23 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(JSON.stringify(Object.entries(T.docs('crm_items')).map(([id, i]) => [id, i.status])) === statusesBefore, 'אישור ללא גריעה שינה את המלאי');
 
   // ───────────── 12. ביטול אישור ─────────────
-  T.describe('12. ביטול אישור של הצעה שכבר נמסרה');
-  T.answerConfirms(true);
+  T.describe('12. ביטול אישור של הזמנה שכבר נמסרה / שהונפקה לה תעודה — נחסם');
+  const confirmsBefore12 = T.ui.confirms.length;
+  let alertsBefore12 = T.ui.alerts.length;
   await T.selectAction(T.byId(`quote-status-${Q.id}`), 'pending');
   const Qr = T.docs('crm_quotes')[Q.id];
-  T.check(Qr.status === 'pending' && (Qr.approvedItemIds || []).length === 0, 'ביטול האישור לא עדכן את ההצעה');
-  const itemBack = T.docs('crm_items')[sold[0].id];
-  T.check(itemBack.status === 'in_warehouse' && !itemBack.customerId && itemBack.warrantyStartDate === null, 'הפריט לא חזר למלאי כמתוכנן בביטול');
-  T.check(leadDoc().status === 'lead', `הלקוח לא חזר לסטטוס הקודם (ליד): ${leadDoc().status}`);
-  const deliveryAfter = T.docs('crm_customer_deliveries')[D.id];
-  T.knownBug('SALES-6', 'ביטול אישור של הזמנה שכבר נמסרה ללקוח מוחק את ההובלה ואת תעודת המשלוח הממוספרת (00001), ומחזיר למלאי יחידה שנמצאת אצל הלקוח — בלי אזהרה', !!deliveryAfter);
+  T.check(Qr.status === 'approved' && (Qr.approvedItemIds || []).length === 1, `SALES-6: ביטול אישור של הזמנה שנמסרה לא נחסם: ${Qr.status}`);
+  const itemStays = T.docs('crm_items')[sold[0].id];
+  T.check(itemStays.status === 'sold' && itemStays.customerId === leadId && !!itemStays.warrantyStartDate, 'SALES-6: יחידה שנמצאת אצל הלקוח חזרה למלאי');
+  const deliveryKept = T.docs('crm_customer_deliveries')[D.id];
+  T.check(deliveryKept && deliveryKept.deliveryNoteNumber === 1 && deliveryKept.deliveryStatus === 'delivered', 'SALES-6: ההובלה/תעודת המשלוח הממוספרת נמחקה');
+  T.check(leadDoc().status === 'active', 'SALES-6: הלקוח הוחזר לליד למרות שהביטול נחסם');
+  T.check(T.ui.alerts.slice(alertsBefore12).some(a => a.includes('כבר נמסרה')) && T.ui.confirms.length === confirmsBefore12, 'לא הוצגה הודעה ברורה שההזמנה נמסרה (או שנשאלה שאלת אישור מיותרת)');
+  // תעודה הונפקה אבל ההזמנה עוד לא נמסרה (איסוף עצמי, תעודה 00002)
+  alertsBefore12 = T.ui.alerts.length;
+  await T.selectAction(T.byId(`quote-status-${q3.id}`), 'pending');
+  T.check(T.docs('crm_quotes')[q3.id].status === 'approved' && T.docs('crm_items').N1.status === 'sold' && T.docs('crm_customer_deliveries')[d2.id]?.deliveryNoteNumber === 2, 'SALES-6: ביטול אישור אחרי הנפקת תעודה ממוספרת לא נחסם');
+  T.check(T.ui.alerts.slice(alertsBefore12).some(a => a.includes('תעודת משלוח') && a.includes('00002')), 'לא הוצגה הודעה שכבר הונפקה תעודה 00002');
 
   // ───────────── 13. שתי שורות מאותו דגם כשיש מלאי, וביטול לפני מסירה ─────────────
   T.describe('13. שתי שורות מאותו דגם (יש מלאי) וביטול אישור לפני מסירה');

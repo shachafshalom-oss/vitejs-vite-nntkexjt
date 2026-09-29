@@ -4817,6 +4817,29 @@ export default function App() {
 
     // נתיב 2: Reverse — מ-approved (עם גריעה) לכל סטטוס אחר
     if (quote.status === 'approved') {
+      // הזמנה שכבר נמסרה, או שהונפקה לה תעודת משלוח ממוספרת, לא מבטלים מכאן (SALES-6):
+      // היחידות נמצאות אצל הלקוח (לא חוזרות למלאי), ותעודה ממוספרת היא מסמך רשמי שלא נמחק.
+      // הבדיקה מול השרת ולא מול המסך — ייתכן שדניאל סימן מסירה לפני רגע ממכשיר אחר.
+      let relatedDeliveries: any[] = [];
+      try {
+        const delSnap = await getDocs(query(collection(db, 'crm_customer_deliveries'), where('quoteId', '==', quote.id)));
+        relatedDeliveries = delSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+      } catch (err) {
+        alert('לא ניתן לבדוק את מצב ההובלה של ההזמנה כרגע. הביטול לא בוצע — נסה שוב.');
+        return;
+      }
+      const delivered = relatedDeliveries.find(d => d.deliveryStatus === 'delivered');
+      if (delivered) {
+        alert(`לא ניתן לבטל את האישור: ההזמנה כבר נמסרה ללקוח${delivered.deliveredAt ? ` (${new Date(delivered.deliveredAt).toLocaleDateString('he-IL')})` : ''}.\n` +
+          'היחידות נמצאות אצל הלקוח ולכן לא יוחזרו למלאי, ותעודת המשלוח נשמרת. החזרת מוצר מטופלת ידנית.');
+        return;
+      }
+      const noted = relatedDeliveries.find(d => Number(d.deliveryNoteNumber) > 0);
+      if (noted) {
+        alert(`לא ניתן לבטל את האישור: כבר הונפקה להזמנה תעודת משלוח מספר ${formatDeliveryNoteNumber(noted.deliveryNoteNumber)}.\n` +
+          'תעודה ממוספרת היא מסמך רשמי ולא נמחקת. אם ההזמנה בוטלה בפועל — יש לטפל בה ידנית.');
+        return;
+      }
       if (!window.confirm(`ביטול האישור יחזיר את כל הפריטים למלאי והלקוח יחזור לסטטוסו הקודם.\nהאם להמשיך?`)) return;
       setIsSaving(true);
       try {
@@ -4836,7 +4859,7 @@ export default function App() {
           ));
         }
         // מחיקת רשומת ההובלה שנפתחה באישור — אחרת נשארת "הובלת רפאים" בטאב ההובלות.
-        const relatedDeliveries = customerDeliveries.filter(d => d.quoteId === quote.id);
+        // (מגיעים לכאן רק כשההובלה לא נמסרה ולא הונפקה לה תעודה — נבדק למעלה)
         await Promise.all(relatedDeliveries.map(d => deleteDoc(doc(db, 'crm_customer_deliveries', d.id))));
         // החזרת סטטוס לקוח
         if (quote.customerId) {
