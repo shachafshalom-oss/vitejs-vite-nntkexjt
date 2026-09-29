@@ -4796,6 +4796,11 @@ export default function App() {
   };
 
   // --- Quote Generation & Management ---
+  // הצעה שכבר נשמרה בפתיחה הנוכחית של המחולל (למשל כשה-PDF נכשל אחרי השמירה). ניסיון חוזר
+  // מעדכן אותה במקום ליצור הצעה כפולה (SALES-1). מתאפס בכל פתיחה של המחולל.
+  const savedQuoteIdRef = useRef<string | null>(null);
+  useEffect(() => { if (isQuoteModalOpen) savedQuoteIdRef.current = null; }, [isQuoteModalOpen]);
+
   const handleGenerateQuotePDF = async () => {
     if (!quoteRef.current || !quoteData?.customerId) {
       alert("יש לבחור לקוח לפני הפקת המסמך");
@@ -4817,7 +4822,15 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
       
-      if (!quoteData.id) await addDoc(collection(db, 'crm_quotes'), quotePayload);
+      if (!quoteData.id) {
+        if (savedQuoteIdRef.current) {
+          const { createdAt, status, ...changes } = quotePayload;
+          await updateDoc(doc(db, 'crm_quotes', savedQuoteIdRef.current), { ...changes, updatedAt: new Date().toISOString() });
+        } else {
+          const ref = await addDoc(collection(db, 'crm_quotes'), quotePayload);
+          savedQuoteIdRef.current = ref.id;
+        }
+      }
 
       // קידום אוטומטי של שלב הליד ל"הצעה נשלחה" ברגע שהופקה הצעה.
       // מקדם רק קדימה — לא ידרוס "ממתין לתשובה" או ליד שכבר הומר ללקוח פעיל.
@@ -4841,7 +4854,11 @@ export default function App() {
       pdf.save(`הצעת_מחיר_${fileName}.pdf`);
       
       setIsQuoteModalOpen(false); 
-    } catch (error) { alert("שגיאה ביצירת הצעת המחיר."); }
+    } catch (error) {
+      alert(savedQuoteIdRef.current
+        ? 'ההצעה נשמרה, אבל יצירת קובץ ה-PDF נכשלה. לחץ שוב כדי להוריד — לא תיווצר הצעה כפולה.'
+        : 'שגיאה ביצירת הצעת המחיר.');
+    }
     setIsGeneratingPDF(false);
   };
 

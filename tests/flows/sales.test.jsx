@@ -223,7 +223,8 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   await T.click(T.byId('quote-save'));
   if (quoteModal()) await T.click(T.byId('quote-save'));
   const quotesAfter = T.docsWhere('crm_quotes', q => q.customerId === 'C9').length - quotesBefore;
-  T.knownBug('SALES-1', `כשל ב-PDF ואז "נסה שוב" יוצר הצעת מחיר כפולה (נוצרו ${quotesAfter} במקום 1)`, quotesAfter === 1);
+  T.check(quotesAfter === 1, `SALES-1: כשל ב-PDF ואז "נסה שוב" יצר הצעת מחיר כפולה (נוצרו ${quotesAfter} במקום 1)`);
+  T.check(T.ui.alerts.some(a => a.includes('ההצעה נשמרה') && a.includes('לא תיווצר הצעה כפולה')), 'אחרי כשל ב-PDF לא הוסבר שההצעה נשמרה ושאפשר ללחוץ שוב');
 
   // ───────────── 10. איסוף עצמי ומספור תעודות ─────────────
   T.describe('10. אישור עם איסוף עצמי ותעודת משלוח שנייה');
