@@ -186,6 +186,22 @@ async function openInventoryGroup(model) {
   T.check(T.ui.alerts.slice(alertsBefore7).some(a => a.includes('אי אפשר להסיר')), 'לא הוצגה הודעה שאי אפשר להסיר את הדגם');
   await closeShipment();
 
+  // ───────────── 7ד. שורה אחת לכל דגם במשלוח ─────────────
+  T.describe('7ד. שורה אחת לכל דגם במשלוח');
+  await editShipment();
+  await T.click(T.byId('shipment-add-line'));
+  T.check(T.byId('shipment-line-model-1')?.value === 'Night', `"הוסף שורה" בחר דגם שכבר יש לו שורה (צפוי Night): ${T.byId('shipment-line-model-1')?.value}`);
+  const primeOpt = T.$$('option', T.byId('shipment-line-model-1')).find(o => o.value === 'Prime');
+  T.check(!!primeOpt && primeOpt.disabled, 'בשורה השנייה אפשר לבחור את Prime למרות שכבר יש לו שורה');
+  // הגנה אחרונה: גם אם כפילות נוצרה (למשל נתונים ישנים) — השמירה נחסמת ושום דבר לא נכתב
+  await T.select(T.byId('shipment-line-model-1'), 'Prime');
+  const seqDup = T.seq();
+  alertsBefore7 = T.ui.alerts.length;
+  await T.click(T.byId('shipment-save'));
+  T.check(T.writesSince(seqDup).length === 0 && primeItems().length === 2 && sold2() === soldBefore7, `משלוח עם אותו דגם פעמיים נשמר / שינה מלאי: ${T.writesSince(seqDup).map(w => w.op + ':' + w.col).join(',')}`);
+  T.check(T.ui.alerts.slice(alertsBefore7).some(a => a.includes('מופיע פעמיים') && a.includes('Prime')), 'לא הוצגה הודעה שהדגם מופיע פעמיים');
+  await closeShipment();
+
   // ───────────── 8. פעולות בלילה (00:00–03:00) ─────────────
   T.describe('8. קליטה ומכירה בשעה 01:30 בלילה (שעון ישראל)');
   T.freezeTime('2026-10-07T22:30:00.000Z'); // חמישי 8.10, 01:30 שעון ישראל = עדיין 7.10 ב-UTC
@@ -207,6 +223,43 @@ async function openInventoryGroup(model) {
   const NX = T.docs('crm_items').NX;
   T.check(NX.status === 'sold', 'מכירת הלילה לא בוצעה');
   T.knownBug('DATE-2', `תאריך מכירה במכירה מהירה נקבע לפי UTC — בלילה נרשם אתמול, והמכירה נספרת בדוחות ביום (ולעיתים בחודש) הקודם (צפוי ${NIGHT_TODAY}, נשמר ${NX.saleDate})`, NX.saleDate === NIGHT_TODAY);
+
+  // ───────────── 9. מיזוג דגמים שנמצאים באותו משלוח ─────────────
+  T.describe('9. מיזוג דגמים כששניהם באותו משלוח — שורה אחת, ושמירה לא מוחקת יחידות');
+  await T.nav('shipments');
+  await editShipment();
+  await T.click(T.byId('shipment-add-line'));
+  const line1 = T.byId('shipment-line-model-1').closest('div.flex');
+  await T.type(T.fieldByLabel('כמות', line1), 1);
+  await T.type(T.fieldByLabel('עלות יחידה ($)', line1), 700);
+  await T.click(T.byId('shipment-save'));
+  const inS = () => T.docsWhere('crm_items', i => i.shipmentId === S.id);
+  T.check(inS().length === 3 && inS().filter(i => i.modelId === 'm_night').length === 1, `הוספת שורת Night למשלוח לא יצרה יחידה: ${inS().length}`);
+  await T.nav('models');
+  const nightRow = T.allById('model-row').find(r => r.textContent.includes('Night'));
+  await T.click(nightRow);
+  const modelPanel = () => T.byId('model-card-save')?.closest('.fixed');
+  await T.click(T.buttonByText('מזג', modelPanel()));
+  const mergeSel = T.$$('select', modelPanel()).find(x => x.textContent.includes('בחר דגם יעד'));
+  await T.select(mergeSel, 'Prime');
+  T.answerConfirms(true);
+  await T.click(T.buttonByText('בצע מיזוג'));
+  const SL = T.docs('crm_shipments')[S.id].lines || [];
+  T.check(SL.length === 1 && SL[0].model === 'Prime' && Number(SL[0].qty) === 3, `אחרי המיזוג במשלוח צפויה שורה אחת של Prime × 3: ${JSON.stringify(SL)}`);
+  T.check(Math.abs(Number(SL[0].unitCostUSD) - 900) < 0.01, `מחיר השורה המאוחדת צריך להיות ממוצע משוקלל (2×1000 + 1×700) / 3 = 900: ${SL[0]?.unitCostUSD}`);
+  T.check(inS().length === 3 && inS().every(i => i.modelId === 'm_prime'), 'המיזוג שינה את מספר היחידות במשלוח');
+  // השמירה הבאה של המשלוח (בלי שינוי) — אסור שתמחק יחידות
+  await T.nav('shipments');
+  await editShipment();
+  await T.click(T.byId('shipment-save'));
+  T.check(inS().length === 3 && inS().filter(i => i.status === 'sold').length === 2, `שמירת המשלוח אחרי מיזוג מחקה יחידות: נשארו ${inS().length}`);
+  // שמירה בלי שינוי מחיר לא כותבת מחדש את עלות היחידות (היחידות שנמכרו נשארות ב-1,000$, זו שמוזגה ב-700$)
+  T.check(inS().map(i => Number(i.factoryUnitCostUSD)).sort((a, b) => a - b).join(',') === '700,1000,1000', `שמירת המשלוח שינתה את עלות היחידות לממוצע: ${inS().map(i => i.factoryUnitCostUSD).join(',')}`);
+  // שינוי מחיר מכוון בשורה — כן מעדכן את כל היחידות
+  await editShipment();
+  await T.type(T.fieldByLabel('עלות יחידה ($)', shipmentModal()), 950);
+  await T.click(T.byId('shipment-save'));
+  T.check(inS().every(i => Number(i.factoryUnitCostUSD) === 950), `שינוי מחיר מכוון בשורה לא עדכן את היחידות: ${inS().map(i => i.factoryUnitCostUSD).join(',')}`);
 
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });

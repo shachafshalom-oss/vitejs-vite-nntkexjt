@@ -982,6 +982,35 @@ const resolveModelId = (entry: any, models: any): string =>
 
 // הפרדיקט המרכזי: האם שתי רשומות מתייחסות לאותו דגם?
 // עובד גם כששני הצדדים במצבי מיגרציה שונים (לאחד יש id ולשני אין).
+// מפתח דגם לשורות משלוח: לפי מזהה קבוע, ובנפילה-לאחור לפי שם (דגם יתום / נתון ישן).
+const shipmentLineKey = (entry: any, models: any): string => {
+  const id = resolveModelId(entry, models);
+  return id ? `id:${id}` : `name:${(entry && entry.model) || ''}`;
+};
+// משלוח מחזיק שורה אחת לכל דגם — היחידות במלאי לא יודעות לאיזו שורה הן שייכות, ולכן שתי שורות
+// של אותו דגם גרמו למחיקת יחידות בשמירה. מאחד שורות של אותו דגם: כמות מצטברת, מחיר מפעל
+// ממוצע משוקלל (העלות הכוללת לא משתנה), מספרים סידוריים מצורפים. השורה נשארת במקום הראשון.
+const combineShipmentLinesByModel = (lines: any[], models: any): any[] => {
+  const out: any[] = [];
+  const byKey: Record<string, any> = {};
+  for (const l of lines || []) {
+    const k = shipmentLineKey(l, models);
+    const qty = Number(l.qty) || 0;
+    const cost = Number(l.unitCostUSD) || 0;
+    if (!byKey[k]) {
+      byKey[k] = { ...l, qty, unitCostUSD: cost, __total: qty * cost };
+      out.push(byKey[k]);
+      continue;
+    }
+    const acc = byKey[k];
+    acc.qty += qty;
+    acc.__total += qty * cost;
+    acc.unitCostUSD = acc.qty > 0 ? Math.round((acc.__total / acc.qty) * 100) / 100 : acc.unitCostUSD;
+    if (Array.isArray(l.serials) && l.serials.length) acc.serials = [...(Array.isArray(acc.serials) ? acc.serials : []), ...l.serials];
+  }
+  return out.map(({ __total, ...l }) => l);
+};
+
 const isSameModel = (entry: any, target: any, models: any): boolean => {
   const a = resolveModelId(entry, models);
   const b = resolveModelId(target, models);
@@ -3081,10 +3110,12 @@ export default function App() {
       }
 
       // 3. crm_shipments — עדכון lines[]
+      // אם גם דגם היעד כבר נמצא באותו משלוח — השורות מתאחדות לשורה אחת (שורה אחת לכל דגם).
       for (const s of affectedShipments) {
-        const newLines = (s.lines || []).map((l: any) =>
+        const renamedLines = (s.lines || []).map((l: any) =>
           isSameModel(l, srcRef, settings.models) ? { ...l, model: targetName, modelId: targetId } : l
         );
+        const newLines = combineShipmentLinesByModel(renamedLines, { ...settings.models, [targetName]: { ...settings.models[targetName], id: targetId } });
         await updateDoc(doc(db, 'crm_shipments', s.id), { lines: newLines, updatedAt: new Date().toISOString() });
       }
 
@@ -3347,7 +3378,21 @@ export default function App() {
         lines: (editingData.lines || []).map((l: any) => withModelId(l, settings.models)),
         updatedAt: new Date().toISOString()
       };
-      
+
+      // שורה אחת לכל דגם — שתי שורות של אותו דגם גרמו למחיקת יחידות בשמירה. נחסם לפני כל כתיבה.
+      const seenLineKeys = new Set<string>();
+      const duplicateModels: string[] = [];
+      for (const line of data.lines) {
+        const k = shipmentLineKey(line, settings.models);
+        if (seenLineKeys.has(k) && !duplicateModels.includes(line.model)) duplicateModels.push(line.model);
+        seenLineKeys.add(k);
+      }
+      if (duplicateModels.length) {
+        const err: any = new Error(`הדגם ${duplicateModels.join(', ')} מופיע פעמיים במשלוח — יש לאחד לשורה אחת (כמות כוללת) ולשמור שוב.`);
+        err.userFacing = true;
+        throw err;
+      }
+
       if (data.id) {
         const currentShipmentItems = items.filter(i => i.shipmentId === data.id);
         // מפתחים לפי מזהה דגם קבוע ולא לפי שם. קריטי: הלולאה בסוף הבלוק *מוחקת*
@@ -3355,10 +3400,7 @@ export default function App() {
         // כל פער איות בין הפריט לשורה (בדיוק התקלה של "5/5" מול "5x5") גרם
         // למחיקה שקטה של פריטי מלאי אמיתיים. מפתוח לפי id מונע את זה.
         // הנפילה-לאחור ל-`name:` שומרת על התנהגות תקינה לשורות שירות/דגמים יתומים.
-        const keyOf = (entry: any) => {
-          const id = resolveModelId(entry, settings.models);
-          return id ? `id:${id}` : `name:${(entry && entry.model) || ''}`;
-        };
+        const keyOf = (entry: any) => shipmentLineKey(entry, settings.models);
         const currentItemsByModel: any = {};
         currentShipmentItems.forEach(item => {
           const k = keyOf(item);
@@ -3384,6 +3426,12 @@ export default function App() {
           err.userFacing = true;
           throw err;
         }
+
+        // מחיר המפעל של כל שורה כפי שהיה שמור לפני העריכה. עלות היחידות מתעדכנת רק כשמחיר השורה
+        // באמת שונה — אחרת שמירה לא קשורה (שם, שילוח) הייתה כותבת מחדש עלות גם ליחידות שכבר נמכרו
+        // (למשל אחרי מיזוג דגמים, כששורה מאוחדת מחזיקה מחיר ממוצע).
+        const savedLineCost: Record<string, number> = {};
+        for (const l of (shipments.find((sh: any) => sh.id === data.id)?.lines || [])) savedLineCost[keyOf(l)] = Number(l.unitCostUSD);
 
         await updateDoc(doc(sRef, data.id), data);
 
@@ -3422,7 +3470,8 @@ export default function App() {
             }
           }
 
-          const itemsToUpdateCost = currentModelItems.filter((i: any) => !i._deleted && Number(i.factoryUnitCostUSD) !== Number(line.unitCostUSD));
+          const lineCostChanged = !(lineKey in savedLineCost) || savedLineCost[lineKey] !== Number(line.unitCostUSD);
+          const itemsToUpdateCost = lineCostChanged ? currentModelItems.filter((i: any) => !i._deleted && Number(i.factoryUnitCostUSD) !== Number(line.unitCostUSD)) : [];
           for (const item of itemsToUpdateCost) {
             await updateDoc(doc(itemsRef, item.id), { factoryUnitCostUSD: Number(line.unitCostUSD), updatedAt: new Date().toISOString() });
           }
@@ -8301,15 +8350,25 @@ export default function App() {
               <div className="border-t border-slate-200 pt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h4 className="font-bold text-slate-700">שורות פריטים במשלוח</h4>
-                  <button type="button" data-testid="shipment-add-line" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
+                  <button type="button" data-testid="shipment-add-line" onClick={() => {
+                    // שורה חדשה מקבלת דגם שעוד אין לו שורה במשלוח (שורה אחת לכל דגם)
+                    const used = new Set((editingData.lines || []).map((l: any) => shipmentLineKey(l, settings?.models)));
+                    const freeModel = modelsList.find((m: string) => !used.has(shipmentLineKey({ model: m }, settings?.models)));
+                    if (!freeModel) { alert('לכל הדגמים בקטלוג כבר יש שורה במשלוח. לשינוי כמות — עדכן את השורה הקיימת.'); return; }
+                    setEditingData({...editingData, lines: [...(editingData.lines || []), { model: freeModel, modelId: getModelIdByName(settings?.models, freeModel), qty: 1, unitCostUSD: 0 }]});
+                  }} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
                 </div>
                 {(editingData.lines || []).map((line: any, idx: number) => (
                   <div key={idx} className="flex gap-2 items-end mb-3 bg-slate-50 p-3 rounded-lg border border-slate-200 relative">
                     {editingData.lines.length > 1 && <button type="button" data-testid={`shipment-remove-line-${idx}`} onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
                     <div className="flex-1">
                       <label className="block text-xs font-bold text-slate-600 mb-1">דגם</label>
-                      <select className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>
-                        {modelsList.map((m: string) => <option key={m} value={m}>{m}</option>)}
+                      <select data-testid={`shipment-line-model-${idx}`} className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>
+                        {modelsList.map((m: string) => {
+                          // דגם שכבר יש לו שורה אחרת במשלוח — לא ניתן לבחירה (שורה אחת לכל דגם)
+                          const usedElsewhere = (editingData.lines || []).some((l: any, j: number) => j !== idx && shipmentLineKey(l, settings?.models) === shipmentLineKey({ model: m }, settings?.models));
+                          return <option key={m} value={m} disabled={usedElsewhere}>{m}{usedElsewhere ? ' — כבר במשלוח' : ''}</option>;
+                        })}
                       </select>
                     </div>
                     <div className="w-20">
