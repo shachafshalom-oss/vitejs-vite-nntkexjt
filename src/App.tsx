@@ -3551,9 +3551,27 @@ export default function App() {
         const originalItem = items.find(i => i.id === data.id);
         const wasJustSoldAndNowNot = originalItem && originalItem.status === 'sold' && data.status !== 'sold';
 
+        // יחידה שנמכרה דרך הצעת מחיר, או שכבר נמסרה ללקוח, לא מוחזרת למחסן מכאן — אחרת עוקפים את
+        // בדיקות ביטול האישור (הובלה שנמסרה, תעודת משלוח ממוספרת) והיחידה נשארת "מכורה" בהצעה.
+        if (wasJustSoldAndNowNot) {
+          const linkedQuote = quotes.find((q: any) => q.status === 'approved' && Array.isArray(q.approvedItemIds) && q.approvedItemIds.includes(data.id));
+          const linkedDelivery = customerDeliveries.find((d: any) => Array.isArray(d.itemIds) && d.itemIds.includes(data.id) && (d.deliveryStatus === 'delivered' || Number(d.deliveryNoteNumber) > 0));
+          if (linkedQuote) {
+            const cust = customers.find((c: any) => c.id === linkedQuote.customerId);
+            const err: any = new Error(`היחידה נמכרה דרך הצעת מחיר ל${cust?.businessName || cust?.contactName || 'לקוח'}, ולכן לא ניתן להחזיר אותה למחסן מכאן.\nכדי לבטל את המכירה — בטל את אישור ההצעה בטאב הצעות המחיר (שם גם נבדק אם ההזמנה כבר נמסרה).`);
+            err.userFacing = true;
+            throw err;
+          }
+          if (linkedDelivery || originalItem.warrantyStartDate) {
+            const err: any = new Error('היחידה כבר נמסרה ללקוח (או שהונפקה לה תעודת משלוח), ולכן לא ניתן להחזיר אותה למחסן מכאן. החזרת מוצר מטופלת ידנית.');
+            err.userFacing = true;
+            throw err;
+          }
+        }
+
         if (data.status === 'sold' && !data.saleDate) data.saleDate = israelToday();
         // ביטול מכירה מנקה גם תוספות והנחה — אחרת הן נגררות למכירה הבאה של היחידה (OPS-2)
-        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; }
+        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; data.awaitingDelivery = false; data.warrantyStartDate = null; }
         await updateDoc(doc(db, 'crm_items', data.id), data);
 
         // אם פריט עבר מ-sold חזרה — בדוק אם ללקוח יש עוד פריטים נמכרים

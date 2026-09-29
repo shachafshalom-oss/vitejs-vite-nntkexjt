@@ -343,5 +343,25 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(T.docs('crm_quotes')[q5.id].status === 'pending' && !T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id).length, 'האישור נשמר חלקית למרות שהמלאי כבר לא פנוי');
   T.check(T.ui.alerts.slice(alertsBeforeRace).some(a => a.includes('המלאי השתנה')), `לא הוצגה הודעה שהמלאי השתנה: ${T.ui.alerts.slice(alertsBeforeRace).join(' | ')}`);
 
+  // ───────────── 15. החזרה למחסן מחלון עריכת הפריט ─────────────
+  T.describe('15. החזרה למחסן מחלון הפריט של יחידה שנמכרה בהצעה / נמסרה — נחסם');
+  await T.click(T.byId('space-operations'));
+  await T.nav('inventory');
+  for (const r of T.allById('inv-group').filter(r => r.textContent.includes('Prime'))) {
+    const expanded = r.nextElementSibling && r.nextElementSibling.querySelector('[data-testid^="item-edit-"]');
+    if (!expanded) await T.click(r);
+  }
+  const deliveredId = sold[0].id; // נמכרה בהצעה Q ונמסרה ללקוח (תעודה 00001)
+  const itemModal15 = () => T.byId('item-save')?.closest('.fixed');
+  await T.click(T.byId(`item-edit-${deliveredId}`));
+  T.check(!!itemModal15(), 'חלון עריכת הפריט לא נפתח');
+  const alertsBefore15 = T.ui.alerts.length;
+  await T.select(T.fieldByLabel('סטטוס', itemModal15()), 'in_warehouse');
+  await T.click(T.byId('item-save'));
+  const stillSold = T.docs('crm_items')[deliveredId];
+  T.check(stillSold.status === 'sold' && stillSold.customerId === leadId && !!stillSold.warrantyStartDate, `יחידה שנמסרה ללקוח הוחזרה למחסן מחלון הפריט: ${stillSold.status}`);
+  T.check(T.ui.alerts.slice(alertsBefore15).some(a => a.includes('הצעת מחיר') || a.includes('נמסרה')), 'לא הוצגה הודעה למה אי אפשר להחזיר למחסן');
+  T.check(T.docs('crm_quotes')[Q.id].approvedItemIds?.includes(deliveredId) && leadDoc().status === 'active', 'הקישור להצעה / סטטוס הלקוח השתנה');
+
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });
