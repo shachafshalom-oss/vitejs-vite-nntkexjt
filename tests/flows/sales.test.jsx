@@ -42,6 +42,21 @@ async function pickCustomerInQuote(name) {
   await T.mouseDown(option || T.$$('*', quoteModal()).find(d => d.textContent.trim().startsWith(name)));
 }
 
+async function openApproval(quoteId) {
+  await T.selectAction(T.byId(`quote-status-${quoteId}`), 'approved');
+  return !!approvalModal();
+}
+async function submitApproval({ city = 'חיפה' } = {}) {
+  const cityInput = T.$$('input', approvalModal()).find(i => (i.placeholder || '').includes('עיר'));
+  if (cityInput && city) {
+    await T.focus(cityInput);
+    await T.type(cityInput, city);
+    const opt = T.$$('button', approvalModal()).find(b => b.textContent.trim() === city);
+    if (opt) await T.click(opt);
+  }
+  await T.click(T.byId('quote-approve-submit'));
+}
+
 async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {}) {
   await T.selectAction(T.byId(`quote-status-${quoteId}`), 'approved');
   if (!approvalModal()) return false;
@@ -196,7 +211,8 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   const approvedIds = T.docs('crm_quotes')[q2.id].approvedItemIds || [];
   const blocked = T.ui.alerts.slice(alertsBefore).some(a => a.includes('אין מספיק'));
   T.check(blocked || approvedIds.length > 0, 'תרחיש SALES-2 לא רץ: לא נחסם ולא אושר');
-  T.knownBug('SALES-2', `אישור הצעה עם שתי שורות מאותו דגם גורע את אותה יחידה פעמיים (במלאי 1, נדרשו 2; נגרעו ${primeSoldToC9.length}, מזהים באישור: ${JSON.stringify(approvedIds)})`, blocked && primeSoldToC9.length === 0);
+  T.check(blocked && T.ui.alerts.slice(alertsBefore).some(a => a.includes('נדרש: 2, פנוי: 1')), `SALES-2: הצעה עם שתי שורות מאותו דגם כשבמלאי יחידה אחת לא נחסמה עם הודעה "נדרש: 2, פנוי: 1" (מזהים באישור: ${JSON.stringify(approvedIds)})`);
+  T.check(primeSoldToC9.length === 0 && T.docs('crm_quotes')[q2.id].status === 'pending', `SALES-2: למרות החסימה נגרעו ${primeSoldToC9.length} יחידות / ההצעה סומנה כמאושרת`);
 
   T.describe('9. כשל ביצירת PDF ואז ניסיון חוזר');
   await T.nav('quotes');
@@ -255,7 +271,56 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(leadDoc().status === 'lead', `הלקוח לא חזר לסטטוס הקודם (ליד): ${leadDoc().status}`);
   const deliveryAfter = T.docs('crm_customer_deliveries')[D.id];
   T.knownBug('SALES-6', 'ביטול אישור של הזמנה שכבר נמסרה ללקוח מוחק את ההובלה ואת תעודת המשלוח הממוספרת (00001), ומחזיר למלאי יחידה שנמצאת אצל הלקוח — בלי אזהרה', !!deliveryAfter);
-  T.knownBug('SALES-7', `ביטול אישור לא מנקה את "הנחה" מהפריט שחזר למלאי (${itemBack.discountAmount})`, !Number(itemBack.discountAmount));
+
+  // ───────────── 13. שתי שורות מאותו דגם כשיש מלאי, וביטול לפני מסירה ─────────────
+  T.describe('13. שתי שורות מאותו דגם (יש מלאי) וביטול אישור לפני מסירה');
+  await T.act(async () => { await T.api().setDoc(T.api().doc(null, 'crm_items', 'P3'), { model: 'Prime', modelId: 'm_prime', status: 'in_warehouse', factoryUnitCostUSD: 1000, createdAt: '2026-10-01T10:00:00.000Z', shipmentId: '' }); });
+  await T.flush(4);
+  const primeFree = () => T.docsWhere('crm_items', i => i.modelId === 'm_prime' && i.status === 'in_warehouse');
+  const freeBefore = primeFree().length;
+  T.check(freeBefore >= 2, `צפויות לפחות 2 יחידות Prime פנויות לתרחיש: ${freeBefore}`);
+  await T.nav('quotes');
+  const quoteKeysBefore = Object.keys(T.docs('crm_quotes'));
+  await T.click(T.byId('quote-new'));
+  await pickCustomerInQuote('מסעדת הוותיקים');
+  await T.type(T.fieldByLabel('הנחה (₪)', quoteModal()), 300);
+  await T.click(T.buttonByText('הוסף פריט', quoteModal()));
+  await T.click(T.byId('quote-save'));
+  const q5Id = Object.keys(T.docs('crm_quotes')).find(k => !quoteKeysBefore.includes(k));
+  const q5 = q5Id ? { id: q5Id, ...T.docs('crm_quotes')[q5Id] } : null;
+  T.check(q5 && q5.items.length === 2, 'הצעה עם שתי שורות Prime לא נשמרה');
+  T.check(await approveQuote(q5.id), 'חלון האישור לא נפתח');
+  const q5a = T.docs('crm_quotes')[q5.id];
+  const q5ids = q5a.approvedItemIds || [];
+  T.check(q5a.status === 'approved' && q5ids.length === 2 && new Set(q5ids).size === 2, `SALES-2: שתי שורות מאותו דגם צריכות לגרוע שתי יחידות שונות: ${JSON.stringify(q5ids)}`);
+  T.check(q5ids.every(id => T.docs('crm_items')[id]?.status === 'sold' && T.docs('crm_items')[id]?.customerId === 'C9') && primeFree().length === freeBefore - 2, 'היחידות לא סומנו כנמכרות ללקוח');
+  const q5delivery = T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id)[0];
+  T.check(q5delivery && JSON.stringify(q5delivery.itemIds) === JSON.stringify(q5ids), 'ההובלה לא נוצרה עם שתי היחידות');
+  T.check(q5ids.some(id => Number(T.docs('crm_items')[id].discountAmount) === 300), 'ההנחה לא נרשמה על הפריט');
+  // ביטול לפני שהונפקה תעודה — מותר, וכל היחידות חוזרות נקיות למלאי
+  T.answerConfirms(true);
+  await T.selectAction(T.byId(`quote-status-${q5.id}`), 'pending');
+  T.check(T.docs('crm_quotes')[q5.id].status === 'pending', 'ביטול אישור לפני מסירה לא בוצע');
+  const back = q5ids.map(id => T.docs('crm_items')[id]);
+  T.check(back.every(i => i.status === 'in_warehouse' && !i.customerId), 'היחידות לא חזרו למלאי בביטול');
+  T.check(back.every(i => !Number(i.discountAmount)), `SALES-7: ביטול אישור לא ניקה את "הנחה" מהפריט שחזר למלאי: ${back.map(i => i.discountAmount).join(',')}`);
+  T.check(!T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id).length, 'הובלה שלא יצאה לדרך לא נמחקה בביטול');
+
+  // ───────────── 14. יחידה שנמכרה ממכשיר אחר ברגע האישור ─────────────
+  T.describe('14. אישור הצעה כשהמלאי השתנה ממכשיר אחר (עוד לא הגיע למסך)');
+  await T.nav('quotes');
+  T.check(await openApproval(q5.id), 'חלון האישור לא נפתח');
+  T.api().holdSnapshots(true);
+  // דניאל מוכר מהמכשיר שלו את שתי היחידות הפנויות — המסך כאן עוד לא יודע
+  for (const it of primeFree()) await T.api().updateDoc(T.api().doc(null, 'crm_items', it.id), { status: 'sold', customerId: 'C_DANIEL' });
+  const soldByDaniel = T.docsWhere('crm_items', i => i.customerId === 'C_DANIEL').map(i => i.id);
+  const alertsBeforeRace = T.ui.alerts.length;
+  await submitApproval();
+  await T.act(async () => { T.api().holdSnapshots(false); });
+  await T.flush(6);
+  T.check(soldByDaniel.length >= 2 && soldByDaniel.every(id => T.docs('crm_items')[id].customerId === 'C_DANIEL'), 'יחידה שנמכרה ממכשיר אחר נמכרה שוב (נדרסה)');
+  T.check(T.docs('crm_quotes')[q5.id].status === 'pending' && !T.docsWhere('crm_customer_deliveries', d => d.quoteId === q5.id).length, 'האישור נשמר חלקית למרות שהמלאי כבר לא פנוי');
+  T.check(T.ui.alerts.slice(alertsBeforeRace).some(a => a.includes('המלאי השתנה')), `לא הוצגה הודעה שהמלאי השתנה: ${T.ui.alerts.slice(alertsBeforeRace).join(' | ')}`);
 
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });

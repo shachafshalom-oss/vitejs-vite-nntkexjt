@@ -4826,7 +4826,8 @@ export default function App() {
             updateDoc(doc(db, 'crm_items', itemId), {
               status: 'in_warehouse',
               saleDate: null, warrantyMonths: 0, salePrice: 0,
-              addOnPrice: 0, customerId: '', campaignId: '',
+              // גם ההנחה מהמכירה שבוטלה מתאפסת — אחרת היא נגררת למכירה הבאה של היחידה (SALES-7)
+              addOnPrice: 0, discountAmount: 0, customerId: '', campaignId: '',
               // ניקוי מצב ההובלה והאחריות — אחרת פריט שחזר למחסן היה נושא איתו
               // תאריך תחילת אחריות ממכירה שבוטלה.
               awaitingDelivery: false, warrantyStartDate: null,
@@ -5132,17 +5133,28 @@ export default function App() {
 
   const executeQuoteApproval = async (e: any) => {
       e.preventDefault();
+      if (isSaving) return; // לחיצה כפולה על "אשר"
       setIsSaving(true);
       try {
-        const updatesToMake = [];
+        const nowIso = new Date().toISOString();
+        const updatesToMake: { id: string; data: any }[] = [];
+        // יחידות שכבר שובצו באישור הזה. בלי זה, שתי שורות מאותו דגם בחרו את אותה יחידה (SALES-2).
+        const taken = new Set<string>();
         for (const line of quoteApprovalData.itemsToProcess) {
             // התאמה לפי מזהה דגם קבוע (עם נפילה-לאחור לשם עבור נתונים שטרם עברו מיגרציה).
             // זה הלב של התיקון: שינוי שם דגם כבר לא מנתק פריטי מלאי מהצעת המחיר.
-            const availableItems = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse');
-            if (availableItems.length < line.qty) {
-                throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${line.qty}, פנוי: ${availableItems.length})`);
+            const availableItems = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse' && !taken.has(i.id));
+            const qty = Number(line.qty) || 0;
+            if (availableItems.length < qty) {
+                // ההודעה מתייחסת לכל השורות מאותו דגם בהצעה — זה מה שהמשתמש צריך לתקן
+                const totalNeeded = quoteApprovalData.itemsToProcess
+                  .filter((l: any) => isSameModel(l, line, settings.models))
+                  .reduce((s: number, l: any) => s + (Number(l.qty) || 0), 0);
+                const totalFree = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse').length;
+                throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${totalNeeded}, פנוי: ${totalFree})`);
             }
-            for(let i=0; i < line.qty; i++) {
+            for (let i = 0; i < qty; i++) {
+                taken.add(availableItems[i].id);
                 updatesToMake.push({
                     id: availableItems[i].id,
                     data: {
@@ -5154,7 +5166,7 @@ export default function App() {
                         // warrantyStartDate ייכתב רק באישור ההגעה ללקוח בטאב ההובלות.
                         awaitingDelivery: true,
                         warrantyStartDate: null,
-                        updatedAt: new Date().toISOString()
+                        updatedAt: nowIso
                     }
                 });
             }
@@ -5163,60 +5175,74 @@ export default function App() {
         // שמירת IDs שנגרעו לצורך reverse עתידי
         const approvedItemIds = updatesToMake.map(u => u.id);
 
-        // שמירת סטטוס לקוח לפני האישור
         const customer = customers.find(c => c.id === quoteApprovalData.customerId);
-        const previousCustomerStatus = customer?.status || 'lead';
 
         // סכום ההובלה שבאמת מחויב בחשבונית. באיסוף עצמי אין הובלה בפועל —
         // אומדן ההובלה שבהצעה לא אמור להצטרף לחשבונית, גם אם עדיין מוצג בהצעה עצמה.
         const billedShippingCost = quoteApprovalData.deliveryMethod === 'pickup' ? 0 : (Number(quoteApprovalData.shippingCost) || 0);
-
-        await Promise.all(updatesToMake.map(update => updateDoc(doc(db, 'crm_items', update.id), update.data)));
-        await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), {
-          status: 'approved',
-          approvedAt: new Date().toISOString(),
-          approvedItemIds: approvedItemIds,
-          approvedShippingCost: billedShippingCost,
-          previousCustomerStatus: previousCustomerStatus,
-          updatedAt: new Date().toISOString()
-        });
-        await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), {
-          status: 'active',
-          previousStatusBeforeActive: previousCustomerStatus,
-          updatedAt: new Date().toISOString()
-        });
-
-        // --- פתיחת רשומת הובלה ללקוח ---
-        // העיר והסכום נשמרים כ-snapshot על הרשומה עצמה, כך שעדכון עתידי בכרטיס הלקוח
-        // לא ישכתב היסטוריית הובלות שכבר בוצעו.
         const isPickup = quoteApprovalData.deliveryMethod === 'pickup';
-        await addDoc(collection(db, 'crm_customer_deliveries'), {
-          quoteId: quoteApprovalData.quoteId,
-          customerId: quoteApprovalData.customerId,
-          customerName: customer?.businessName || customer?.contactName || '',
-          customerPhone: customer?.phone || '',
-          customerAddress: customer?.address || '',
-          itemIds: approvedItemIds,
-          lines: quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: Number(l.qty) || 0 })),
-          deliveryMethod: quoteApprovalData.deliveryMethod || 'delivery',
-          shippingTiming: quoteApprovalData.shippingTiming || 'immediate',
-          shippingDate: quoteApprovalData.shippingTiming === 'scheduled' ? (quoteApprovalData.shippingDate || '') : '',
-          deliveryCity: isPickup ? '' : (quoteApprovalData.deliveryCity || '').trim(),
-          deliveryCost: isPickup ? 0 : (Number(quoteApprovalData.deliveryCost) || 0),
-          deliveryStatus: 'awaiting',
-          deliveredAt: null,
-          createdAt: new Date().toISOString(),
-          createdBy: user?.email || '',
-          updatedAt: new Date().toISOString(),
-        });
+        const deliveryCity = (quoteApprovalData.deliveryCity || '').trim();
 
-        // שמירת העיר גם בכרטיס הלקוח, אם טרם הוזנה שם — כדי שהיא תישמר לפעם הבאה.
-        if (!isPickup && (quoteApprovalData.deliveryCity || '').trim() && !customer?.city) {
-          await updateDoc(doc(db, 'crm_customers', quoteApprovalData.customerId), {
-            city: (quoteApprovalData.deliveryCity || '').trim(),
-            updatedAt: new Date().toISOString()
+        // הכול בטרנזקציה אחת: היחידות, ההצעה, הלקוח וההובלה נשמרים יחד או שלא נשמר כלום.
+        // לפני הכתיבה בודקים מול השרת (ולא מול המסך) שהיחידות עדיין פנויות ושההצעה עוד לא אושרה —
+        // כך יחידה שנמכרה ממכשיר אחר, או לחיצה כפולה, לא יגרמו למכירה כפולה.
+        const quoteRef = doc(db, 'crm_quotes', quoteApprovalData.quoteId);
+        const customerRef = doc(db, 'crm_customers', quoteApprovalData.customerId);
+        const deliveryRef = doc(collection(db, 'crm_customer_deliveries'));
+        await runTransaction(db, async (tx) => {
+          const itemSnaps = await Promise.all(approvedItemIds.map(id => tx.get(doc(db, 'crm_items', id))));
+          const quoteSnap = await tx.get(quoteRef);
+          const customerSnap = await tx.get(customerRef);
+          if (itemSnaps.some(s => !s.exists() || (s.data() as any)?.status !== 'in_warehouse')) {
+            throw new Error('המלאי השתנה בינתיים (כנראה נמכרה יחידה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
+          }
+          if (!quoteSnap.exists()) throw new Error('הצעת המחיר לא נמצאה (ייתכן שנמחקה). האישור לא נשמר.');
+          if ((quoteSnap.data() as any)?.status === 'approved') throw new Error('הצעת המחיר כבר אושרה. האישור לא נשמר פעם נוספת.');
+          if (!customerSnap.exists()) throw new Error('הלקוח לא נמצא (ייתכן שנמחק או מוזג). האישור לא נשמר.');
+          const serverCustomer: any = customerSnap.data() || {};
+          // שמירת סטטוס הלקוח לפני האישור — לפי השרת, לא לפי המסך
+          const previousCustomerStatus = serverCustomer.status || 'lead';
+
+          updatesToMake.forEach(update => tx.update(doc(db, 'crm_items', update.id), update.data));
+          tx.update(quoteRef, {
+            status: 'approved',
+            approvedAt: nowIso,
+            approvedItemIds: approvedItemIds,
+            approvedShippingCost: billedShippingCost,
+            previousCustomerStatus: previousCustomerStatus,
+            updatedAt: nowIso
           });
-        }
+          tx.update(customerRef, {
+            status: 'active',
+            previousStatusBeforeActive: previousCustomerStatus,
+            // שמירת העיר גם בכרטיס הלקוח, אם טרם הוזנה שם — כדי שהיא תישמר לפעם הבאה.
+            ...(!isPickup && deliveryCity && !serverCustomer.city ? { city: deliveryCity } : {}),
+            updatedAt: nowIso
+          });
+
+          // --- פתיחת רשומת הובלה ללקוח ---
+          // העיר והסכום נשמרים כ-snapshot על הרשומה עצמה, כך שעדכון עתידי בכרטיס הלקוח
+          // לא ישכתב היסטוריית הובלות שכבר בוצעו.
+          tx.set(deliveryRef, {
+            quoteId: quoteApprovalData.quoteId,
+            customerId: quoteApprovalData.customerId,
+            customerName: serverCustomer.businessName || serverCustomer.contactName || '',
+            customerPhone: serverCustomer.phone || '',
+            customerAddress: serverCustomer.address || '',
+            itemIds: approvedItemIds,
+            lines: quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: Number(l.qty) || 0 })),
+            deliveryMethod: quoteApprovalData.deliveryMethod || 'delivery',
+            shippingTiming: quoteApprovalData.shippingTiming || 'immediate',
+            shippingDate: quoteApprovalData.shippingTiming === 'scheduled' ? (quoteApprovalData.shippingDate || '') : '',
+            deliveryCity: isPickup ? '' : deliveryCity,
+            deliveryCost: isPickup ? 0 : (Number(quoteApprovalData.deliveryCost) || 0),
+            deliveryStatus: 'awaiting',
+            deliveredAt: null,
+            createdAt: nowIso,
+            createdBy: user?.email || '',
+            updatedAt: nowIso,
+          });
+        });
 
         setIsQuoteApprovalModalOpen(false);
 

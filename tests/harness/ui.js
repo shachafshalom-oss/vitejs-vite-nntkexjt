@@ -3,6 +3,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
+export { act };
 
 export const fs = (globalThis.__fs = globalThis.__fs || { store: {}, log: [], listeners: [], seq: 0 });
 export const ui = globalThis.__ui;

@@ -46,7 +46,8 @@ function colStore(name) { return (state.store[name] = state.store[name] || {}); 
 function getFirestore() { return { __db: true }; }
 function collection(_db, name) { return { __type: 'col', name }; }
 function doc(a, b, c) {
-  if (a && a.__type === 'col') return { __type: 'doc', col: a.name, id: b };
+  // doc(collection(...)) בלי מזהה — כמו ב-SDK האמיתי: מזהה חדש אקראי (לשימוש ב-tx.set)
+  if (a && a.__type === 'col') return { __type: 'doc', col: a.name, id: b !== undefined ? b : 'auto_' + (++state.seq) };
   return { __type: 'doc', col: b, id: c };
 }
 
@@ -56,7 +57,17 @@ function snapshotOf(colName) {
   return { docs, size: docs.length, empty: docs.length === 0, forEach: (cb) => docs.forEach(cb) };
 }
 
+// holdSnapshots(true): כתיבות נשמרות ב"שרת" אבל לא מגיעות למסך — מדמה את החלון שבו
+// משתמש אחר כבר שינה נתון והעדכון עוד לא הגיע למכשיר הזה. holdSnapshots(false) משחרר.
+function holdSnapshots(on) {
+  if (on) { state.holdEmits = true; state.heldEmits = new Set(); return; }
+  const cols = [...(state.heldEmits || [])];
+  state.holdEmits = false; state.heldEmits = new Set();
+  cols.forEach(emit);
+}
+
 function emit(colName) {
+  if (state.holdEmits) { state.heldEmits.add(colName); return; }
   state.listeners.filter(l => l.col === colName).forEach(l => {
     if (l.docId) {
       const data = colStore(colName)[l.docId];
@@ -192,4 +203,4 @@ function orderBy() { return {}; }
 function limit() { return {}; }
 function writeBatch() { const ops = []; return { set: (r, d, o) => ops.push(() => setDoc(r, d, o)), update: (r, d) => ops.push(() => updateDoc(r, d)), delete: (r) => ops.push(() => deleteDoc(r)), commit: async () => { for (const o of ops) await o(); } }; }
 
-module.exports = globalThis.__fsApi = { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc, addDoc, deleteDoc, getDocs, getDoc, runTransaction, deleteField, arrayUnion, FieldPath, serverTimestamp, query, where, orderBy, limit, writeBatch };
+module.exports = globalThis.__fsApi = { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc, addDoc, deleteDoc, getDocs, getDoc, runTransaction, deleteField, arrayUnion, FieldPath, serverTimestamp, query, where, orderBy, limit, writeBatch, holdSnapshots };
