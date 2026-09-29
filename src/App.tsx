@@ -3291,8 +3291,6 @@ export default function App() {
       };
       
       if (data.id) {
-        await updateDoc(doc(sRef, data.id), data);
-        
         const currentShipmentItems = items.filter(i => i.shipmentId === data.id);
         // מפתחים לפי מזהה דגם קבוע ולא לפי שם. קריטי: הלולאה בסוף הבלוק *מוחקת*
         // פריטים שהמפתח שלהם לא מופיע בשורות המעודכנות. כשהמפתוח היה לפי שם,
@@ -3309,6 +3307,27 @@ export default function App() {
           if (!currentItemsByModel[k]) currentItemsByModel[k] = [];
           currentItemsByModel[k].push(item);
         });
+
+        // יחידה שנמכרה (או שממתינה להובלה ללקוח) לא נמחקת לעולם בעריכת משלוח (OPS-4).
+        // לכן קודם בודקים הכול, ורק אם אין בעיה כותבים — כדי שלא תיווצר חצי-שמירה.
+        const isLockedUnit = (i: any) => i.status === 'sold' || i.awaitingDelivery === true || !!i.customerId;
+        const desiredByKey: Record<string, number> = {};
+        for (const line of data.lines) desiredByKey[keyOf(line)] = (desiredByKey[keyOf(line)] || 0) + (Number(line.qty) || 0);
+        const blockers: string[] = [];
+        for (const key of Object.keys(currentItemsByModel)) {
+          const locked = currentItemsByModel[key].filter(isLockedUnit).length;
+          if (!locked) continue;
+          const modelName = currentItemsByModel[key][0]?.model || '';
+          if (!(key in desiredByKey)) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו — אי אפשר להסיר את הדגם מהמשלוח.`);
+          else if (desiredByKey[key] < locked) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו — הכמות לא יכולה לרדת מתחת ל-${locked} (הוזן ${desiredByKey[key]}).`);
+        }
+        if (blockers.length) {
+          const err: any = new Error('השמירה נחסמה — יחידות שנמכרו לא נמחקות מהמלאי:\n' + blockers.join('\n'));
+          err.userFacing = true;
+          throw err;
+        }
+
+        await updateDoc(doc(sRef, data.id), data);
 
         const modelsInUpdatedLines = new Set();
 
@@ -3334,11 +3353,8 @@ export default function App() {
           } 
           else if (diff < 0) {
             const itemsToRemoveCount = Math.abs(diff);
-            const sortedToRemove = [...currentModelItems].sort((a: any, b: any) => {
-              if (a.status === 'sold' && b.status !== 'sold') return 1;
-              if (a.status !== 'sold' && b.status === 'sold') return -1;
-              return 0;
-            });
+            // רק יחידות שלא נמכרו מועמדות למחיקה (הבדיקה למעלה מבטיחה שיש מספיק כאלה)
+            const sortedToRemove = currentModelItems.filter((i: any) => !isLockedUnit(i));
 
             for (let i = 0; i < itemsToRemoveCount; i++) {
               if (sortedToRemove[i]) {
@@ -3359,7 +3375,7 @@ export default function App() {
         for (const modelKey in currentItemsByModel) {
           if (!modelsInUpdatedLines.has(modelKey)) {
             for (const item of currentItemsByModel[modelKey]) {
-              if (!item._deleted) await deleteDoc(doc(db, 'crm_items', item.id));
+              if (!item._deleted && !isLockedUnit(item)) await deleteDoc(doc(db, 'crm_items', item.id));
             }
           }
         }
@@ -3374,7 +3390,7 @@ export default function App() {
         }
       }
       setIsShipmentModalOpen(false);
-    } catch (err) { alert("שגיאה בשמירה"); }
+    } catch (err: any) { alert(err?.userFacing ? err.message : "שגיאה בשמירה"); }
     setIsSaving(false);
   };
 
@@ -3423,7 +3439,8 @@ export default function App() {
         const wasJustSoldAndNowNot = originalItem && originalItem.status === 'sold' && data.status !== 'sold';
 
         if (data.status === 'sold' && !data.saleDate) data.saleDate = new Date().toISOString().split('T')[0];
-        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; }
+        // ביטול מכירה מנקה גם תוספות והנחה — אחרת הן נגררות למכירה הבאה של היחידה (OPS-2)
+        if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; }
         await updateDoc(doc(db, 'crm_items', data.id), data);
 
         // אם פריט עבר מ-sold חזרה — בדוק אם ללקוח יש עוד פריטים נמכרים
@@ -8232,11 +8249,11 @@ export default function App() {
               <div className="border-t border-slate-200 pt-4">
                 <div className="flex justify-between items-center mb-3">
                   <h4 className="font-bold text-slate-700">שורות פריטים במשלוח</h4>
-                  <button type="button" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
+                  <button type="button" data-testid="shipment-add-line" onClick={() => setEditingData({...editingData, lines: [...(editingData.lines || []), { model: modelsList[0] || '', qty: 1, unitCostUSD: 0 }]})} className="text-xs bg-[#EDDEDE] text-[#651011] px-2 py-1 rounded font-bold hover:bg-[#DABDBD]">+ הוסף שורה</button>
                 </div>
                 {(editingData.lines || []).map((line: any, idx: number) => (
                   <div key={idx} className="flex gap-2 items-end mb-3 bg-slate-50 p-3 rounded-lg border border-slate-200 relative">
-                    {editingData.lines.length > 1 && <button type="button" onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
+                    {editingData.lines.length > 1 && <button type="button" data-testid={`shipment-remove-line-${idx}`} onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
                     <div className="flex-1">
                       <label className="block text-xs font-bold text-slate-600 mb-1">דגם</label>
                       <select className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>

@@ -114,7 +114,7 @@ async function openInventoryGroup(model) {
   U = T.docs('crm_items')[unit.id];
   T.check(U.status === 'in_warehouse' && !U.customerId && !U.salePrice && !U.saleDate, 'נתוני המכירה לא נוקו בביטול');
   T.check(T.docs('crm_customers').L1.status === 'lead', `הלקוח לא חזר לסטטוס הקודם (ליד) אחרי ביטול: ${T.docs('crm_customers').L1.status}`);
-  T.knownBug('OPS-2', `ביטול מכירה משאיר את "תוספות" על הפריט (${U.addOnPrice})`, !Number(U.addOnPrice));
+  T.check(!Number(U.addOnPrice) && !Number(U.discountAmount), `OPS-2: ביטול מכירה השאיר על הפריט תוספות/הנחה (${U.addOnPrice}/${U.discountAmount})`);
 
   // ───────────── 6. מכירה מה-FAB ─────────────
   T.describe('6. מכירה מהירה מה-FAB (גריעה אוטומטית מהמלאי)');
@@ -146,15 +146,45 @@ async function openInventoryGroup(model) {
   T.check(primeItems().filter(i => i.status === 'sold').length === 2, 'שינוי סטטוס המשלוח שינה פריטים שכבר נמכרו');
 
   // ───────────── 7. עריכת משלוח אחרי מכירות ─────────────
-  T.describe('7. הקטנת כמות במשלוח שכל יחידותיו נמכרו');
+  T.describe('7. עריכת כמויות במשלוח שיש בו יחידות שנמכרו');
   if (itemModal()) await T.click(T.buttonByText('ביטול', itemModal()));
   await T.nav('shipments');
-  await T.click(T.byId(`shipment-edit-${S.id}`));
+  const sold2 = () => primeItems().filter(i => i.status === 'sold').map(i => i.id).sort().join(',');
+  const soldBefore7 = sold2();
+  const editShipment = async () => { await T.click(T.byId(`shipment-edit-${S.id}`)); return !!shipmentModal(); };
+  const closeShipment = async () => { if (shipmentModal()) await T.click(T.buttonByText('ביטול', shipmentModal()) || T.$('button', shipmentModal())); };
+  // 7א. הגדלה ל-3 ואז הקטנה ל-2 — נמחקת רק היחידה שלא נמכרה
+  T.check(await editShipment(), 'חלון עריכת המשלוח לא נפתח');
+  await T.type(T.fieldByLabel('כמות', shipmentModal()), 3);
+  await T.click(T.byId('shipment-save'));
+  T.check(primeItems().length === 3 && sold2() === soldBefore7, `הגדלה ל-3 לא יצרה יחידה חדשה אחת: ${primeItems().length}`);
+  await editShipment();
+  await T.type(T.fieldByLabel('כמות', shipmentModal()), 2);
+  await T.click(T.byId('shipment-save'));
+  T.check(primeItems().length === 2 && sold2() === soldBefore7 && Number(T.docs('crm_shipments')[S.id].lines?.[0]?.qty) === 2, 'הקטנה ל-2 לא מחקה בדיוק את היחידה שלא נמכרה');
+  // 7ב. הקטנה מתחת למספר היחידות שנמכרו — נחסם, שום דבר לא נכתב
+  const seqBefore = T.seq();
+  let alertsBefore7 = T.ui.alerts.length;
+  await editShipment();
   await T.type(T.fieldByLabel('כמות', shipmentModal()), 1);
   await T.click(T.byId('shipment-save'));
-  T.check(Number(T.docs('crm_shipments')[S.id].lines?.[0]?.qty) === 1, 'תרחיש OPS-4 לא רץ: הכמות במשלוח לא עודכנה ל-1');
-  const soldLeft = primeItems().filter(i => i.status === 'sold').length;
-  T.knownBug('OPS-4', `הקטנת כמות במשלוח מוחקת פריט שכבר נמכר (נשארו ${soldLeft} מתוך 2 מכירות)`, soldLeft === 2);
+  T.check(sold2() === soldBefore7 && primeItems().length === 2, `OPS-4: הקטנת כמות במשלוח מחקה יחידה שכבר נמכרה (נשארו: ${sold2()})`);
+  T.check(Number(T.docs('crm_shipments')[S.id].lines?.[0]?.qty) === 2 && T.writesSince(seqBefore).length === 0, 'OPS-4: השמירה נחסמה חלקית — המשלוח/המלאי עודכנו');
+  T.check(T.ui.alerts.slice(alertsBefore7).some(a => a.includes('כבר נמכרו') && a.includes('Prime')), 'לא הוצגה הודעה שיחידות Prime כבר נמכרו');
+  await closeShipment();
+  // 7ג. הסרת שורת הדגם כולה (והוספת דגם אחר במקומה) — נחסם, ולא נוצרה יחידה של הדגם החדש
+  alertsBefore7 = T.ui.alerts.length;
+  const nightBefore = T.docsWhere('crm_items', i => i.modelId === 'm_night').length;
+  await editShipment();
+  await T.click(T.byId('shipment-add-line'));
+  const modelSelects = T.$$('select', shipmentModal()).filter(el => T.$$('option', el).some(o => o.value === 'Night'));
+  await T.select(modelSelects[modelSelects.length - 1], 'Night');
+  await T.click(T.byId('shipment-remove-line-0'));
+  await T.click(T.byId('shipment-save'));
+  T.check(sold2() === soldBefore7 && T.docs('crm_shipments')[S.id].lines?.length === 1 && T.docs('crm_shipments')[S.id].lines[0].model === 'Prime', 'OPS-4: הסרת שורת דגם שיש בה יחידות שנמכרו לא נחסמה');
+  T.check(T.docsWhere('crm_items', i => i.modelId === 'm_night').length === nightBefore, 'השמירה החסומה בכל זאת יצרה יחידת Night');
+  T.check(T.ui.alerts.slice(alertsBefore7).some(a => a.includes('אי אפשר להסיר')), 'לא הוצגה הודעה שאי אפשר להסיר את הדגם');
+  await closeShipment();
 
   // ───────────── 8. פעולות בלילה (00:00–03:00) ─────────────
   T.describe('8. קליטה ומכירה בשעה 01:30 בלילה (שעון ישראל)');
