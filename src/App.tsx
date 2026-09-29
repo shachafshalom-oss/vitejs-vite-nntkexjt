@@ -95,6 +95,31 @@ const calcDepositAmount = (type: string, value: number, productsTotal: number): 
 };
 
 // =========================================================================
+// תמחור פרויקט קסטום — מקור אמת יחיד (CP-1)
+// -------------------------------------------------------------------------
+// בעבר נוסחת המחיר הועתקה ל-8 מקומות (מסך, שורת סיכום, PDF, Excel, Morning...).
+// חלק מהעותקים הפכו מכס 0% ל-12% ("|| 12"), כך שהלקוח ראה בהצעה מחיר אחד
+// וקיבל דרישת תשלום על סכום אחר. מעכשיו כל מקום מחשב דרך הפונקציות האלה בלבד.
+// =========================================================================
+const projectRate = (params: any): number => Number(params?.exchangeRate) || 3;
+// מכס חסר → 12% (ברירת המחדל של טופס הפרויקט). 0% הוא ערך חוקי ונשמר כ-0.
+const projectCustomsPct = (params: any): number => {
+  const raw = params?.customsPercent;
+  const v = (raw === undefined || raw === null || raw === '') ? 12 : Number(raw);
+  return (Number.isFinite(v) ? v : 12) / 100;
+};
+const projectMarginMult = (proj: any): number => 1 + Number(proj?.marginPercent || 30) / 100;
+// עלות landed ליחידה ומחיר המכירה המחושב ליחידה (לפני מחיר ידני, מעוגל לשקל —
+// בדיוק הסכום שנשלח ל-Morning). totals = calcProjectTotals של אותו פרויקט ואותם פרמטרים.
+const projectUnitPricing = (pr: any, params: any, totals: any, proj: any) => {
+  const factoryILS = Number(pr.unitPriceUSD) * projectRate(params);
+  const shippingILS = Number(totals?.shippingPerCBM || 0) * Number(pr.cbm);
+  const customsILS = factoryILS * projectCustomsPct(params);
+  const landedUnit = factoryILS + shippingILS + customsILS + Number(totals?.overheadPerUnit || 0);
+  return { factoryILS, shippingILS, customsILS, landedUnit, calcSaleUnit: Math.round(landedUnit * projectMarginMult(proj)) };
+};
+
+// =========================================================================
 // PDF וקטורי אמיתי (לא צילום מסך) עם עברית תקינה — לפרויקטים קוסטום
 // -------------------------------------------------------------------------
 // ל-jsPDF יש מנוע bidi מובנה, אבל הוא שובר טקסט שמערבב עברית עם מספרים
@@ -348,8 +373,6 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
   const nameColWrapWidth = 115;
   const qtyColCenter = 300, usdColCenter = 265, cbmColCenter = 225, landedColCenter = 175, saleColRight = 115;
   let pageNum = 1;
-  const rate = Number(proj.params?.exchangeRate || 3);
-  const customsPct = Number(proj.params?.customsPercent || 12) / 100;
 
   function drawHeader(isFirstPage: boolean) {
     doc.setFillColor(PDF_BRAND.charcoal);
@@ -429,9 +452,7 @@ function drawInternalPdfNative(doc: any, proj: any, totals: any, editablePrices:
     doc.setFontSize(7);
     infoLines.forEach((line: string) => { textY += 9; pdfRtlText(doc, line, nameColRight, textY); });
 
-    const factoryILS = Number(pr.unitPriceUSD) * rate;
-    const shippingForItem = Number(totals.shippingPerCBM || 0) * Number(pr.cbm);
-    const landedUnit = Math.round(factoryILS + shippingForItem + factoryILS * customsPct + Number(totals.overheadPerUnit || 0));
+    const landedUnit = Math.round(projectUnitPricing(pr, proj.params, totals, proj).landedUnit);
     const landedTotal = landedUnit * Number(pr.qty);
     const saleUnit = Number(editablePrices[`${i}`] || 0);
     const saleTotal = Math.round(saleUnit * Number(pr.qty));
@@ -3943,17 +3964,17 @@ export default function App() {
     const totalCBM = products.reduce((s: number, pr: any) => s + (Number(pr.cbm) * Number(pr.qty)), 0);
     const totalQty = products.reduce((s: number, pr: any) => s + Number(pr.qty), 0);
     const totalFactoryUSD = products.reduce((s: number, pr: any) => s + (Number(pr.unitPriceUSD) * Number(pr.qty)), 0);
-    const rate = Number(p.exchangeRate) || 3;
+    const rate = projectRate(p);
     const totalFactoryILS = totalFactoryUSD * rate;
     const containerShippingILS = Number(p.containerShippingUSD) * rate;
     // מכס: על עלות המפעל בלבד (לא על שילוח)
-    const customsILS = totalFactoryILS * (Number(p.customsPercent) / 100);
+    const customsILS = totalFactoryILS * projectCustomsPct(p);
     const portFeesILS = Number(p.portFeesILS) || 0;
     const localTransportILS = Number(p.localTransportILS) || 0;
     const installationILS = Number(p.installationILS) || 0;
     const fixedOverheadILS = portFeesILS + localTransportILS + installationILS;
     const totalCostILS = totalFactoryILS + containerShippingILS + customsILS + fixedOverheadILS;
-    const suggestedPrice = totalCostILS * (1 + Number(form.marginPercent || 30) / 100);
+    const suggestedPrice = totalCostILS * projectMarginMult(form);
     const shippingPerCBM = totalCBM > 0 ? containerShippingILS / totalCBM : 0;
     const overheadPerUnit = totalQty > 0 ? fixedOverheadILS / totalQty : 0;
     return { totalCBM, totalQty, totalFactoryUSD, totalFactoryILS, containerShippingILS, customsILS, portFeesILS, localTransportILS, installationILS, fixedOverheadILS, totalCostILS, suggestedPrice, shippingPerCBM, overheadPerUnit };
@@ -4458,9 +4479,6 @@ export default function App() {
     const params = paramsOverride || proj.params || {};
     const products = productsOverride || inlineProductEdits[proj.id] || proj.products || [];
     const totals = calcProjectTotals({ ...proj, products, params });
-    const rate = Number(params.exchangeRate) || 3;
-    const customsPct = Number(params.customsPercent ?? 12) / 100;
-    const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
 
     const lines = products.map((pr: any, i: number) => {
       let unitPrice: number;
@@ -4469,10 +4487,7 @@ export default function App() {
       } else if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
         unitPrice = Number(inlineSalePrices[proj.id][`${i}`]);
       } else {
-        const factoryILS = Number(pr.unitPriceUSD) * rate;
-        const shipILS = totals.shippingPerCBM * Number(pr.cbm);
-        const landedUnit = factoryILS + shipILS + (factoryILS * customsPct) + totals.overheadPerUnit;
-        unitPrice = Math.round(landedUnit * marginMult);
+        unitPrice = projectUnitPricing(pr, params, totals, proj).calcSaleUnit;
       }
       // תיאור לשורת המסמך: שם עברי אם קיים, אחרת אנגלי, ובתוספת מידה אם יש
       const he = String(pr.itemHe || '').trim();
@@ -7412,16 +7427,8 @@ export default function App() {
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {(effectiveProducts as any[]).map((pr: any, i: number) => {
-                                const rate = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3);
-                                const customsPct = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
-                                const marginMult = 1 + Number(proj.marginPercent || 30) / 100;
-                                const factoryCostILS = Number(pr.unitPriceUSD) * rate;
-                                const shippingForItemILS = totals.shippingPerCBM * Number(pr.cbm);
-                                const customsForItem = factoryCostILS * customsPct;
-                                const landedPerUnit = factoryCostILS + shippingForItemILS + customsForItem + totals.overheadPerUnit;
+                                const { landedUnit: landedPerUnit, calcSaleUnit: salePricePerUnit } = projectUnitPricing(pr, liveParams, totals, proj);
                                 const fullLandedILS = landedPerUnit * Number(pr.qty);
-                                const salePricePerUnit = landedPerUnit * marginMult;
-                                const salePriceTotal = salePricePerUnit * Number(pr.qty);
                                 const size = getProductSize(pr);
                                 const updatePr = (fields: any) => {
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
@@ -7551,16 +7558,10 @@ export default function App() {
                                 <td data-testid="cp-sale-total" className="px-3 py-2.5 text-center font-black text-green-700 bg-green-50">
                                   {(() => {
                                     const products = effectiveProducts;
-                                    const rate3 = Number(liveParams.exchangeRate || proj.params?.exchangeRate || 3);
-                                    const customsPct3 = Number(liveParams.customsPercent || proj.params?.customsPercent || 12) / 100;
-                                    const marginMult3 = 1 + Number(proj.marginPercent || 30) / 100;
                                     const totalSale = products.reduce((sum: number, pr: any, i: number) => {
-                                      const f3 = Number(pr.unitPriceUSD) * rate3;
-                                      const s3 = totals.shippingPerCBM * Number(pr.cbm);
-                                      const landed3 = f3 + s3 + (f3 * customsPct3) + totals.overheadPerUnit;
                                       const unitPrice = inlineSalePrices[proj.id]?.[`${i}`] !== undefined
                                         ? inlineSalePrices[proj.id][`${i}`]
-                                        : Math.round(landed3 * marginMult3);
+                                        : projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                                       return sum + unitPrice * Number(pr.qty);
                                     }, 0);
                                     return `₪${Math.round(totalSale).toLocaleString()}`;
@@ -7585,9 +7586,6 @@ export default function App() {
                         <div className="flex gap-2 flex-wrap">
                           <button
                             onClick={() => {
-                              const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
-                              const rate2 = Number((customProjectLiveParams || proj.params)?.exchangeRate || 3);
-                              const customs2 = Number((customProjectLiveParams || proj.params)?.customsPercent || 12) / 100;
                               const products = effectiveProducts;
                               const initPrices: Record<string, number> = {};
                               products.forEach((pr: any, i: number) => {
@@ -7597,13 +7595,10 @@ export default function App() {
                                 } else if (inlineSalePrices[proj.id]?.[`${i}`] !== undefined) {
                                   initPrices[`${i}`] = inlineSalePrices[proj.id][`${i}`];
                                 } else {
-                                  const f2 = Number(pr.unitPriceUSD) * rate2;
-                                  const s2 = totals.shippingPerCBM * Number(pr.cbm);
-                                  const landedUnit = f2 + s2 + (f2 * customs2) + totals.overheadPerUnit;
-                                  initPrices[`${i}`] = Math.round(landedUnit * margin2);
+                                  initPrices[`${i}`] = projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                                 }
                               });
-                              setPdfExportModal({ proj: {...proj, products}, totals, type: 'internal', editablePrices: initPrices, shippingInstallationCost: Number(proj.deliveryCost || 0) });
+                              setPdfExportModal({ proj: {...proj, products, params: liveParams}, totals, type: 'internal', editablePrices: initPrices, shippingInstallationCost: Number(proj.deliveryCost || 0) });
                             }}
                             data-testid="cp-pdf-open"
                             className="px-4 py-2 bg-[#7B1315] text-white rounded-lg text-sm font-medium hover:bg-[#651011] flex items-center gap-2"
@@ -7619,22 +7614,16 @@ export default function App() {
                                 s.onload = () => resolve((window as any).XLSX);
                                 document.head.appendChild(s);
                               });
-                              const rate2 = Number(liveParams?.exchangeRate || proj.params?.exchangeRate || 3);
-                              const customs2 = Number(liveParams?.customsPercent || proj.params?.customsPercent || 12) / 100;
-                              const margin2 = 1 + Number(proj.marginPercent || 30) / 100;
                               // Products sheet — use effectiveProducts + inlineSalePrices (same as screen)
                               const productRows = effectiveProducts.map((pr: any, i: number) => {
-                                const f2 = Number(pr.unitPriceUSD) * rate2;
-                                const s2 = totals.shippingPerCBM * Number(pr.cbm);
-                                const c2 = f2 * customs2;
-                                const landedUnit = f2 + s2 + c2 + totals.overheadPerUnit;
+                                const { landedUnit, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj);
                                 const landedTotal = landedUnit * Number(pr.qty);
                                 // Use manually set sale price if exists (same priority as screen/PDF)
                                 const saleUnit = proj.salePriceOverrides?.[`${i}`] !== undefined
                                   ? proj.salePriceOverrides[`${i}`]
                                   : inlineSalePrices[proj.id]?.[`${i}`] !== undefined
                                     ? inlineSalePrices[proj.id][`${i}`]
-                                    : Math.round(landedUnit * margin2);
+                                    : calcSaleUnit;
                                 const saleTotal = saleUnit * Number(pr.qty);
                                 const sz2 = getProductSize(pr);
                                 return {
@@ -7656,18 +7645,18 @@ export default function App() {
                                 { 'פרמטר': 'שם פרויקט', 'ערך': proj.name },
                                 { 'פרמטר': 'לקוח', 'ערך': proj.clientName || '' },
                                 { 'פרמטר': 'תאריך', 'ערך': proj.date },
-                                { 'פרמטר': 'שע"ח (₪/$)', 'ערך': rate2 },
+                                { 'פרמטר': 'שע"ח (₪/$)', 'ערך': projectRate(liveParams) },
                                 { 'פרמטר': 'עלות מפעל ($)', 'ערך': Math.round(totals.totalFactoryUSD) },
                                 { 'פרמטר': 'עלות מפעל (₪)', 'ערך': Math.round(totals.totalFactoryILS) },
                                 { 'פרמטר': 'שילוח מכולה (₪)', 'ערך': Math.round(totals.containerShippingILS) },
-                                { 'פרמטר': `מכס ${liveParams?.customsPercent || proj.params?.customsPercent || 12}% (₪)`, 'ערך': Math.round(totals.customsILS) },
+                                { 'פרמטר': `מכס ${Math.round(projectCustomsPct(liveParams) * 1000) / 10}% (₪)`, 'ערך': Math.round(totals.customsILS) },
                                 { 'פרמטר': 'אגרות נמל (₪)', 'ערך': Math.round(totals.portFeesILS) },
                                 { 'פרמטר': 'הובלה בארץ (₪)', 'ערך': Math.round(totals.localTransportILS) },
                                 { 'פרמטר': 'התקנה (₪)', 'ערך': Math.round(totals.installationILS) },
                                 { 'פרמטר': '---', 'ערך': '---' },
                                 { 'פרמטר': 'עלות כוללת (₪)', 'ערך': Math.round(totals.totalCostILS) },
-                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const f3=Number(pr.unitPriceUSD)*rate2; const s3=totals.shippingPerCBM*Number(pr.cbm); const lu=f3+s3+(f3*customs2)+totals.overheadPerUnit; const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:Math.round(lu*margin2); return s+su*Number(pr.qty); }, 0)) },
-                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const f3=Number(pr.unitPriceUSD)*rate2; const s3=totals.shippingPerCBM*Number(pr.cbm); const lu=f3+s3+(f3*customs2)+totals.overheadPerUnit; const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:Math.round(lu*margin2); return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:calcSaleUnit; return s+su*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { landedUnit: lu, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=proj.salePriceOverrides?.[`${i}`]!==undefined?proj.salePriceOverrides[`${i}`]:inlineSalePrices[proj.id]?.[`${i}`]!==undefined?inlineSalePrices[proj.id][`${i}`]:calcSaleUnit; return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
                                 { 'פרמטר': 'סה"כ CBM', 'ערך': Number(totals.totalCBM.toFixed(3)) },
                                 { 'פרמטר': 'סה"כ יחידות', 'ערך': totals.totalQty },
                               ];
@@ -7698,10 +7687,8 @@ export default function App() {
                         <thead><tr style={{background:'#f1f5f9'}}>{['ID','מוצר','גודל','כמות','מחיר $','CBM','עלות Landed ₪'].map(h=><th key={h} style={{padding:'6px 8px',textAlign:'right',border:'1px solid #e2e8f0'}}>{h}</th>)}</tr></thead>
                         <tbody>
                           {(proj.products||[]).map((pr:any,i:number)=>{
-                            const rate2=Number(proj.params?.exchangeRate||3);const customs2=Number(proj.params?.customsPercent||12)/100;
-                            const f2=Number(pr.unitPriceUSD)*rate2;const s2=totals.shippingPerCBM*Number(pr.cbm);
-                            // מכס על מפעל בלבד
-                            const full2=(f2+s2+(f2*customs2)+totals.overheadPerUnit)*Number(pr.qty);
+                            // מכס על מפעל בלבד — מחושב במקור האמת היחיד
+                            const full2=projectUnitPricing(pr, proj.params, totals, proj).landedUnit*Number(pr.qty);
                             const sz2=getProductSize(pr);
                             return <tr key={i} style={{borderBottom:'1px solid #e2e8f0'}}><td style={{padding:'5px 8px'}}>{pr.id}</td><td style={{padding:'5px 8px',fontWeight:'bold'}}>{pr.itemHe}</td><td style={{padding:'5px 8px',fontSize:'10px'}}>{sz2}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{pr.qty}</td><td style={{padding:'5px 8px',textAlign:'center'}}>${pr.unitPriceUSD}</td><td style={{padding:'5px 8px',textAlign:'center'}}>{Number(pr.cbm).toFixed(3)}</td><td style={{padding:'5px 8px',textAlign:'center',fontWeight:'bold',color:'#7c3aed'}}>₪{Math.round(full2).toLocaleString()}</td></tr>;
                           })}
@@ -9973,8 +9960,6 @@ export default function App() {
           setPdfExportModal(null);
         };
 
-        const rate2 = Number(proj.params?.exchangeRate || 3);
-        const customs2 = Number(proj.params?.customsPercent || 12) / 100;
 
         return (
           <div className="fixed inset-0 z-[125] flex items-start justify-center p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto">
@@ -10039,9 +10024,7 @@ export default function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {(proj.products || []).map((pr: any, i: number) => {
-                          const f2 = Number(pr.unitPriceUSD) * rate2;
-                          const s2 = totals.shippingPerCBM * Number(pr.cbm);
-                          const landedUnit = Math.round(f2 + s2 + (f2 * customs2) + totals.overheadPerUnit);
+                          const landedUnit = Math.round(projectUnitPricing(pr, proj.params, totals, proj).landedUnit);
                           const saleUnit = Number(editablePrices[`${i}`] || 0);
                           const saleTotal = saleUnit * Number(pr.qty);
                           return (
@@ -10059,6 +10042,7 @@ export default function App() {
                                   step="10"
                                   className="w-24 text-xs border border-green-300 rounded-lg px-2 py-1 text-center font-bold text-green-700 bg-green-50 outline-none focus:border-green-500 focus:ring-1 focus:ring-green-300"
                                   value={saleUnit}
+                                  data-testid={`cp-pdf-sale-${i}`}
                                   onChange={e => {
                                     const newVal = Number(e.target.value);
                                     const updatedOverrides = { ...editablePrices, [`${i}`]: newVal };

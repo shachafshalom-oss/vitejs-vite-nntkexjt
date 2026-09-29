@@ -231,20 +231,27 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   T.describe('7. חשדות מקריאת הקוד');
   const P2 = () => proj('P2');
 
-  // CP-1: מכס 0% — המסך מחשב לפי 12% (|| 12) בעוד מסמך Morning מחשב לפי 0% (?? 12)
+  // CP-1: מכס 0% — מסך, שורת סיכום, ייצוא PDF ו-Morning חייבים להציג/לחייב אותו מחיר
   await openDetail('P2');
   await T.type(T.byId('cp-param-customsPercent'), 0);
   await T.sleep(AUTOSAVE_WAIT);
   const zeroParams = { ...P2_PARAMS, customsPercent: 0 };
-  const expectedX1 = expectUnitSale(zeroParams, P2_PRODUCTS[0], P2_PRODUCTS, 25);
-  const shownX1 = Number(T.byId('cp-row-sale-0').value);
+  const expectedZero = P2_PRODUCTS.map(pr => expectUnitSale(zeroParams, pr, P2_PRODUCTS, 25));
+  const expectedZeroTotal = expectedZero.reduce((s, u, i) => s + u * P2_PRODUCTS[i].qty, 0);
+  const shownZero = P2_PRODUCTS.map((_, i) => Number(T.byId(`cp-row-sale-${i}`).value));
+  T.check(near(proj('P2').totalCostILS, expectTotals(zeroParams, P2_PRODUCTS, 25).total), `CP-1: עלות כוללת שנשמרה עם מכס 0% שגויה: ${proj('P2').totalCostILS}`);
+  T.check(shownZero.join(',') === expectedZero.join(','), `CP-1: מחירי המכירה על המסך עם מכס 0% לא לפי 0% (צפוי ${expectedZero.join(',')}, מוצג ${shownZero.join(',')})`);
+  T.check(T.amountShown(expectedZeroTotal, T.byId('cp-sale-total')), `CP-1: שורת הסיכום עם מכס 0% שגויה (צפוי ${expectedZeroTotal}): ${T.byId('cp-sale-total').textContent}`);
+  await T.click(T.byId('cp-pdf-open'));
+  const pdfZero = P2_PRODUCTS.map((_, i) => Number(T.byId(`cp-pdf-sale-${i}`)?.value));
+  T.check(pdfZero.join(',') === expectedZero.join(','), `CP-1: מחירי ייצוא ה-PDF עם מכס 0% שגויים (צפוי ${expectedZero.join(',')}, התקבל ${pdfZero.join(',')})`);
+  await T.click(T.byId('cp-pdf-cancel'));
   await T.selectAction(T.byId('cp-detail-status'), 'deposit_paid');
   await T.click(T.byId('cp-pay-test'));
   await T.flush(10);
-  const sentX1 = (morningCalls[morningCalls.length - 1]?.income || [])[0]?.price;
+  const sentZero = (morningCalls[morningCalls.length - 1]?.income || []).filter(l => l.price > 0).map(l => l.price);
   T.check(proj('P2').status === 'preparation' && String(morningCalls[morningCalls.length - 1]?.client?.name || '').startsWith('[TEST]'), 'שידור "בדיקה בלבד" שינה סטטוס או לא סומן [TEST]');
-  T.check(sentX1 === expectedX1, `מסמך Morning עם מכס 0% לא לפי 0% (צפוי ${expectedX1}, נשלח ${sentX1})`);
-  T.knownBug('CP-1', `מכס 0%: מחיר המכירה על המסך (ובייצוא PDF/Excel) מחושב לפי 12%, אבל דרישת התשלום ב-Morning לפי 0% — הלקוח מקבל סכום שונה ממה שראה בהצעה (מסך ${shownX1}, Morning ${sentX1})`, shownX1 === sentX1);
+  T.check(sentZero.join(',') === expectedZero.join(','), `CP-1: מסמך Morning עם מכס 0% שונה ממה שעל המסך (צפוי ${expectedZero.join(',')}, נשלח ${sentZero.join(',')})`);
   await closePayModal();
   await T.type(T.byId('cp-param-customsPercent'), 10);
   await T.sleep(AUTOSAVE_WAIT);
