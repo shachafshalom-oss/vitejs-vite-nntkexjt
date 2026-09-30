@@ -1681,6 +1681,8 @@ export default function App() {
   // ומחירים ידניים ישנים יכלו להגיע ל-PDF/Morning.
   useEffect(() => {
     const hasPending = (id: string) => ['params', 'products', 'saleprices', 'delivery'].some(k => autosaveTimers.current[`${k}:${id}`]);
+    // אין שמירה ממתינה → השרת מעודכן, ואין צורך לזכור עריכות מקומיות לחישוב סיכומים
+    Object.keys(projectEditsRef.current).forEach(id => { if (!hasPending(id)) delete projectEditsRef.current[id]; });
     setInlineProductEdits(prev => {
       const ids = Object.keys(prev).filter(id => !hasPending(id));
       if (!ids.length) return prev;
@@ -3522,6 +3524,13 @@ export default function App() {
     setIsSaving(true);
     try {
       const data = { ...editingData, updatedAt: new Date().toISOString() };
+      // שדות שהמסך מחשב בכל רינדור (עלות נחיתה, רווח, שמות לתצוגה...) לא נשמרים במסד — ערך
+      // מחושב שנשמר מתיישן כשהשער/המשלוח משתנים ומבלבל דוחות (OPS-1). גם id הוא שם המסמך, לא שדה.
+      const writableItem = (d: any) => {
+        const { id: _id, isGlobalSale: _g, factoryCostILS: _f, importCostILS: _i, marketingCostILS: _m, totalLandedCost: _t, totalRevenue: _r, profit: _p,
+          shipmentName: _sn, shipmentStatus: _ss, campaignName: _cn, customerName: _cu, isWarrantyActive: _w, warrantyDaysLeft: _wd, ...rest } = d;
+        return rest;
+      };
       
       if (data.isGlobalSale) {
         if (!data.model) throw new Error("חובה לבחור דגם");
@@ -3585,7 +3594,7 @@ export default function App() {
         if (data.status === 'sold' && !data.saleDate) data.saleDate = israelToday();
         // ביטול מכירה מנקה גם תוספות והנחה — אחרת הן נגררות למכירה הבאה של היחידה (OPS-2)
         if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; data.awaitingDelivery = false; data.warrantyStartDate = null; }
-        await updateDoc(doc(db, 'crm_items', data.id), data);
+        await updateDoc(doc(db, 'crm_items', data.id), writableItem(data));
 
         // אם פריט עבר מ-sold חזרה — בדוק אם ללקוח יש עוד פריטים נמכרים
         if (wasJustSoldAndNowNot && originalItem.customerId) {
@@ -3774,12 +3783,16 @@ export default function App() {
         // מחזירה אותם לגרסה הישנה — ומוחקת הערות/מיזוג שנעשו בינתיים. לכן הם לא נכתבים מכאן:
         // היומן מתעדכן רק בהוספה (arrayUnion), וגיבויי המיזוג לא נכתבים מהטופס בכלל.
         delete data.mergedFrom;
-        await updateDoc(doc(db, 'crm_customers', data.id), data);
+        // המזהה הוא שם המסמך — לא שדה בתוכו (SALES-5)
+        const { id: _customerId, ...customerFields } = data;
+        await updateDoc(doc(db, 'crm_customers', data.id), customerFields);
       } else { 
         data.createdAt = new Date().toISOString(); 
         data.createdBy = user?.email || '';
         if (!data.assignedTo) data.assignedTo = user?.email || '';
         data.interactionLogs = [];
+        // ליד ידני מתחיל בשלב "חדש", כמו ליד מהאתר — אחרת אזהרת "עדיין חדש" לא עבדה עליו (SALES-4)
+        if ((data.status || 'lead') === 'lead' && !data.leadStage) data.leadStage = 'new';
         // זיהוי פנייה חוזרת — לא חוסם. שם זהה לבדו אינו כפילות (שמות דומים בין לקוחות
         // הם מצב לגיטימי), ולכן ההשוואה היא על הטלפון המנורמל בלבד.
         const dup = findDuplicateByPhone(data.phone, customers);
@@ -4113,6 +4126,11 @@ export default function App() {
 
   const saveCustomProject = async (e?: any) => {
     if (e) e.preventDefault();
+    // מרווח 0 או ריק היה מתחלף בשקט ל-30%. עכשיו הוא לא מתקבל — הודעה ברורה, ושום דבר לא נשמר.
+    if (!(Number(customProjectForm.marginPercent) > 0)) {
+      alert('מרווח חייב להיות גדול מ-0. הזן את אחוז המרווח הרצוי (ברירת המחדל: 30%).');
+      return;
+    }
     setIsSaving(true);
     try {
 
@@ -4147,7 +4165,7 @@ export default function App() {
         if (Object.keys(changes).length) {
           // הסיכומים מחושבים מהפרויקט העדכני בשרת + השינויים מהחלון — לא מהעותק שנפתח
           if (['products', 'params', 'marginPercent'].some(k => k in changes)) {
-            const current = customProjects.find((p: any) => p.id === projId) || base;
+            const current = customProjectsRef.current.find((p: any) => p.id === projId) || base;
             Object.assign(changes, calcProjectTotals({ ...current, ...changes }));
           }
           await updateDoc(doc(db, 'crm_custom_projects', projId), { ...changes, updatedAt: new Date().toISOString() });
@@ -4175,13 +4193,37 @@ export default function App() {
   // מחליף את כפתורי "שמור שינויים" הנפרדים: כל שינוי משתמש נשמר ל-Firestore
   // כ-900ms אחרי ההקלדה/עריכה האחרונה, בלי צורך בלחיצת כפתור.
   const AUTOSAVE_DELAY_MS = 900;
-  const debouncedSaveProjectField = (projId: string, statusKey: string, fields: Record<string, any>) => {
+  // עריכות פרמטרים/מוצרים שעוד לא בשרת, לכל פרויקט. משמשות לחישוב הסיכומים *ברגע השמירה*:
+  // בעבר כל שמירה חישבה סיכום מחצי ישן (פרמטרים חדשים + מוצרים ישנים, או להפך), ועריכה מהירה
+  // של שניהם השאירה "עלות כוללת" שגויה בכרטיס (CP-2).
+  const projectEditsRef = useRef<Record<string, { params?: any; products?: any[] }>>({});
+  const customProjectsRef = useRef<any[]>([]);
+  customProjectsRef.current = customProjects;
+  const projectTotalsNow = (projId: string) => {
+    const server: any = customProjectsRef.current.find((p: any) => p.id === projId) || {};
+    const edits = projectEditsRef.current[projId] || {};
+    return calcProjectTotals({ ...server, params: edits.params ?? server.params, products: edits.products ?? server.products });
+  };
+  const rememberProjectEdit = (projId: string, edit: { params?: any; products?: any[] }) => {
+    projectEditsRef.current[projId] = { ...(projectEditsRef.current[projId] || {}), ...edit };
+  };
+  // אחרי שהשמירה של עריכה הסתיימה (הצליחה — השרת כבר מעודכן; נכשלה — אסור לחשב ממנה סיכום),
+  // העריכה נשכחת — אלא אם בינתיים באה עריכה חדשה יותר לאותו שדה.
+  const forgetProjectEdit = (projId: string, key: 'params' | 'products', value: any) => {
+    const cur = projectEditsRef.current[projId];
+    if (!cur || cur[key] !== value) return;
+    const { [key]: _drop, ...rest } = cur;
+    if (Object.keys(rest).length) projectEditsRef.current[projId] = rest; else delete projectEditsRef.current[projId];
+  };
+
+  const debouncedSaveProjectField = (projId: string, statusKey: string, fields: Record<string, any> | (() => Record<string, any>), onSettled?: () => void) => {
     if (autosaveTimers.current[statusKey]) clearTimeout(autosaveTimers.current[statusKey]);
     setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saving' }));
     autosaveTimers.current[statusKey] = setTimeout(async () => {
       delete autosaveTimers.current[statusKey]; // השמירה כבר לא "ממתינה" — מאפשר סנכרון לשרת אחריה
       try {
-        await updateProjectField(projId, fields);
+        // פונקציה = השדות נבנים עכשיו, ברגע השמירה, מהנתונים העדכניים ביותר
+        await updateProjectField(projId, typeof fields === 'function' ? fields() : fields);
         setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saved' }));
         setTimeout(() => {
           setAutosaveStatus(prev => {
@@ -4193,6 +4235,8 @@ export default function App() {
         }, 1800);
       } catch (err) {
         setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'error' }));
+      } finally {
+        onSettled?.();
       }
     }, AUTOSAVE_DELAY_MS);
   };
@@ -7420,7 +7464,8 @@ export default function App() {
               const handleParamChange = (key: string, val: number) => {
                 const updated = { ...liveParams, [key]: val };
                 setCustomProjectLiveParams(updated);
-                debouncedSaveProjectField(proj.id, paramsStatusKey, { params: updated, ...calcProjectTotals({ ...proj, params: updated }) });
+                rememberProjectEdit(proj.id, { params: updated });
+                debouncedSaveProjectField(proj.id, paramsStatusKey, () => ({ params: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'params', updated));
               };
 
               return (
@@ -7585,7 +7630,8 @@ export default function App() {
                                 const current = inlineProductEdits[proj.id] || proj.products || [];
                                 const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
                                 setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
-                                debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
+                                rememberProjectEdit(proj.id, { products: updated });
+                                debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
                               }}
                               className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1.5 rounded-lg font-medium hover:bg-purple-100 hover:text-purple-700 flex items-center gap-1"
                             >
@@ -7612,7 +7658,8 @@ export default function App() {
                                   const base = inlineProductEdits[proj.id] || [...(proj.products || [])];
                                   const updated = base.map((p: any, idx: number) => idx === i ? {...p, ...fields} : p);
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
-                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, ...calcProjectTotals({ ...proj, products: updated }) });
+                                  rememberProjectEdit(proj.id, { products: updated });
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
                                 };
                                 const deletePr = () => {
                                   if (!window.confirm(`למחוק את "${pr.itemHe}"?`)) return;
@@ -7628,7 +7675,8 @@ export default function App() {
                                   }
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                   setInlineSalePrices(prev => ({ ...prev, [proj.id]: shiftedOverrides }));
-                                  debouncedSaveProjectField(proj.id, productsStatusKey, { products: updated, salePriceOverrides: shiftedOverrides, ...calcProjectTotals({ ...proj, products: updated }) });
+                                  rememberProjectEdit(proj.id, { products: updated });
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, salePriceOverrides: shiftedOverrides, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
                                 };
                                 return (
                                   <React.Fragment key={i}>
@@ -10670,8 +10718,11 @@ export default function App() {
                 <div className="flex-1">
                   <label className="block text-xs font-medium text-slate-600 mb-1">מרווח רצוי לייעוץ פנימי (%)</label>
                   <input type="number" step="1" min="0" className="w-full border-slate-300 rounded-lg p-2 border text-sm bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-purple-400"
-                    value={customProjectForm.marginPercent || 30}
-                    onChange={e => setCustomProjectForm({...customProjectForm, marginPercent: Number(e.target.value)})} />
+                    value={customProjectForm.marginPercent ?? ''}
+                    onChange={e => setCustomProjectForm({...customProjectForm, marginPercent: e.target.value === '' ? '' : Number(e.target.value)})} />
+                  {!(Number(customProjectForm.marginPercent) > 0) && (
+                    <p className="text-[11px] text-red-600 mt-1">יש להזין מרווח גדול מ-0 (ברירת המחדל: 30%).</p>
+                  )}
                 </div>
                 {customProjectForm.products.length > 0 && (() => {
                   const t = calcProjectTotals(customProjectForm);

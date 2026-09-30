@@ -262,7 +262,7 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   await T.sleep(AUTOSAVE_WAIT);
   const raceExpected = expectTotals(P2().params, P2().products, 25).total;
   T.check(P2().params.exchangeRate === 4 && P2().products[0].qty === 3, 'שתי העריכות לא נשמרו');
-  T.knownBug('CP-2', `עריכת פרמטר ומוצר בהפרש של פחות משנייה: "עלות כוללת" שנשמרת (ומוצגת בכרטיס ברשימה) לא תואמת את הנתונים (נשמר ${Math.round(P2().totalCostILS)}, נכון ${Math.round(raceExpected)})`, near(P2().totalCostILS, raceExpected));
+  T.check(near(P2().totalCostILS, raceExpected), `CP-2: עריכת פרמטר ומוצר בהפרש של פחות משנייה: "עלות כוללת" שנשמרת (ומוצגת בכרטיס ברשימה) לא תואמת את הנתונים (נשמר ${Math.round(P2().totalCostILS)}, נכון ${Math.round(raceExpected)})`);
   await T.type(T.byId('cp-row-qty-0'), 1);
   await T.sleep(AUTOSAVE_WAIT);
   await T.type(T.byId('cp-param-exchangeRate'), 3.6);
@@ -341,6 +341,21 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   await T.submit(form());
   await T.flush(10);
   T.check(P2().products.length === lastIdx && JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ [lastIdx - 1]: lastPrice }), `CP-3: מחיקה בחלון העריכה לא הזיזה את המחירים הידניים: ${JSON.stringify(P2().salePriceOverrides)}`);
+
+  // מרווח 0 לא מתקבל: הודעה ברורה במקום שהמספר יתחלף בשקט ל-30, ושום דבר לא נשמר
+  await T.click(T.byId('cp-edit-P2'));
+  const marginInput = T.fieldByLabel('מרווח רצוי', form());
+  await T.type(marginInput, 0);
+  T.check(marginInput.value === '0', `שדה המרווח החליף 0 ב-${marginInput.value} בלי הודעה`);
+  const seqMargin = T.seq();
+  const alertsMargin = T.ui.alerts.length;
+  await T.submit(form());
+  await T.flush(6);
+  T.check(T.writesSince(seqMargin).length === 0 && Number(P2().marginPercent) === 25, `מרווח 0 נשמר: ${P2().marginPercent}`);
+  T.check(T.ui.alerts.slice(alertsMargin).some(a => a.includes('מרווח')), 'לא הוצגה הודעה שמרווח חייב להיות גדול מ-0');
+  T.check(!!form(), 'חלון העריכה נסגר למרות שהשמירה נחסמה');
+  await T.type(marginInput, 25);
+  await T.click(T.$$('button', form()).find(b => b.textContent.trim() === 'ביטול'));
 
   T.check(!globalThis.__unhandled, `היו ${globalThis.__unhandled} שגיאות לא מטופלות`);
   T.finish();

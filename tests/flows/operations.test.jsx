@@ -99,8 +99,8 @@ async function openInventoryGroup(model) {
   let U = T.docs('crm_items')[unit.id];
   T.check(U.status === 'sold' && U.customerId === 'L1' && Number(U.salePrice) === 6000 && U.saleDate === TODAY, `המכירה לא נשמרה: ${JSON.stringify({ s: U.status, c: U.customerId, p: U.salePrice, d: U.saleDate })}`);
   T.check(T.docs('crm_customers').L1.status === 'active' && T.docs('crm_customers').L1.previousStatusBeforeActive === 'lead', `הליד לא הפך ללקוח פעיל: ${JSON.stringify(T.docs('crm_customers').L1)}`);
-  T.knownBug('OPS-1', `שמירת פריט כותבת ל-Firestore שדות מחושבים (${['totalLandedCost', 'profit', 'customerName', 'shipmentName', 'id', 'isGlobalSale'].filter(k => k in U).join(', ') || '—'})`,
-    !['totalLandedCost', 'profit', 'customerName', 'shipmentName', 'id', 'isGlobalSale'].some(k => k in U));
+  T.check(!['totalLandedCost', 'profit', 'customerName', 'shipmentName', 'id', 'isGlobalSale'].some(k => k in U),
+    `OPS-1: שמירת פריט כותבת ל-Firestore שדות מחושבים (${['totalLandedCost', 'profit', 'customerName', 'shipmentName', 'id', 'isGlobalSale'].filter(k => k in U).join(', ') || '—'})`);
   await T.nav('operations_dashboard');
   T.check(T.amountShown(4625), 'שווי המלאי אחרי המכירה (4,625₪) שגוי');
   T.check(T.amountShown(1575), 'הרווח מהמכירה (1,575₪ = 6,200 − 4,625) לא מוצג');

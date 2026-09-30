@@ -93,7 +93,7 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(L?.status === 'lead' && L?.createdBy === SH && L?.assignedTo === SH, `שדות הליד שגויים: ${JSON.stringify({ s: L?.status, c: L?.createdBy, a: L?.assignedTo })}`);
   T.check(Array.isArray(L?.interactionLogs) && L.interactionLogs.length === 0 && L?.possibleDuplicateOfId === null, 'יומן/קישור כפילות לא אותחלו');
   T.check(T.allById('lead-row').some(r => r.textContent.includes(LEAD_NAME)), 'הליד לא מופיע ברשימת הלידים');
-  T.knownBug('SALES-4', 'ליד ידני נוצר בלי leadStage (מוצג "חדש" אבל אזהרת "עדיין חדש" בסגירה לא עובדת עליו)', !!L?.leadStage);
+  T.check(!!L?.leadStage, 'SALES-4: ליד ידני נוצר בלי leadStage (מוצג "חדש" אבל אזהרת "עדיין חדש" בסגירה לא עובדת עליו)');
 
   // ───────────── 2. שלבים ותזכורת אוטומטית ─────────────
   T.describe('2. שינוי שלב ותזכורת מעקב אוטומטית');
@@ -127,7 +127,8 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   T.check(L.email === 'yael@bar.co.il', 'המייל לא נשמר');
   T.check(L.interactionLogs.length === 3 && L.leadStage === 'callback', 'עריכת הפרטים פגעה ביומן/בשלב');
   T.check(T.text(panel()).includes('yael@bar.co.il'), 'התיק לא מציג את המייל המעודכן');
-  T.knownBug('SALES-5', 'שמירת טופס העריכה כותבת את השדה id לתוך מסמך הליד', !('id' in L));
+  // docsWhere מוסיף id לתוצאה — בודקים את המסמך הגולמי
+  T.check(!('id' in T.docs('crm_customers')[L.id]), 'SALES-5: שמירת טופס העריכה כותבת את השדה id לתוך מסמך הליד');
   await T.click(T.byId('lead-panel-close'));
 
   // ───────────── 5. הצעת מחיר ─────────────
