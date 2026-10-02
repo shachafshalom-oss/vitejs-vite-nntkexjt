@@ -261,5 +261,90 @@ async function openInventoryGroup(model) {
   await T.click(T.byId('shipment-save'));
   T.check(inS().every(i => Number(i.factoryUnitCostUSD) === 950), `שינוי מחיר מכוון בשורה לא עדכן את היחידות: ${inS().map(i => i.factoryUnitCostUSD).join(',')}`);
 
+  // ───────────── 10. נטרול יחידה תקולה ─────────────
+  T.describe('10. נטרול יחידה תקולה מהמלאי');
+  const israelDay = () => { const p = {}; new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).forEach(x => { p[x.type] = x.value; }); return `${p.year}-${p.month}-${p.day}`; };
+  // יחידת Prime חדשה במחסן (משלוח הלילה; Night מוזג ל-Prime בתרחיש 9) — היחידה שתסומן כתקולה
+  await T.act(async () => { await T.api().setDoc(T.api().doc(null, 'crm_items', 'DMG1'), { model: 'Prime', modelId: 'm_prime', status: 'in_warehouse', shipmentId: 'S_NIGHT', factoryUnitCostUSD: 800, arrivalDate: '2026-10-08', serialNumber: 'DMG-1', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: '2026-10-08T10:00:00.000Z' }); });
+  await T.flush(4);
+  await T.nav('finance');
+  const expenseBefore = T.byId('finance-month-expense')?.textContent;
+  T.check(!!expenseBefore, 'סכום ההוצאות החודשי לא נמצא בדוח הכספים');
+  // מכירה מהירה רואה את היחידה לפני הנטרול
+  await T.click(T.byId('fab-toggle'));
+  await T.click(T.byId('fab-global-sale'));
+  const primeFreeCount = () => { const o = T.$$('option', T.fieldByLabel('בחר דגם למכירה', itemModal())).find(x => x.value === 'Prime'); const m = o && o.textContent.match(/\((\d+) במלאי\)/); return m ? Number(m[1]) : 0; };
+  const freeBeforeDmg = primeFreeCount();
+  T.check(freeBeforeDmg >= 1, `לפני הנטרול צפויה לפחות יחידת Prime אחת במלאי למכירה: ${freeBeforeDmg}`);
+  await T.click(T.buttonByText('ביטול', itemModal()));
+  await openInventoryGroup('Prime');
+  T.check(!!T.byId('item-defective-DMG1'), 'אין כפתור "סמן כתקול" ליחידה שבמחסן');
+  T.check(!T.byId(`item-defective-${NX.id || 'NX'}`), 'כפתור "סמן כתקול" מופיע ליחידה שכבר נמכרה');
+  await T.click(T.byId('item-defective-DMG1'));
+  const dmgModal = () => T.byId('defective-confirm')?.closest('.fixed');
+  T.check(!!dmgModal(), 'חלון "סמן כתקול" לא נפתח');
+  // בלי הערה — נחסם (נטרול סופי, חייבים לתעד)
+  const seqDmg = T.seq();
+  const alertsDmg = T.ui.alerts.length;
+  await T.click(T.byId('defective-confirm'));
+  T.check(T.writesSince(seqDmg).length === 0 && T.ui.alerts.slice(alertsDmg).some(a => a.includes('הערה')), 'סימון כתקול בלי הערה לא נחסם');
+  await T.select(T.byId('defective-reason'), 'shipping_damage');
+  await T.type(T.byId('defective-note'), 'פינה מעוכה, נמצא בפריקת המכולה');
+  // "ביטול" בשאלת האישור — לא נכתב כלום
+  T.answerConfirms(false);
+  await T.click(T.byId('defective-confirm'));
+  T.check(T.docs('crm_items').DMG1.status === 'in_warehouse' && T.lastConfirm().includes('סופי'), 'ביטול בשאלת האישור בכל זאת נטרל את היחידה / האזהרה לא אמרה שהפעולה סופית');
+  T.answerConfirms(true);
+  await T.click(T.byId('defective-confirm'));
+  const D1 = T.docs('crm_items').DMG1;
+  T.check(D1.status === 'defective' && D1.defectiveReason === 'shipping_damage' && D1.defectiveNote === 'פינה מעוכה, נמצא בפריקת המכולה', `היחידה לא סומנה כתקולה עם סיבה והערה: ${JSON.stringify({ s: D1.status, r: D1.defectiveReason })}`);
+  T.check(D1.defectiveAt === israelDay() && D1.defectiveBy === SH && D1.statusBeforeDefective === 'in_warehouse', `תאריך/מסמן/סטטוס קודם לא נשמרו: ${JSON.stringify({ a: D1.defectiveAt, b: D1.defectiveBy })}`);
+  T.check(!dmgModal(), 'חלון הנטרול לא נסגר');
+  // לא ניתנת למכירה
+  await T.click(T.byId('fab-toggle'));
+  await T.click(T.byId('fab-global-sale'));
+  T.check(primeFreeCount() === freeBeforeDmg - 1, `יחידה תקולה עדיין נספרת כזמינה למכירה מהירה: ${freeBeforeDmg} → ${primeFreeCount()}`);
+  await T.click(T.buttonByText('ביטול', itemModal()));
+  // מוצגת בנפרד, וחלון העריכה לא מאפשר לשנות לה סטטוס
+  await openInventoryGroup('Prime');
+  T.check(T.allById('inv-group').some(r => r.textContent.includes('Prime') && r.textContent.includes('תקול')), 'קבוצת "תקול" לא מוצגת במלאי');
+  await T.click(T.byId('item-edit-DMG1'));
+  const statusSel = T.fieldByLabel('סטטוס', itemModal());
+  T.check(statusSel?.disabled === true, 'בחלון עריכת יחידה תקולה אפשר לשנות סטטוס');
+  await T.click(T.buttonByText('ביטול', itemModal()));
+  // בחלון עריכה של יחידה אחרת אין אפשרות "תקול" (רק דרך הכפתור, עם סיבה והערה)
+  await T.click(T.byId(`item-edit-${T.docsWhere('crm_items', i => i.status === 'sold')[0].id}`));
+  T.check(!T.$$('option', T.fieldByLabel('סטטוס', itemModal())).some(o => o.value === 'defective' && !o.disabled), 'בחלון עריכת פריט אפשר לבחור "תקול" ישירות');
+  await T.click(T.buttonByText('ביטול', itemModal()));
+  // שינוי סטטוס המשלוח לא משנה יחידה תקולה
+  await T.nav('shipments');
+  T.answerConfirms(true);
+  await T.selectAction(T.byId('shipment-status-S_NIGHT'), 'in_transit');
+  await T.flush(6);
+  T.check(T.docs('crm_items').DMG1.status === 'defective', `שינוי סטטוס המשלוח החזיר את היחידה התקולה: ${T.docs('crm_items').DMG1.status}`);
+  // דוח הכספים: שורת מידע, בלי לשנות את סך ההוצאות (העלות כבר נרשמה בהזמנה ובהגעה)
+  await T.nav('finance');
+  T.check(T.byId('finance-month-expense')?.textContent === expenseBefore, `הנטרול שינה את סך ההוצאות (ספירה כפולה): ${expenseBefore} → ${T.byId('finance-month-expense')?.textContent}`);
+  const info = T.byId('finance-defective-info')?.textContent || '';
+  T.check(info.includes("נוטרלו החודש: 1 יח'") && /₪[\d,]+/.test(info), `שורת המידע על יחידות שנוטרלו חסרה/שגויה: "${info}"`);
+
+  // יחידה שנמכרה ממכשיר אחר בזמן שחלון הנטרול פתוח — הנטרול נדחה, המכירה לא נדרסת
+  await T.act(async () => { await T.api().setDoc(T.api().doc(null, 'crm_items', 'DMG2'), { model: 'Prime', modelId: 'm_prime', status: 'in_warehouse', shipmentId: 'S_NIGHT', factoryUnitCostUSD: 800, serialNumber: 'DMG-2', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: '2026-10-08T11:00:00.000Z' }); });
+  await T.flush(4);
+  await openInventoryGroup('Prime');
+  await T.click(T.byId('item-defective-DMG2'));
+  await T.type(T.byId('defective-note'), 'שריטה עמוקה');
+  T.api().holdSnapshots(true);
+  await T.api().updateDoc(T.api().doc(null, 'crm_items', 'DMG2'), { status: 'sold', customerId: 'C_DANIEL', saleDate: '2026-10-08' });
+  const alertsRace = T.ui.alerts.length;
+  T.answerConfirms(true);
+  await T.click(T.byId('defective-confirm'));
+  await T.act(async () => { T.api().holdSnapshots(false); });
+  await T.flush(4);
+  const D2 = T.docs('crm_items').DMG2;
+  T.check(D2.status === 'sold' && D2.customerId === 'C_DANIEL' && !D2.defectiveReason, `נטרול דרס יחידה שנמכרה בינתיים: ${JSON.stringify({ s: D2.status, r: D2.defectiveReason })}`);
+  T.check(T.ui.alerts.slice(alertsRace).some(a => a.includes('כבר לא במחסן')), 'לא הוצגה הודעה שהיחידה כבר לא במחסן');
+  if (T.byId('defective-confirm')) await T.click(T.buttonByText('ביטול', T.byId('defective-confirm').closest('.fixed')));
+
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });

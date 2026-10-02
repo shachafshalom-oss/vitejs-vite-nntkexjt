@@ -555,9 +555,11 @@ const db = getFirestore(app);
 const storage = getStorage(app);
 
 // קבועים ומילונים
-const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר' };
+// 'defective' — יחידה שנהרסה/תקולה ונוטרלה מהמלאי (סופי). נקבע רק דרך כפתור "סמן כתקול" במלאי.
+const STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור/בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'במחסן', 'sold': 'נמכר', 'defective': 'תקול / מושבת' };
+const DEFECTIVE_REASONS: Record<string, string> = { shipping_damage: 'נזק בשילוח', manufacturing_defect: 'פגם ייצור', warehouse_damage: 'נזק במחסן', other: 'אחר' };;
 const SHIPMENT_STATUS_MAP: Record<string, string> = { 'ordered': 'בייצור בסין', 'in_transit': 'בדרך לארץ', 'in_warehouse': 'הגיע למחסן' };
-const STATUS_COLORS: Record<string, string> = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800' };
+const STATUS_COLORS: Record<string, string> = { 'ordered': 'bg-blue-100 text-blue-800', 'in_transit': 'bg-purple-100 text-purple-800', 'in_warehouse': 'bg-yellow-100 text-yellow-800', 'sold': 'bg-green-100 text-green-800', 'defective': 'bg-red-100 text-red-800' };
 
 const QUOTE_STATUS_MAP: Record<string, string> = { 
   'pending': 'ממתינה לאישור', 
@@ -1769,11 +1771,13 @@ export default function App() {
   const [editingData, setEditingData] = useState<any>(null);
   const [customerEditingData, setCustomerEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
+  // חלון "סמן כתקול" — נטרול סופי של יחידה מהמלאי
+  const [defectiveModal, setDefectiveModal] = useState<{ item: any; reason: string; note: string } | null>(null);
   const [isFabOpen, setIsFabOpen] = useState(false);
   
   // Finance States
-  const [financeYear, setFinanceYear] = useState<number>(new Date().getFullYear());
-  const [financeMonth, setFinanceMonth] = useState<number>(new Date().getMonth() + 1);
+  const [financeYear, setFinanceYear] = useState<number>(Number(israelToday().slice(0, 4)));
+  const [financeMonth, setFinanceMonth] = useState<number>(Number(israelToday().slice(5, 7)));
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseData, setExpenseData] = useState<any>({ title: '', amount: 0, type: 'variable', startDate: israelToday(), installments: 1 });
 
@@ -2434,7 +2438,9 @@ export default function App() {
     modelsList.forEach(m => { stockInWarehouse[m] = 0; stockOnTheWay[m] = 0; salesInLast30[m] = 0; });
 
     // --- Finance Year Aggregation Setup ---
-    const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } }));
+    // defectiveCount/defectiveValue — מידע בלבד: העלות של יחידה שנוטרלה כבר נרשמה כהוצאה בהזמנה ובהגעה,
+    // ולכן היא לא נכנסת שוב ל-expense (אחרת ספירה כפולה).
+    const monthlyFinance = Array.from({length: 12}, (_, i) => ({ month: i+1, income: 0, expense: 0, defectiveCount: 0, defectiveValue: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } }));
     const currentYear = curYear; // שנה וחודש נוכחיים בשעון ישראל
     const currentMonthNum = curMonth;
 
@@ -2509,6 +2515,20 @@ export default function App() {
         salesInLast30[item.model] = 0;
       }
 
+      // יחידה שנוטרלה: לא במלאי ולא בשווי המלאי; נספרת כמידע בחודש שבו סומנה
+      if (item.status === 'defective' && item.defectiveAt) {
+        const [dy, dm] = String(item.defectiveAt).split('-').map(Number);
+        if (dy === financeYear && dm >= 1 && dm <= 12) {
+          monthlyFinance[dm - 1].defectiveCount++;
+          monthlyFinance[dm - 1].defectiveValue += totalLandedCost;
+          // תיקונים/תוספות נרשמים כהוצאה רק בחודש המכירה — יחידה שנוטרלה לא תימכר לעולם,
+          // ולכן הם נרשמים כהוצאה בחודש הנטרול (אחרת הכסף הזה נעלם מהדוחות)
+          const itemSpecific = (Number(item.repairCost) || 0) + (Number(item.addOnCost) || 0);
+          monthlyFinance[dm - 1].expense += itemSpecific;
+          monthlyFinance[dm - 1].breakdowns.itemCosts += itemSpecific;
+        }
+      }
+
       if (item.status === 'in_warehouse') {
         inWarehouseCount++; 
         totalInventoryValueILS += totalLandedCost; 
@@ -2581,7 +2601,7 @@ export default function App() {
     });
 
     const groupedArray = Object.values(groupedInventoryMap).sort((a: any, b: any) => {
-      const statusWeight: any = { 'in_warehouse': 1, 'in_transit': 2, 'ordered': 3, 'sold': 4 };
+      const statusWeight: any = { 'in_warehouse': 1, 'in_transit': 2, 'ordered': 3, 'sold': 4, 'defective': 5 };
       if (statusWeight[a.status] !== statusWeight[b.status]) return statusWeight[a.status] - statusWeight[b.status];
       return a.model.localeCompare(b.model);
     });
@@ -2677,7 +2697,7 @@ export default function App() {
       return m.month <= currentMonthNum;
     });
 
-    const selectedMonthData = monthlyFinance[financeMonth - 1] || { income: 0, expense: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } };
+    const selectedMonthData = monthlyFinance[financeMonth - 1] || { income: 0, expense: 0, defectiveCount: 0, defectiveValue: 0, breakdowns: { shipping: 0, marketing: 0, manual: 0, itemCosts: 0 } };
 
     // --- ממוצע היסטורי חודשי (למעט החודש הנוכחי) ---
     const pastMonthIncomeMap: Record<string, number> = {};
@@ -3092,7 +3112,7 @@ export default function App() {
     }
 
     const soldCount = affectedItems.filter(i => i.status === 'sold').length;
-    const stockCount = affectedItems.length - soldCount;
+    const stockCount = affectedItems.filter(i => i.status === 'in_warehouse').length;
 
     const sourceIsOrphan = !settings.models?.[sourceName];
     const confirmed = window.confirm(
@@ -3364,7 +3384,8 @@ export default function App() {
       else if (newStatus !== 'in_warehouse') sUpdate.arrivalDate = null;
       await updateDoc(sRef, sUpdate);
 
-      const itemsToUpdate = items.filter(i => i.shipmentId === shipment.id && i.status !== 'sold');
+      // יחידה שנמכרה או שנוטרלה (תקולה) לא משנה סטטוס יחד עם המשלוח
+      const itemsToUpdate = items.filter(i => i.shipmentId === shipment.id && i.status !== 'sold' && i.status !== 'defective');
       await Promise.all(itemsToUpdate.map(i => {
         const iRef = doc(db, 'crm_items', i.id);
         const iUpdate: any = { status: newStatus, updatedAt: new Date().toISOString() };
@@ -3428,7 +3449,7 @@ export default function App() {
 
         // יחידה שנמכרה (או שממתינה להובלה ללקוח) לא נמחקת לעולם בעריכת משלוח (OPS-4).
         // לכן קודם בודקים הכול, ורק אם אין בעיה כותבים — כדי שלא תיווצר חצי-שמירה.
-        const isLockedUnit = (i: any) => i.status === 'sold' || i.awaitingDelivery === true || !!i.customerId;
+        const isLockedUnit = (i: any) => i.status === 'sold' || i.status === 'defective' || i.awaitingDelivery === true || !!i.customerId;
         const desiredByKey: Record<string, number> = {};
         for (const line of data.lines) desiredByKey[keyOf(line)] = (desiredByKey[keyOf(line)] || 0) + (Number(line.qty) || 0);
         const blockers: string[] = [];
@@ -3436,11 +3457,11 @@ export default function App() {
           const locked = currentItemsByModel[key].filter(isLockedUnit).length;
           if (!locked) continue;
           const modelName = currentItemsByModel[key][0]?.model || '';
-          if (!(key in desiredByKey)) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו — אי אפשר להסיר את הדגם מהמשלוח.`);
-          else if (desiredByKey[key] < locked) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו — הכמות לא יכולה לרדת מתחת ל-${locked} (הוזן ${desiredByKey[key]}).`);
+          if (!(key in desiredByKey)) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו/נוטרלו — אי אפשר להסיר את הדגם מהמשלוח.`);
+          else if (desiredByKey[key] < locked) blockers.push(`• ${modelName}: ${locked} יחידות כבר נמכרו/נוטרלו — הכמות לא יכולה לרדת מתחת ל-${locked} (הוזן ${desiredByKey[key]}).`);
         }
         if (blockers.length) {
-          const err: any = new Error('השמירה נחסמה — יחידות שנמכרו לא נמחקות מהמלאי:\n' + blockers.join('\n'));
+          const err: any = new Error('השמירה נחסמה — יחידות שנמכרו או נוטרלו (תקולות) לא נמחקות מהמלאי:\n' + blockers.join('\n'));
           err.userFacing = true;
           throw err;
         }
@@ -3519,6 +3540,47 @@ export default function App() {
     setIsSaving(false);
   };
 
+  // נטרול יחידה תקולה/הרוסה: סופי. רק יחידה שנמצאת במחסן (נבדק מול השרת), עם סיבה והערת חובה.
+  // היחידה יוצאת מהמלאי ומשווי המלאי, ולא ניתנת למכירה (כל מסלולי המכירה בוחרים רק "במחסן").
+  const markItemDefective = async () => {
+    if (!defectiveModal) return;
+    const { item, reason, note } = defectiveModal;
+    if (!note.trim()) { alert('יש לכתוב הערה — מה קרה ליחידה. הנטרול סופי, ולכן חייבים לתעד.'); return; }
+    if (!window.confirm(
+      `לנטרל את היחידה ${item.model}${item.serialNumber ? ` (${item.serialNumber})` : ''} מהמלאי?\n` +
+      `סיבה: ${DEFECTIVE_REASONS[reason] || reason}\n\n` +
+      'זו פעולה סופית: היחידה תצא מהמלאי ומשווי המלאי, ולא ניתן יהיה למכור אותה או להחזיר אותה למלאי.'
+    )) return;
+    setIsSaving(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const itemRef = doc(db, 'crm_items', item.id);
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(itemRef);
+        const cur: any = snap.exists() ? snap.data() : null;
+        if (!cur || cur.status !== 'in_warehouse') {
+          const err: any = new Error('היחידה כבר לא במחסן (ייתכן שנמכרה או שונתה ממכשיר אחר). לא בוצע שינוי — רענן ובדוק.');
+          err.userFacing = true;
+          throw err;
+        }
+        tx.update(itemRef, {
+          status: 'defective',
+          statusBeforeDefective: cur.status,
+          defectiveReason: reason,
+          defectiveNote: note.trim(),
+          defectiveAt: israelToday(),
+          defectiveAtIso: nowIso,
+          defectiveBy: user?.email || '',
+          updatedAt: nowIso,
+        });
+      });
+      setDefectiveModal(null);
+    } catch (err: any) {
+      alert(err?.userFacing ? err.message : 'שגיאה בנטרול היחידה. לא בוצע שינוי — נסה שוב.');
+    }
+    setIsSaving(false);
+  };
+
   const saveItem = async (e: any) => {
     e.preventDefault();
     setIsSaving(true);
@@ -3553,7 +3615,18 @@ export default function App() {
           awaitingDelivery: false, warrantyStartDate: null,
           updatedAt: new Date().toISOString()
         };
-        await updateDoc(doc(db, 'crm_items', availableItem.id), updatePayload);
+        // נבדק מול השרת שהיחידה עדיין במחסן — אחרת יחידה שנמכרה/נוטרלה (תקולה) ממכשיר אחר
+        // לפני שהעדכון הגיע למסך הייתה נמכרת שוב.
+        const quickItemRef = doc(db, 'crm_items', availableItem.id);
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(quickItemRef);
+          if (!snap.exists() || (snap.data() as any)?.status !== 'in_warehouse') {
+            const err: any = new Error('היחידה כבר לא זמינה (נמכרה או סומנה כתקולה ממכשיר אחר). לא בוצעה מכירה — רענן ונסה שוב.');
+            err.userFacing = true;
+            throw err;
+          }
+          tx.update(quickItemRef, updatePayload);
+        });
 
         // שינוי א: עדכון סטטוס לקוח ל-active במכירה ישירה
         if (data.customerId) {
@@ -3570,6 +3643,17 @@ export default function App() {
       else {
         // שינוי ב: reverse סטטוס לקוח כשמשנים פריט מ-sold ל-in_warehouse
         const originalItem = items.find(i => i.id === data.id);
+        // נטרול יחידה תקולה הוא סופי, ונעשה רק דרך "סמן כתקול" (עם סיבה והערה)
+        if (originalItem?.status === 'defective' && data.status !== 'defective') {
+          const err: any = new Error('היחידה סומנה כתקולה ונוטרלה מהמלאי. זו פעולה סופית — לא ניתן להחזיר אותה למלאי או למכור אותה.');
+          err.userFacing = true;
+          throw err;
+        }
+        if (data.status === 'defective' && originalItem?.status !== 'defective') {
+          const err: any = new Error('סימון יחידה כתקולה נעשה מכפתור "סמן כתקול" בשורת היחידה במלאי (עם סיבה והערה).');
+          err.userFacing = true;
+          throw err;
+        }
         const wasJustSoldAndNowNot = originalItem && originalItem.status === 'sold' && data.status !== 'sold';
 
         // יחידה שנמכרה דרך הצעת מחיר, או שכבר נמסרה ללקוח, לא מוחזרת למחסן מכאן — אחרת עוקפים את
@@ -3594,7 +3678,18 @@ export default function App() {
         if (data.status === 'sold' && !data.saleDate) data.saleDate = israelToday();
         // ביטול מכירה מנקה גם תוספות והנחה — אחרת הן נגררות למכירה הבאה של היחידה (OPS-2)
         if (data.status !== 'sold') { data.customerId = ''; data.campaignId = ''; data.warrantyMonths = 0; data.saleDate = null; data.salePrice = 0; data.addOnPrice = 0; data.discountAmount = 0; data.awaitingDelivery = false; data.warrantyStartDate = null; }
-        await updateDoc(doc(db, 'crm_items', data.id), writableItem(data));
+        // אם הסטטוס השתנה בשרת מאז שהחלון נפתח (נמכרה / סומנה כתקולה ממכשיר אחר) — לא דורסים
+        const itemRef = doc(db, 'crm_items', data.id);
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(itemRef);
+          const serverStatus = snap.exists() ? (snap.data() as any)?.status : undefined;
+          if (!snap.exists() || (originalItem && serverStatus !== originalItem.status)) {
+            const err: any = new Error('היחידה השתנתה ממכשיר אחר מאז שפתחת את החלון (למשל נמכרה או סומנה כתקולה). לא נשמר דבר — סגור, רענן ונסה שוב.');
+            err.userFacing = true;
+            throw err;
+          }
+          tx.update(itemRef, writableItem(data));
+        });
 
         // אם פריט עבר מ-sold חזרה — בדוק אם ללקוח יש עוד פריטים נמכרים
         if (wasJustSoldAndNowNot && originalItem.customerId) {
@@ -5468,7 +5563,7 @@ export default function App() {
           const quoteSnap = await tx.get(quoteRef);
           const customerSnap = await tx.get(customerRef);
           if (itemSnaps.some(s => !s.exists() || (s.data() as any)?.status !== 'in_warehouse')) {
-            throw new Error('המלאי השתנה בינתיים (כנראה נמכרה יחידה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
+            throw new Error('המלאי השתנה בינתיים (יחידה נמכרה או סומנה כתקולה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
           }
           if (!quoteSnap.exists()) throw new Error('הצעת המחיר לא נמצאה (ייתכן שנמחקה). האישור לא נשמר.');
           const serverQuote: any = quoteSnap.data() || {};
@@ -6055,13 +6150,18 @@ export default function App() {
                   <span>הוצאות החודש</span>
                   <span className="text-[10px] bg-slate-100 px-1.5 rounded-full text-slate-400">כולל הכל</span>
                 </p>
-                <p className="text-3xl font-bold text-red-600">₪{Math.round(calculatedData.selectedMonthData.expense).toLocaleString()}</p>
+                <p data-testid="finance-month-expense" className="text-3xl font-bold text-red-600">₪{Math.round(calculatedData.selectedMonthData.expense).toLocaleString()}</p>
                 <div className="mt-3 text-xs text-slate-500 grid grid-cols-2 gap-1 pt-2 border-t border-slate-100">
                   <span>משלוחים (בהגעה): ₪{Math.round(calculatedData.selectedMonthData.breakdowns.shipping).toLocaleString()}</span>
                   <span>קמפיינים: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.marketing).toLocaleString()}</span>
                   <span>רכש (מפעל+התקנות): ₪{Math.round(calculatedData.selectedMonthData.breakdowns.itemCosts).toLocaleString()}</span>
                   <span>הוצאות כלליות: ₪{Math.round(calculatedData.selectedMonthData.breakdowns.manual).toLocaleString()}</span>
                 </div>
+                {calculatedData.selectedMonthData.defectiveCount > 0 && (
+                  <p data-testid="finance-defective-info" className="mt-2 text-[11px] text-red-700 bg-red-50 border border-red-100 rounded px-2 py-1" title="עלות המפעל והשילוח כבר נרשמו כהוצאה בחודש ההזמנה/ההגעה — לכן לא נוספים שוב (תיקונים/תוספות של היחידה כן נרשמים בחודש הנטרול)">
+                    נוטרלו החודש: {calculatedData.selectedMonthData.defectiveCount} יח' תקולות בשווי ₪{Math.round(calculatedData.selectedMonthData.defectiveValue).toLocaleString()} (מידע בלבד — לא נוסף להוצאות)
+                  </p>
+                )}
               </div>
               <div className={`bg-white p-5 rounded-lg shadow-sm border border-t-4 ${calculatedData.selectedMonthData.income - calculatedData.selectedMonthData.expense >= 0 ? 'border-green-200 border-t-green-500 bg-green-50/30' : 'border-red-200 border-t-red-500 bg-red-50/30'}`}>
                 <p className="text-sm text-slate-500 font-medium mb-1">רווח נקי חודשי</p>
@@ -6893,7 +6993,15 @@ export default function App() {
                                           </div>
                                         ) : '-'}
                                       </td>
-                                      <td className="px-3 py-2 text-left">
+                                      <td className="px-3 py-2 text-left whitespace-nowrap">
+                                        {item.status === 'in_warehouse' && (
+                                          <button data-testid={`item-defective-${item.id}`}
+                                            onClick={(e) => { e.stopPropagation(); setDefectiveModal({ item, reason: 'shipping_damage', note: '' }); }}
+                                            className="text-red-600 bg-red-50 p-1 rounded ml-1" title="סמן כתקול — נטרול מהמלאי" aria-label="סמן כתקול"
+                                          >
+                                            <AlertTriangle className="w-3.5 h-3.5"/>
+                                          </button>
+                                        )}
                                         <button data-testid={`item-edit-${item.id}`} 
                                           onClick={(e) => { 
                                             e.stopPropagation(); 
@@ -8327,9 +8435,16 @@ export default function App() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">סטטוס</label>
-                      <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 font-bold" value={editingData.status || 'in_warehouse'} onChange={e => setEditingData({...editingData, status: e.target.value})}>
-                        {Object.entries(STATUS_MAP).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      <select className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 font-bold disabled:bg-red-50 disabled:text-red-700" value={editingData.status || 'in_warehouse'} disabled={editingData.status === 'defective'} onChange={e => setEditingData({...editingData, status: e.target.value})}>
+                        {Object.entries(STATUS_MAP)
+                          .filter(([k]) => k !== 'defective' || editingData.status === 'defective')
+                          .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
+                      {editingData.status === 'defective' && (
+                        <p className="text-[11px] text-red-700 mt-1">
+                          נוטרלה{editingData.defectiveAt ? ` ב-${String(editingData.defectiveAt).split('-').reverse().join('/')}` : ''} — {DEFECTIVE_REASONS[editingData.defectiveReason] || editingData.defectiveReason || ''}{editingData.defectiveNote ? `: ${editingData.defectiveNote}` : ''}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -10566,6 +10681,39 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* MARK DEFECTIVE MODAL — נטרול יחידה תקולה (סופי) */}
+      {defectiveModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            <div className="p-5 border-b border-red-100 bg-red-50 rounded-t-xl flex justify-between items-center">
+              <h3 className="text-lg font-bold text-red-800 flex items-center gap-2"><AlertTriangle className="w-5 h-5"/> סימון יחידה כתקולה</h3>
+              <button onClick={() => setDefectiveModal(null)} className="text-red-400 hover:text-red-600" aria-label="סגור"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-slate-700">
+                <b>{defectiveModal.item.model}</b>{defectiveModal.item.serialNumber ? ` · ${defectiveModal.item.serialNumber}` : ''} · {defectiveModal.item.shipmentName || ''}
+                <span className="block text-xs text-slate-500 mt-0.5">עלות נחיתה: ₪{Math.round(defectiveModal.item.totalLandedCost || 0).toLocaleString()}</span>
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">סיבה</label>
+                <select data-testid="defective-reason" className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50" value={defectiveModal.reason} onChange={e => setDefectiveModal({ ...defectiveModal, reason: e.target.value })}>
+                  {Object.entries(DEFECTIVE_REASONS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">מה קרה? <span className="text-red-500">*</span></label>
+                <textarea data-testid="defective-note" className="w-full border-slate-300 rounded-md p-2.5 border bg-slate-50 min-h-[70px]" value={defectiveModal.note} onChange={e => setDefectiveModal({ ...defectiveModal, note: e.target.value })} placeholder="למשל: פינה מעוכה, נמצא בפריקת המכולה" />
+              </div>
+              <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded p-2">פעולה סופית: היחידה תצא מהמלאי ומשווי המלאי, ולא ניתן יהיה למכור אותה או להחזיר אותה למלאי.</p>
+              <div className="flex gap-2 pt-1">
+                <button data-testid="defective-confirm" type="button" disabled={isSaving} onClick={markItemDefective} className="flex-1 bg-red-600 text-white py-2.5 rounded-lg font-bold hover:bg-red-700 disabled:opacity-50">{isSaving ? 'שומר...' : 'נטרל מהמלאי'}</button>
+                <button type="button" onClick={() => setDefectiveModal(null)} className="px-5 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50">ביטול</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CUSTOM PROJECT MODAL */}
       {isCustomProjectModalOpen && (
