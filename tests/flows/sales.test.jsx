@@ -176,7 +176,7 @@ async function approveQuote(quoteId, { city = 'חיפה', pickup = false } = {})
   await T.nav('leads');
   T.check(!T.allById('lead-row').some(r => r.textContent.includes(LEAD_NAME)), 'לקוח פעיל עדיין מופיע ברשימת הלידים');
   await T.nav('customers');
-  T.check(T.allById('customer-card').some(c => c.textContent.includes(LEAD_NAME)), 'הלקוח לא מופיע ברשימת הלקוחות');
+  T.check(T.allById('customer-row').some(c => c.textContent.includes(LEAD_NAME)), 'הלקוח לא מופיע ברשימת הלקוחות');
 
   // ───────────── 7. תעודת משלוח ואישור הגעה ─────────────
   T.describe('7. תעודת משלוח ואישור הגעה (תחילת אחריות)');

@@ -5,7 +5,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
+import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -625,6 +625,25 @@ const normalizePhone = (raw: any): string => {
   p = p.replace(/^(\+|00)?972/, '');
   if (!p.startsWith('0')) p = '0' + p;
   return p;
+};
+
+// חיפוש לקוחות/לידים — פונקציה אחת לכל תיבות החיפוש, כדי שכולן יתנהגו אותו דבר.
+// טקסט: שם עסק, איש קשר, שם חברה, אימייל. טלפון: מנורמל בשני הצדדים (normalizePhone), כך
+// ש-"054805…", "+97254805…" ו-"972-54-805…" מוצאים את אותו מספר — לידים מהאתר ומפייסבוק נשמרים
+// עם +972, ומה שמקלידים בדרך כלל מתחיל ב-0. גם רצף מאמצע המספר נמצא. הנרמול רק משלוש ספרות
+// ומעלה ורק כשהשאילתה נראית כמו טלפון — אחרת "0" לבד היה מחזיר את כל הרשימה.
+const matchesCustomerSearch = (c: any, raw: string): boolean => {
+  const q = String(raw || '').trim().toLowerCase();
+  if (!q) return true;
+  if ([c?.businessName, c?.contactName, c?.companyName, c?.email].some(v => String(v || '').toLowerCase().includes(q))) return true;
+  const phone = String(c?.phone || '');
+  if (phone.includes(q)) return true;
+  if (/^[\d\s\-+().]+$/.test(q) && q.replace(/\D/g, '').length >= 3) {
+    const nq = normalizePhone(q).replace(/^0/, '');
+    const np = normalizePhone(phone).replace(/^0/, '');
+    if (nq && np.includes(nq)) return true;
+  }
+  return false;
 };
 
 // בעלים של ליד: מי שהוא משויך אליו; ליד לא משויך שייך למי שיצר אותו. '' = בלי בעלים
@@ -1462,7 +1481,7 @@ const CustomerCombobox = ({ customers, value, onChange, onCreateNew, placeholder
 
   const trimmedQuery = query.trim().toLowerCase();
   const filtered = trimmedQuery
-    ? customers.filter(c => `${c.businessName || ''} ${c.contactName || ''} ${c.phone || ''}`.toLowerCase().includes(trimmedQuery))
+    ? customers.filter(c => matchesCustomerSearch(c, trimmedQuery))
     : customers;
   const showCreateNew = trimmedQuery.length > 0 && filtered.length === 0;
 
@@ -4641,6 +4660,52 @@ export default function App() {
     } catch {}
   };
 
+  // הצעת מחיר מתוך תיק הלקוח/הליד. התיק נסגר קודם: חלון ההצעה (z-90) נמצא מתחת לתיק (z-100)
+  // ולא היה נראה. בכוונה בלי closeCustomerOverview — האזהרה "הליד עדיין בשלב חדש" לא רלוונטית
+  // כשהמשתמש בדיוק מתקדם להצעה.
+  const openQuoteForCustomer = (customer: any) => {
+    if (!customer?.id) return;
+    const first = modelsList[0] || '';
+    const listPrice = Number(settings?.models?.[first]?.listPrice) || 0;
+    setIsCustomerOverviewOpen(false);
+    setQuoteData({ customerId: customer.id, items: [{ model: first, modelId: getModelIdByName(settings?.models, first), qty: 1, listPrice, discount: 0, finalPrice: listPrice, price: listPrice, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: customer.campaignId || '', warrantyMonths: 0 });
+    setIsQuoteModalOpen(true);
+  };
+
+  // מחיקת לקוח מתוך התיק. לקוח שיש לו היסטוריה לא נמחק: יחידות שנמכרו, הצעות, הובלות ופרויקטים
+  // מחזיקים customerId, ומחיקה הייתה משאירה אותם יתומים (אחריות, היסטוריה וכספים בלי לקוח).
+  // הבדיקה מול השרת ולא מול ה-state המקומי — כדי לתפוס גם הצעה שמשתמש אחר יצר הרגע.
+  const deleteCustomerGuarded = async (customer: any) => {
+    if (!customer?.id) return;
+    const name = customer.businessName || customer.contactName || 'הלקוח';
+    try {
+      const refsOf = async (col: string) => (await getDocs(query(collection(db, col), where('customerId', '==', customer.id)))).size;
+      const [itemsN, quotesN, deliveriesN, projectsN] = await Promise.all([
+        refsOf('crm_items'), refsOf('crm_quotes'), refsOf('crm_customer_deliveries'), refsOf('crm_custom_projects'),
+      ]);
+      if (itemsN + quotesN + deliveriesN + projectsN > 0) {
+        const parts = [
+          itemsN ? `${itemsN} יחידות` : '', quotesN ? `${quotesN} הצעות מחיר` : '',
+          deliveriesN ? `${deliveriesN} הובלות` : '', projectsN ? `${projectsN} פרויקטי קסטום` : '',
+        ].filter(Boolean).join(', ');
+        alert(`לא ניתן למחוק את "${name}" — רשומים עליו ${parts}.\nמחיקה הייתה משאירה אותם בלי לקוח (אחריות, היסטוריה, כספים).\n\nאם הלקוח כבר לא פעיל — שנה לו סטטוס ל"לקוח עבר" בעריכת הפרטים.`);
+        return;
+      }
+    } catch (err) {
+      console.error(err);
+      alert('לא הצלחתי לבדוק את ההיסטוריה של הלקוח — המחיקה לא בוצעה. נסה שוב.');
+      return;
+    }
+    if (!window.confirm(`למחוק את "${name}"? הפעולה אינה ניתנת לביטול.`)) return;
+    try {
+      await deleteDoc(doc(db, 'crm_customers', customer.id));
+      setIsCustomerOverviewOpen(false);
+    } catch (err) {
+      console.error(err);
+      alert('המחיקה נכשלה.');
+    }
+  };
+
   const sendCatalogToLead = async () => {
     if (!catalogSendTarget) return;
     setCatalogSending(true);
@@ -7112,11 +7177,7 @@ export default function App() {
                   if (leadStageFilter === 'all') return true;
                   return (c.leadStage || 'new') === leadStageFilter;
                 })
-                .filter(c => {
-                  if (!customerSearch.trim()) return true;
-                  const q = customerSearch.toLowerCase();
-                  return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q);
-                });
+                .filter(c => matchesCustomerSearch(c, customerSearch));
               // ליד בלי בעלים יכול להופיע רק תחת "כל הלידים" — שם הוא מקבל קבוצה משלו
               const unassigned = filteredLeads.filter(c => !leadOwnerOf(c));
               const assigned = filteredLeads.filter(c => !!leadOwnerOf(c));
@@ -7172,7 +7233,7 @@ export default function App() {
                     </div>
 
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-800 truncate">{c.businessName || c.contactName}</p>
+                      <p className="text-sm font-medium text-slate-800 break-words leading-snug">{c.businessName || c.contactName}</p>
                     </div>
 
                     <span className={`text-[10px] shrink-0 whitespace-nowrap ${followUpOverdue ? 'text-red-600 font-bold' : followUpToday ? 'text-amber-600 font-bold' : isStale ? 'text-orange-500' : 'text-slate-400'}`}>
@@ -7376,81 +7437,79 @@ export default function App() {
               <input type="text" placeholder="חיפוש לפי שם, טלפון, אימייל..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-sm focus:ring-2 focus:ring-[#7B1315] outline-none bg-white"/>
               {customerSearch && <button onClick={() => setCustomerSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"><X className="w-4 h-4"/></button>}
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {customers
-                .filter(c => c.status !== 'lead')
-                .filter(c => {
-                  if (!customerSearch.trim()) return true;
-                  const q = customerSearch.toLowerCase();
-                  return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q)||(c.companyName||'').toLowerCase().includes(q);
-                })
-                .map(c => {
-                const stat = calculatedData.customerStats[c.id];
-                const todayMs2 = new Date().getTime();
-                const customerSoldItems = calculatedData.enrichedItems?.filter((i: any) => i.customerId === c.id && i.status === 'sold') || [];
-                const hasActiveWarranty = customerSoldItems.some((i: any) => {
-                  const wStart = getWarrantyStartDate(i);
-                  if (!i.warrantyMonths || !wStart) return false;
-                  const exp = new Date(wStart); exp.setMonth(exp.getMonth() + Number(i.warrantyMonths));
-                  return exp.getTime() > todayMs2;
-                });
-                // פריט שנמכר וטרם נמסר אינו "אחריות שפגה" — הוא פשוט טרם התחיל.
-                // בלי החריגה הזו לקוח שרק אתמול קנה היה מוצג כ"לקוח עבר".
-                const hasPendingDelivery = customerSoldItems.some((i: any) => i.awaitingDelivery);
-                const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && !hasPendingDelivery && customerSoldItems.length > 0;
-                const isActiveCustomer = c.status === 'active' && (hasActiveWarranty || customerSoldItems.length > 0);
-                const displayStatus = isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
-                const badgeColor = isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
+            {(() => {
+              // רשימה במקום כרטיסים: שורה לכל לקוח, בלי כפתורים — לחיצה פותחת את תיק הלקוח,
+              // ושם כל הפעולות (קטלוג, הצעת מחיר, עריכה, מחיקה). אותה רשימה מסוננת משמשת
+              // גם להודעת "לא נמצאו תוצאות", כדי שלא יוצגו תוצאה והודעת "אין תוצאות" יחד.
+              const todayMs2 = new Date().getTime();
+              const listCustomers = customers.filter(c => c.status !== 'lead' && matchesCustomerSearch(c, customerSearch));
+              if (listCustomers.length === 0) {
                 return (
-                  <div data-testid="customer-card" key={c.id} className="bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow flex flex-col h-full cursor-pointer relative" onClick={(e) => {
-                    if ((e.target as HTMLElement).closest('.customer-actions')) return;
-                    setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true);
-                  }}>
-                    <div className="p-5 flex-1">
-                      <div className="flex justify-between items-start mb-3">
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-full ${isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><User className="w-5 h-5"/></div>
-                          <div>
-                            <h3 className="font-bold text-lg text-slate-800">{c.businessName || c.contactName}</h3>
-                            {c.businessName && c.contactName && <p className="text-xs text-slate-500 mb-1">{c.contactName}</p>}
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${badgeColor}`}>{displayStatus}</span>
-                            {c.businessType && <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">{c.businessType === 'bar' ? 'בר' : c.businessType === 'restaurant' ? 'מסעדה' : c.businessType === 'event_hall' ? 'אולם אירועים' : 'אחר'}</span>}
-                          </div>
-                        </div>
-                        <div className="flex gap-1 customer-actions">
-                          <button onClick={() => { setQuoteData({ customerId: c.id, items: [{ model: modelsList[0]||'', modelId: getModelIdByName(settings?.models, modelsList[0]||''), qty: 1, listPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, discount: 0, finalPrice: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, price: Number(settings?.models?.[modelsList[0]]?.listPrice) || 0, customNotes: '' }], shippingCost: 0, date: todayStr, campaignId: c.campaignId || '', warrantyMonths: 0 }); setIsQuoteModalOpen(true); }} className="text-slate-400 hover:text-green-600 p-1" title="הצעת מחיר"><FileText className="w-4 h-4"/></button>
-                          <button onClick={() => { setShowQuickImport(false); setQuickImportText(''); setCustomerEditingData(c); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1"><Edit className="w-4 h-4"/></button>
-                          <button onClick={() => deleteDocHandler('crm_customers', c.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4"/></button>
-                        </div>
-                      </div>
-                      <div className="space-y-2 mt-4 text-sm text-slate-600">
-                        {c.phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-400"/> <a href={`tel:${c.phone}`} className="hover:text-[#7B1315] hover:underline">{c.phone}</a></div>}
-                        {c.email && <div className="flex items-center gap-2"><Mail className="w-4 h-4 text-slate-400"/> {c.email}</div>}
-                        <div className="flex items-center justify-between text-xs mt-3 pt-3 border-t border-slate-100">
-                          <span className="text-slate-400">התעניינות: <span className="font-medium text-slate-600">{stat ? stat.interestDate : ''}</span></span>
-                          <span className="text-slate-400">קשר אחרון: <span className="font-medium text-[#7B1315]">{stat ? stat.lastContactDate : ''}</span></span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="bg-slate-50 p-4 border-t border-slate-100 grid grid-cols-2 gap-4 text-center rounded-b-lg mt-auto relative">
-                      <div><p className="text-xs text-slate-500 mb-1">רכישות</p><p className="font-bold text-slate-800">{stat ? stat.itemCount : 0} ברים</p></div>
-                      <div><p className="text-xs text-slate-500 mb-1">סה"כ הכנסה</p><p className="font-bold text-[#651011]">₪{stat ? stat.totalRevenue.toLocaleString() : 0}</p></div>
-                      {(stat && stat.activeWarranties > 0) && (
-                        <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-100 border border-green-200 text-green-700 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-bold shadow-sm">
-                          <ShieldCheck className="w-3 h-3"/> {stat.activeWarranties} באחריות
-                        </div>
-                      )}
-                    </div>
+                  <div className="bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
+                    <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
+                    <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין לקוחות להצגה.'}</p>
                   </div>
                 );
-              })}
-              {customers.filter(c => c.status !== 'lead').filter(c => { if (!customerSearch.trim()) return true; const q = customerSearch.toLowerCase(); return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q); }).length === 0 && (
-                <div className="col-span-full bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500">
-                  <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
-                  <p className="font-medium text-lg">{customerSearch ? `לא נמצאו תוצאות עבור "${customerSearch}"` : 'אין לקוחות להצגה.'}</p>
+              }
+              return (
+                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                  <div className="hidden md:flex items-center gap-4 px-4 py-2 bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500">
+                    <span className="flex-1">לקוח</span>
+                    <span className="w-36 shrink-0">טלפון</span>
+                    <span className="w-24 shrink-0 text-center">רכישות</span>
+                    <span className="w-28 shrink-0 text-left">סה"כ הכנסה</span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {listCustomers.map(c => {
+                      const stat = calculatedData.customerStats[c.id];
+                      const customerSoldItems = calculatedData.enrichedItems?.filter((i: any) => i.customerId === c.id && i.status === 'sold') || [];
+                      const hasActiveWarranty = customerSoldItems.some((i: any) => {
+                        const wStart = getWarrantyStartDate(i);
+                        if (!i.warrantyMonths || !wStart) return false;
+                        const exp = new Date(wStart); exp.setMonth(exp.getMonth() + Number(i.warrantyMonths));
+                        return exp.getTime() > todayMs2;
+                      });
+                      // פריט שנמכר וטרם נמסר אינו "אחריות שפגה" — הוא פשוט טרם התחיל.
+                      // בלי החריגה הזו לקוח שרק אתמול קנה היה מוצג כ"לקוח עבר".
+                      const hasPendingDelivery = customerSoldItems.some((i: any) => i.awaitingDelivery);
+                      const isEffectivelyPast = c.status === 'active' && !hasActiveWarranty && !hasPendingDelivery && customerSoldItems.length > 0;
+                      const isActiveCustomer = c.status === 'active' && (hasActiveWarranty || customerSoldItems.length > 0);
+                      const displayStatus = isEffectivelyPast ? 'לקוח עבר (אחריות פגה)' : isActiveCustomer ? (hasActiveWarranty ? 'לקוח פעיל (באחריות)' : 'לקוח פעיל') : 'לקוח עבר';
+                      const badgeColor = isEffectivelyPast ? 'bg-slate-100 text-slate-500' : isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
+                      const itemCount = stat ? stat.itemCount : 0;
+                      const revenue = stat ? stat.totalRevenue : 0;
+                      const phoneLink = c.phone ? (
+                        <a href={`tel:${c.phone}`} dir="ltr" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 hover:text-[#7B1315] hover:underline">
+                          <Phone className="w-3.5 h-3.5 text-slate-400"/>{c.phone}
+                        </a>
+                      ) : null;
+                      return (
+                        <div data-testid="customer-row" key={c.id} role="button" tabIndex={0}
+                          onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+                          onKeyDown={e => { if (e.key === 'Enter') { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); } }}
+                          className="flex items-center gap-3 md:gap-4 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors">
+                          <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><User className="w-4 h-4"/></div>
+                          <div className="flex-1 min-w-0">
+                            {/* שם מלא — עובר לשורה נוספת ולא נחתך */}
+                            <p className="font-bold text-slate-800 leading-snug break-words">{c.businessName || c.contactName}</p>
+                            {c.businessName && c.contactName && <p className="text-xs text-slate-500 break-words">{c.contactName}</p>}
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${badgeColor}`}>{displayStatus}</span>
+                              {/* בטלפון: טלפון ורכישות מתחת לשם, בלי גלילה הצידה */}
+                              <span className="md:hidden text-xs text-slate-600">{phoneLink}</span>
+                              <span className="md:hidden text-xs text-slate-500">{itemCount} ברים · <span className="font-bold text-[#651011]">₪{revenue.toLocaleString()}</span></span>
+                            </div>
+                          </div>
+                          <div className="hidden md:block w-36 shrink-0 text-sm text-slate-600">{phoneLink}</div>
+                          <div className="hidden md:block w-24 shrink-0 text-center text-sm font-bold text-slate-800">{itemCount} ברים</div>
+                          <div className="hidden md:block w-28 shrink-0 text-left text-sm font-bold text-[#651011]">₪{revenue.toLocaleString()}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              )}
-            </div>
+              );
+            })()}
           </div>
         )}
 
@@ -9246,10 +9305,22 @@ export default function App() {
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <div className="flex items-center gap-1">
+                <button data-testid="customer-panel-catalog" title="שלח קטלוג בוואטסאפ" className="text-slate-400 hover:text-green-600 p-1"
+                  onClick={() => { setCatalogSendTarget(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
+                  <Send className="w-5 h-5"/>
+                </button>
+                <button data-testid="customer-panel-quote" title="הצעת מחיר חדשה ללקוח זה" className="text-slate-400 hover:text-blue-600 p-1"
+                  onClick={() => openQuoteForCustomer(selectedCustomer)}>
+                  <FileText className="w-5 h-5"/>
+                </button>
                 {selectedCustomer.status === 'lead' && (
                   <button onClick={() => openLeadMerge()} className="text-slate-400 hover:text-[#7B1315] p-1" data-testid="lead-merge-open" title="מזג לידים כפולים לתוך ליד זה"><GitMerge className="w-5 h-5"/></button>
                 )}
                 <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" data-testid="lead-panel-edit" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
+                {/* מחיקה — רק ללקוח. ליד שלא רלוונטי עובר לארכיון ("לא רלוונטי"), לא נמחק. */}
+                {selectedCustomer.status !== 'lead' && (
+                  <button data-testid="customer-panel-delete" title="מחק לקוח" onClick={() => deleteCustomerGuarded(selectedCustomer)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-5 h-5"/></button>
+                )}
                 <button data-testid="lead-panel-close" title="סגור" onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
             </div>
