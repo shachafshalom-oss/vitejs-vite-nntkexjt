@@ -269,6 +269,25 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   await T.sleep(AUTOSAVE_WAIT);
   T.check(near(P2().totalCostILS, expectTotals(P2_PARAMS, P2_PRODUCTS, 25).total), 'עריכות בנפרד (עם הפסקה) לא החזירו סיכום נכון');
 
+  // CP-2b: אותו מרוץ, דטרמיניסטי (זה מה שגרם ל-CP-2 להיכשל לפעמים בעומס). שמירת השער הסתיימה,
+  // אבל המסך עוד לא קיבל את העדכון מהשרת. העריכה המקומית "נשכחה" כבר בסוף השמירה, ולכן שמירת
+  // המוצר שבאה אחריה חישבה "עלות כוללת" משער ישן + כמות חדשה.
+  T.api().holdSnapshots(true);
+  await T.type(T.byId('cp-param-exchangeRate'), 4.2);
+  await T.sleep(AUTOSAVE_WAIT);      // שמירת השער רצה והסתיימה; המסך עדיין על 3.6
+  await T.type(T.byId('cp-row-qty-0'), 2);
+  await T.sleep(AUTOSAVE_WAIT);      // שמירת המוצר מחשבת את הסיכומים
+  await T.act(async () => { T.api().holdSnapshots(false); });
+  await T.flush();
+  const heldExpected = expectTotals(P2().params, P2().products, 25).total;
+  T.check(P2().params.exchangeRate === 4.2 && P2().products[0].qty === 2, 'CP-2b: שתי העריכות לא נשמרו');
+  T.check(near(P2().totalCostILS, heldExpected), `CP-2b: עדכון מהשרת שמתעכב אחרי שמירת השער — "עלות כוללת" נשמרה משער ישן (נשמר ${Math.round(P2().totalCostILS)}, נכון ${Math.round(heldExpected)})`);
+  await T.type(T.byId('cp-row-qty-0'), 1);
+  await T.sleep(AUTOSAVE_WAIT);
+  await T.type(T.byId('cp-param-exchangeRate'), 3.6);
+  await T.sleep(AUTOSAVE_WAIT);
+  T.check(near(P2().totalCostILS, expectTotals(P2_PARAMS, P2_PRODUCTS, 25).total), 'CP-2b: החזרה לערכים המקוריים לא החזירה סיכום נכון');
+
   // CP-3: מחיר ידני נשמר לפי מספר שורה — מחיקת שורה חייבת להזיז את המחירים יחד עם המוצרים
   await T.type(T.byId('cp-row-sale-0'), 20000); // דלפק
   await T.sleep(AUTOSAVE_WAIT);

@@ -4337,8 +4337,18 @@ export default function App() {
   const rememberProjectEdit = (projId: string, edit: { params?: any; products?: any[] }) => {
     projectEditsRef.current[projId] = { ...(projectEditsRef.current[projId] || {}), ...edit };
   };
-  // אחרי שהשמירה של עריכה הסתיימה (הצליחה — השרת כבר מעודכן; נכשלה — אסור לחשב ממנה סיכום),
-  // העריכה נשכחת — אלא אם בינתיים באה עריכה חדשה יותר לאותו שדה.
+  // סוף שמירה של עריכה (params / products):
+  // - נכשלה — העריכה נשכחת מיד (אסור לחשב ממנה סיכום), אלא אם בינתיים באה עריכה חדשה יותר.
+  // - הצליחה — נשכחת רק אם העותק המקומי (customProjectsRef) כבר מכיל את הערך. אחרת היא נשארת עד
+  //   שה-snapshot מגיע (הניקוי באפקט על customProjects). שכחה מוקדמת פתחה חלון שבו שמירה של שדה
+  //   אחר חישבה סיכומים מהערך הישן (CP-2b).
+  const settleProjectEdit = (projId: string, key: 'params' | 'products', value: any, ok: boolean) => {
+    if (ok) {
+      const server: any = customProjectsRef.current.find((p: any) => p.id === projId) || {};
+      if (JSON.stringify(server[key]) !== JSON.stringify(value)) return;
+    }
+    forgetProjectEdit(projId, key, value);
+  };
   const forgetProjectEdit = (projId: string, key: 'params' | 'products', value: any) => {
     const cur = projectEditsRef.current[projId];
     if (!cur || cur[key] !== value) return;
@@ -4346,14 +4356,16 @@ export default function App() {
     if (Object.keys(rest).length) projectEditsRef.current[projId] = rest; else delete projectEditsRef.current[projId];
   };
 
-  const debouncedSaveProjectField = (projId: string, statusKey: string, fields: Record<string, any> | (() => Record<string, any>), onSettled?: () => void) => {
+  const debouncedSaveProjectField = (projId: string, statusKey: string, fields: Record<string, any> | (() => Record<string, any>), onSettled?: (ok: boolean) => void) => {
     if (autosaveTimers.current[statusKey]) clearTimeout(autosaveTimers.current[statusKey]);
     setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saving' }));
     autosaveTimers.current[statusKey] = setTimeout(async () => {
       delete autosaveTimers.current[statusKey]; // השמירה כבר לא "ממתינה" — מאפשר סנכרון לשרת אחריה
+      let ok = false;
       try {
         // פונקציה = השדות נבנים עכשיו, ברגע השמירה, מהנתונים העדכניים ביותר
         await updateProjectField(projId, typeof fields === 'function' ? fields() : fields);
+        ok = true;
         setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'saved' }));
         setTimeout(() => {
           setAutosaveStatus(prev => {
@@ -4366,7 +4378,7 @@ export default function App() {
       } catch (err) {
         setAutosaveStatus(prev => ({ ...prev, [statusKey]: 'error' }));
       } finally {
-        onSettled?.();
+        onSettled?.(ok);
       }
     }, AUTOSAVE_DELAY_MS);
   };
@@ -7664,7 +7676,7 @@ export default function App() {
                 const updated = { ...liveParams, [key]: val };
                 setCustomProjectLiveParams(updated);
                 rememberProjectEdit(proj.id, { params: updated });
-                debouncedSaveProjectField(proj.id, paramsStatusKey, () => ({ params: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'params', updated));
+                debouncedSaveProjectField(proj.id, paramsStatusKey, () => ({ params: updated, ...projectTotalsNow(proj.id) }), (ok) => settleProjectEdit(proj.id, 'params', updated, ok));
               };
 
               return (
@@ -7830,7 +7842,7 @@ export default function App() {
                                 const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
                                 setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                 rememberProjectEdit(proj.id, { products: updated });
-                                debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
+                                debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), (ok) => settleProjectEdit(proj.id, 'products', updated, ok));
                               }}
                               className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1.5 rounded-lg font-medium hover:bg-purple-100 hover:text-purple-700 flex items-center gap-1"
                             >
@@ -7858,7 +7870,7 @@ export default function App() {
                                   const updated = base.map((p: any, idx: number) => idx === i ? {...p, ...fields} : p);
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                   rememberProjectEdit(proj.id, { products: updated });
-                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), (ok) => settleProjectEdit(proj.id, 'products', updated, ok));
                                 };
                                 const deletePr = () => {
                                   if (!window.confirm(`למחוק את "${pr.itemHe}"?`)) return;
@@ -7875,7 +7887,7 @@ export default function App() {
                                   setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                   setInlineSalePrices(prev => ({ ...prev, [proj.id]: shiftedOverrides }));
                                   rememberProjectEdit(proj.id, { products: updated });
-                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, salePriceOverrides: shiftedOverrides, ...projectTotalsNow(proj.id) }), () => forgetProjectEdit(proj.id, 'products', updated));
+                                  debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, salePriceOverrides: shiftedOverrides, ...projectTotalsNow(proj.id) }), (ok) => settleProjectEdit(proj.id, 'products', updated, ok));
                                 };
                                 return (
                                   <React.Fragment key={i}>
