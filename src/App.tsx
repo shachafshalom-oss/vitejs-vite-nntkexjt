@@ -630,20 +630,26 @@ const normalizePhone = (raw: any): string => {
 // חיפוש לקוחות/לידים — פונקציה אחת לכל תיבות החיפוש, כדי שכולן יתנהגו אותו דבר.
 // טקסט: שם עסק, איש קשר, שם חברה, אימייל. טלפון: מנורמל בשני הצדדים (normalizePhone), כך
 // ש-"054805…", "+97254805…" ו-"972-54-805…" מוצאים את אותו מספר — לידים מהאתר ומפייסבוק נשמרים
-// עם +972, ומה שמקלידים בדרך כלל מתחיל ב-0. גם רצף מאמצע המספר נמצא. הנרמול רק משלוש ספרות
-// ומעלה ורק כשהשאילתה נראית כמו טלפון — אחרת "0" לבד היה מחזיר את כל הרשימה.
+// עם +972, ומה שמקלידים בדרך כלל מתחיל ב-0.
+// - שאילתה עם קידומת (0 / + / 972 / 00) = תחילת המספר: "050" מוצא רק מספרים שמתחילים ב-050,
+//   לא כל מספר שיש בו 050 באמצע. "+972 52 1" ≡ "0521".
+// - שאילתה בלי קידומת (למשל "8050870") = רצף ספרות בכל מקום במספר.
+// בשני המקרים — רק משלוש ספרות (כולל ה-0 המנורמל: "052" כן, "+972 5" ≡ "05" לא — היה מחזיר כמעט הכול).
 const matchesCustomerSearch = (c: any, raw: string): boolean => {
   const q = String(raw || '').trim().toLowerCase();
   if (!q) return true;
-  if ([c?.businessName, c?.contactName, c?.companyName, c?.email].some(v => String(v || '').toLowerCase().includes(q))) return true;
-  const phone = String(c?.phone || '');
-  if (phone.includes(q)) return true;
-  if (/^[\d\s\-+().]+$/.test(q) && q.replace(/\D/g, '').length >= 3) {
-    const nq = normalizePhone(q).replace(/^0/, '');
-    const np = normalizePhone(phone).replace(/^0/, '');
-    if (nq && np.includes(nq)) return true;
+  const textFields = [c?.businessName, c?.contactName, c?.companyName, c?.email, `${c?.businessName || ''} ${c?.contactName || ''}`];
+  if (textFields.some(v => String(v || '').toLowerCase().includes(q))) return true;
+  if (!/^[\d\s\-+().]+$/.test(q)) return false;
+  const np = normalizePhone(c?.phone);
+  if (!np) return false;
+  const compact = q.replace(/[\s\-().]/g, '');
+  if (/^(\+|00|972|0)/.test(compact)) {
+    const nq = normalizePhone(compact);
+    return nq.length >= 3 && np.startsWith(nq);
   }
-  return false;
+  const digits = compact.replace(/\D/g, '');
+  return digits.length >= 3 && np.includes(digits);
 };
 
 // בעלים של ליד: מי שהוא משויך אליו; ליד לא משויך שייך למי שיצר אותו. '' = בלי בעלים
@@ -4697,12 +4703,15 @@ export default function App() {
       return;
     }
     if (!window.confirm(`למחוק את "${name}"? הפעולה אינה ניתנת לביטול.`)) return;
+    // התיק נסגר לפני המחיקה: Firestore מעדכן את הרשימה המקומית מיד, עוד לפני אישור השרת,
+    // והאפקט "התיק הפתוח נעלם" היה מציג "כבר לא קיים במערכת (נמחק)" על מחיקה שלנו.
+    setIsCustomerOverviewOpen(false);
     try {
       await deleteDoc(doc(db, 'crm_customers', customer.id));
-      setIsCustomerOverviewOpen(false);
     } catch (err) {
       console.error(err);
       alert('המחיקה נכשלה.');
+      setIsCustomerOverviewOpen(true);
     }
   };
 
@@ -7160,7 +7169,8 @@ export default function App() {
               const isOwnedBySelected = (c: any) => leadsOwner === 'all' || (!!ownerEmail && leadOwnerOf(c) === ownerEmail);
               const ownerAllLeads = customers.filter(c => c.status === 'lead' && isOwnedBySelected(c));
               const allLeads = ownerAllLeads.filter(c => c.leadStage !== 'not_relevant');
-              const archivedLeads = ownerAllLeads.filter(c => c.leadStage === 'not_relevant');
+              // הארכיון מכבד גם את החיפוש — חיפוש טלפון של ליד שסומן "לא רלוונטי" מוצא אותו שם
+              const archivedLeads = ownerAllLeads.filter(c => c.leadStage === 'not_relevant' && matchesCustomerSearch(c, customerSearch));
               const leadCountOf = (email: string) => customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant' && leadOwnerOf(c) === email).length;
               const totalActiveLeads = customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant').length;
               const isReminderDue = (c: any) => !!c.followUpDate && c.followUpDate <= todayStr3;
@@ -7168,8 +7178,10 @@ export default function App() {
               // שינוי leadStage. בכוונה לא updatedAt: עריכת הערה או טלפון מעדכנת אותו בלי
               // שהסטטוס זז. מי שביצע את השינוי לא משנה (החלטת שחף) — הבעלות כבר נקבעה
               // בסינון־העל: ליד של שחף שדניאל שינה לו סטטוס היום מופיע אצל שחף.
+              // רק רשומות של שינוי שלב ("סטטוס שונה ל…") — גם מיזוג לידים נרשם כ-system ואינו שינוי סטטוס.
               const statusChangedToday = (c: any) => (c.interactionLogs || []).some((l: any) =>
-                l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+                l?.type === 'system' && typeof l?.text === 'string' && l.text.startsWith('סטטוס שונה') &&
+                typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
               );
               const filteredLeads = allLeads
                 .filter(c => leadsView === 'today' ? isReminderDue(c) : leadsView === 'status_updated' ? statusChangedToday(c) : true)
@@ -7486,7 +7498,7 @@ export default function App() {
                       return (
                         <div data-testid="customer-row" key={c.id} role="button" tabIndex={0}
                           onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
-                          onKeyDown={e => { if (e.key === 'Enter') { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); } }}
+                          onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); } }}
                           className="flex items-center gap-3 md:gap-4 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors">
                           <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${isActiveCustomer ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}><User className="w-4 h-4"/></div>
                           <div className="flex-1 min-w-0">
@@ -9305,11 +9317,11 @@ export default function App() {
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
               <div className="flex items-center gap-1">
-                <button data-testid="customer-panel-catalog" title="שלח קטלוג בוואטסאפ" className="text-slate-400 hover:text-green-600 p-1"
+                <button data-testid="customer-panel-catalog" title="שלח קטלוג בוואטסאפ" aria-label="שלח קטלוג בוואטסאפ" className="text-slate-400 hover:text-green-600 p-1"
                   onClick={() => { setCatalogSendTarget(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
                   <Send className="w-5 h-5"/>
                 </button>
-                <button data-testid="customer-panel-quote" title="הצעת מחיר חדשה ללקוח זה" className="text-slate-400 hover:text-blue-600 p-1"
+                <button data-testid="customer-panel-quote" title="הצעת מחיר חדשה ללקוח זה" aria-label="הצעת מחיר חדשה ללקוח זה" className="text-slate-400 hover:text-blue-600 p-1"
                   onClick={() => openQuoteForCustomer(selectedCustomer)}>
                   <FileText className="w-5 h-5"/>
                 </button>
@@ -9319,7 +9331,7 @@ export default function App() {
                 <button onClick={() => { setCustomerEditingData(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setIsCustomerModalOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1" data-testid="lead-panel-edit" title="ערוך פרטים"><Edit className="w-5 h-5"/></button>
                 {/* מחיקה — רק ללקוח. ליד שלא רלוונטי עובר לארכיון ("לא רלוונטי"), לא נמחק. */}
                 {selectedCustomer.status !== 'lead' && (
-                  <button data-testid="customer-panel-delete" title="מחק לקוח" onClick={() => deleteCustomerGuarded(selectedCustomer)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-5 h-5"/></button>
+                  <button data-testid="customer-panel-delete" title="מחק לקוח" aria-label="מחק לקוח" onClick={() => deleteCustomerGuarded(selectedCustomer)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 className="w-5 h-5"/></button>
                 )}
                 <button data-testid="lead-panel-close" title="סגור" onClick={closeCustomerOverview} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>

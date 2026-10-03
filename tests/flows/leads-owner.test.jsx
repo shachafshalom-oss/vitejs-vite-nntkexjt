@@ -33,7 +33,7 @@ const N = {
 T.seed({
   crm_settings: { general_settings: { models: { Prime: { id: 'm_prime', cbm: 1, listPrice: 9500 } } } },
   crm_customers: {
-    A: { status: 'lead', leadStage: 'contacted', businessName: N.A, phone: '0501000001', assignedTo: SH, createdBy: DN, followUpDate: '2026-10-01', interactionLogs: [{ date: YESTERDAY_LOG, text: 'שיחה', user: SH }], createdAt: '2026-09-20T10:00:00.000Z' },
+    A: { status: 'lead', leadStage: 'contacted', businessName: N.A, phone: '0501000001', assignedTo: SH, createdBy: DN, followUpDate: '2026-10-01', interactionLogs: [{ date: YESTERDAY_LOG, text: 'שיחה', user: SH }, { date: TODAY_LOG, text: 'מוזג לתוך ליד זה: "כפול" (0501000099), נוצר 01/10/2026', user: SH, type: 'system' }], createdAt: '2026-09-20T10:00:00.000Z' },
     B: { status: 'lead', leadStage: 'new', businessName: N.B, phone: '0501000002', createdBy: SH, followUpDate: TODAY, interactionLogs: [], createdAt: '2026-09-21T10:00:00.000Z' },
     C: { status: 'lead', leadStage: 'callback', businessName: N.C, phone: '0501000003', assignedTo: DN, createdBy: SH, followUpDate: TODAY, interactionLogs: [{ date: YESTERDAY_LOG, text: 'שיחה', user: DN }], createdAt: '2026-09-22T10:00:00.000Z' },
     D: { status: 'lead', leadStage: 'contacted', businessName: N.D, phone: '0501000004', assignedTo: DN, interactionLogs: [sys(SH)], createdAt: '2026-09-23T10:00:00.000Z' },
@@ -66,7 +66,7 @@ const archiveCount = () => Number((T.byId('leads-archive-toggle')?.textContent.m
   T.check(!shown().includes('C'), 'ליד שיצרתי אבל משויך לדניאל מופיע אצלי');
   T.check(!shown().includes('E'), 'ליד בלי בעלים מופיע ב"הלידים שלי"');
   T.check(countIn('leads-view-today') === 2, `ספירת "תזכורות היום" אצלי: ${label('leads-view-today')} (צפוי 2: A,B)`);
-  T.check(countIn('leads-view-status_updated') === 1, `ספירת "עודכנו בסטטוס" אצלי: ${label('leads-view-status_updated')} (צפוי 1: H)`);
+  T.check(countIn('leads-view-status_updated') === 1, `ספירת "עודכנו בסטטוס" אצלי: ${label('leads-view-status_updated')} (צפוי 1: H — מיזוג של A היום אינו שינוי סטטוס)`);
   T.check(/\(1\)/.test(stageOption('new')) && /\(1\)/.test(stageOption('contacted')) && /\(0\)/.test(stageOption('callback')) && /\(1\)/.test(stageOption('quote_sent')),
     `ספירת השלבים לא מוגבלת אליי: new="${stageOption('new')}" contacted="${stageOption('contacted')}" callback="${stageOption('callback')}"`);
   T.check(archiveCount() === 1, `ספירת הארכיון אצלי: ${archiveCount()} (צפוי 1: F)`);
@@ -109,7 +109,17 @@ const archiveCount = () => Number((T.byId('leads-archive-toggle')?.textContent.m
   const search = T.$$('input').find(i => (i.placeholder || '').includes('חיפוש'));
   await T.type(search, N.C);
   T.check(shown() === '', `חיפוש ליד של דניאל מתוך "הלידים שלי" מצא: ${shown()}`);
+  await T.type(search, N.A);
+  T.check(shown() === 'A', `חיפוש ליד שלי מצא: ${shown()} (צפוי A)`);
+  await T.type(search, '0501000006'); // F — בארכיון
+  T.check(!!T.byId('leads-archive-toggle') && archiveCount() === 1, 'החיפוש לא מוצא ליד בארכיון');
+  await T.click(T.byId('leads-archive-toggle'));
+  T.check(shown() === 'F', `חיפוש + ארכיון פתוח: ${shown()} (צפוי F בלבד)`);
+  await T.type(search, N.A);
+  T.check(shown() === 'A', `ארכיון פתוח לא מסונן לפי החיפוש: ${shown()} (צפוי A בלבד)`);
+  if (T.byId('leads-archive-toggle')) await T.click(T.byId('leads-archive-toggle'));
   await T.type(search, '');
+  if (T.allById('lead-row').some(r => r.textContent.includes(N.F))) await T.click(T.byId('leads-archive-toggle'));
 
   T.describe('6. כניסה מחדש ללשונית חוזרת ל"הלידים שלי"');
   await T.click(T.byId('leads-owner-all'));
