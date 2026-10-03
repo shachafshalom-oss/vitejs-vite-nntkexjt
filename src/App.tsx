@@ -627,6 +627,10 @@ const normalizePhone = (raw: any): string => {
   return p;
 };
 
+// בעלים של ליד: מי שהוא משויך אליו; ליד לא משויך שייך למי שיצר אותו. '' = בלי בעלים
+// (בדרך כלל ליד מהאתר/פייסבוק שעוד לא שויך). כלל אחד ללשונית הלידים ולדשבורד.
+const leadOwnerOf = (c: any): string => c?.assignedTo || c?.createdBy || '';
+
 // מאתר ליד/לקוח קיים בעל אותו טלפון מנורמל. שם זהה בלבד אינו כפילות —
 // שמות דומים בין לקוחות שונים הם מצב לגיטימי לחלוטין בעסק.
 const findDuplicateByPhone = (phone: any, list: any[], excludeId?: string): any | null => {
@@ -1608,7 +1612,13 @@ export default function App() {
     try { return localStorage.getItem('crm_nav_tab') || 'sales_dashboard'; }
     catch { return 'sales_dashboard'; }
   });
-  const [leadsFilter, setLeadsFilter] = useState<string>('mine');
+  // סינון־על בלשונית הלידים: של מי הלידים ('mine' / מייל של נציג / 'all').
+  // כל שאר הסינונים והספירות בלשונית פועלים רק בתוך הבעלים שנבחר.
+  const [leadsOwner, setLeadsOwner] = useState<string>('mine');
+  // תצוגה בתוך הבעלים: הכול / תזכורות היום / עודכנו היום בסטטוס
+  const [leadsView, setLeadsView] = useState<'all' | 'today' | 'status_updated'>('all');
+  // כל כניסה ללשונית הלידים מתחילה מ"הלידים שלי" — הבחירה הקודמת לא נזכרת (החלטת שחף).
+  useEffect(() => { if (activeTab === 'leads') setLeadsOwner('mine'); }, [activeTab]);
   const [leadStageFilter, setLeadStageFilter] = useState<string>('all');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   // Leads UI States
@@ -5858,8 +5868,12 @@ export default function App() {
             {(() => {
               const todayStr4 = getLocalYYYYMMDD(new Date());
               const allLeads = customers.filter((c: any) => c.status === 'lead');
-              const overdueReminders = allLeads.filter((c: any) => c.followUpDate && c.followUpDate < todayStr4);
-              const todayReminders2 = allLeads.filter((c: any) => c.followUpDate && c.followUpDate === todayStr4);
+              // תזכורות אישיות: כל משתמש רואה רק את הלידים שלו (אותו כלל בעלות כמו בלשונית הלידים),
+              // בלי בורר. ליד "לא רלוונטי" (ארכיון) לא מזכיר — כמו בלשונית הלידים.
+              // המשפך, "לידים לפי נציג" ו"לא מוקצים" נשארים על כל החברה — אלה מספרי ניהול.
+              const myReminderLeads = allLeads.filter((c: any) => c.leadStage !== 'not_relevant' && !!user?.email && leadOwnerOf(c) === user.email);
+              const overdueReminders = myReminderLeads.filter((c: any) => c.followUpDate && c.followUpDate < todayStr4);
+              const todayReminders2 = myReminderLeads.filter((c: any) => c.followUpDate && c.followUpDate === todayStr4);
               const unassignedLeads = allLeads.filter((c: any) => !c.assignedTo && !c.createdBy);
               const urgentLeads = [...overdueReminders, ...todayReminders2].filter((v: any, i: number, a: any[]) => a.findIndex((x: any) => x.id === v.id) === i);
               const stageCount: Record<string, number> = {};
@@ -5902,10 +5916,10 @@ export default function App() {
                       )}
                     </div>
                     {/* Today's follow-ups */}
-                    <div className={`rounded-xl p-5 shadow-sm border ${urgentLeads.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
+                    <div data-testid="dash-followups" className={`rounded-xl p-5 shadow-sm border ${urgentLeads.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
                       <div className="flex items-center gap-2 mb-4">
                         <CalendarDays className={`w-4 h-4 ${urgentLeads.length > 0 ? 'text-amber-600' : 'text-slate-400'}`}/>
-                        <p className="text-xs font-bold text-slate-600 uppercase tracking-wide">לחזור היום / באיחור</p>
+                        <p className="text-xs font-bold text-slate-600 uppercase tracking-wide">לחזור היום / באיחור — הלידים שלי</p>
                         {urgentLeads.length > 0 && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-black animate-pulse">{urgentLeads.length}</span>}
                       </div>
                       {urgentLeads.length === 0 ? (
@@ -5918,7 +5932,7 @@ export default function App() {
                           {urgentLeads.map((c: any) => {
                             const isOverdue = c.followUpDate < todayStr4;
                             return (
-                              <div key={c.id} onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+                              <div key={c.id} data-testid="dash-followup-row" onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
                                 className={`flex items-start gap-3 p-2.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity ${isOverdue ? 'bg-red-100 border border-red-200' : 'bg-white border border-amber-200'}`}>
                                 <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-amber-500'}`}/>
                                 <div className="flex-1 min-w-0">
@@ -7075,28 +7089,25 @@ export default function App() {
             {/* Leads content */}
             {(() => {
               const todayStr3 = getLocalYYYYMMDD(new Date());
-              const allLeads = customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant');
-              const archivedLeads = customers.filter(c => c.status === 'lead' && c.leadStage === 'not_relevant');
+              // סינון־העל: בעלים. כל מה שמתחת (תצוגה, שלב, חיפוש, ספירות, דחוף, ארכיון)
+              // נגזר רק מהלידים של הבעלים שנבחר — לפי leadOwnerOf (משויך, ואם לא — יוצר).
+              const ownerEmail = leadsOwner === 'mine' ? (user?.email || '') : leadsOwner;
+              const isOwnedBySelected = (c: any) => leadsOwner === 'all' || (!!ownerEmail && leadOwnerOf(c) === ownerEmail);
+              const ownerAllLeads = customers.filter(c => c.status === 'lead' && isOwnedBySelected(c));
+              const allLeads = ownerAllLeads.filter(c => c.leadStage !== 'not_relevant');
+              const archivedLeads = ownerAllLeads.filter(c => c.leadStage === 'not_relevant');
+              const leadCountOf = (email: string) => customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant' && leadOwnerOf(c) === email).length;
+              const totalActiveLeads = customers.filter(c => c.status === 'lead' && c.leadStage !== 'not_relevant').length;
+              const isReminderDue = (c: any) => !!c.followUpDate && c.followUpDate <= todayStr3;
+              // "עודכנו היום בסטטוס" — נשען על רשומות ה-system ביומן, שנכתבות אוטומטית בכל
+              // שינוי leadStage. בכוונה לא updatedAt: עריכת הערה או טלפון מעדכנת אותו בלי
+              // שהסטטוס זז. מי שביצע את השינוי לא משנה (החלטת שחף) — הבעלות כבר נקבעה
+              // בסינון־העל: ליד של שחף שדניאל שינה לו סטטוס היום מופיע אצל שחף.
+              const statusChangedToday = (c: any) => (c.interactionLogs || []).some((l: any) =>
+                l?.type === 'system' && typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
+              );
               const filteredLeads = allLeads
-                .filter(c => {
-                  if (leadsFilter === 'mine') return c.assignedTo === user?.email || c.createdBy === user?.email;
-                  if (leadsFilter === 'today') return c.followUpDate && c.followUpDate <= todayStr3;
-                  // "עודכנו לאחרונה בסטטוסים" — נשען על רשומות ה-system ביומן האינטראקציות,
-                  // שנכתבות אוטומטית בכל שינוי leadStage. בכוונה לא updatedAt: עריכת הערה
-                  // או שינוי טלפון מעדכנים את updatedAt והיו מזהמים את הרשימה בלידים
-                  // שהסטטוס שלהם כלל לא זז. הבעלות כאן היא לפי מי שביצע את השינוי בפועל
-                  // (log.user) — לא לפי מי שהליד משויך אליו: ליד ששויך לשחף אבל דניאל
-                  // שינה לו סטטוס היום צריך להופיע אצל דניאל, לא אצל שחף.
-                  if (leadsFilter === 'status_updated') {
-                    return (c.interactionLogs || []).some((l: any) =>
-                      l?.type === 'system' && l?.user === user?.email &&
-                      typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
-                    );
-                  }
-                  if (leadsFilter === 'all') return true;
-                  // כל ערך אחר הוא כתובת מייל של נציג ספציפי — "לידים של X" מהכפתור הדינמי.
-                  return c.assignedTo === leadsFilter;
-                })
+                .filter(c => leadsView === 'today' ? isReminderDue(c) : leadsView === 'status_updated' ? statusChangedToday(c) : true)
                 .filter(c => {
                   if (leadStageFilter === 'all') return true;
                   return (c.leadStage || 'new') === leadStageFilter;
@@ -7106,15 +7117,11 @@ export default function App() {
                   const q = customerSearch.toLowerCase();
                   return (c.businessName||'').toLowerCase().includes(q)||(c.contactName||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.email||'').toLowerCase().includes(q);
                 });
-              const unassigned = filteredLeads.filter(c => !c.assignedTo && !c.createdBy);
-              const assigned = filteredLeads.filter(c => c.assignedTo || c.createdBy);
-              const todayReminders = allLeads.filter(c => c.followUpDate && c.followUpDate <= todayStr3).length;
-              const statusUpdatedToday = allLeads.filter(c =>
-                (c.interactionLogs || []).some((l: any) =>
-                  l?.type === 'system' && l?.user === user?.email &&
-                  typeof l?.date === 'string' && getLocalYYYYMMDD(new Date(l.date)) === todayStr3
-                )
-              ).length;
+              // ליד בלי בעלים יכול להופיע רק תחת "כל הלידים" — שם הוא מקבל קבוצה משלו
+              const unassigned = filteredLeads.filter(c => !leadOwnerOf(c));
+              const assigned = filteredLeads.filter(c => !!leadOwnerOf(c));
+              const todayReminders = allLeads.filter(isReminderDue).length;
+              const statusUpdatedToday = allLeads.filter(statusChangedToday).length;
 
               const stageCounts: Record<string, number> = {};
               allLeads.forEach(c => { const s = c.leadStage || 'new'; stageCounts[s] = (stageCounts[s] || 0) + 1; });
@@ -7215,22 +7222,34 @@ export default function App() {
 
               return (
                 <div>
-                  {/* Filter toolbar */}
-                  <div className="flex items-center gap-2 mb-4 flex-wrap">
+                  {/* סינון־על: של מי הלידים. כל מה שמתחת מוגבל לבחירה הזו. */}
+                  <div className="flex items-center gap-2 mb-2 flex-wrap" data-testid="leads-owner-bar">
                     {[
-                      { id: 'mine', label: `הלידים שלי (${AGENTS.find(a => a.email === user?.email)?.name || user?.email?.split('@')[0] || 'לא מזוהה'})` },
-                      ...AGENTS.filter(a => a.email !== user?.email).map(a => ({ id: a.email, label: `לידים של ${a.name}` })),
-                      { id: 'all', label: `כל הלידים (${allLeads.length})` },
-                      { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
-                      { id: 'status_updated', label: `עודכנו לאחרונה בסטטוסים${statusUpdatedToday > 0 ? ` (${statusUpdatedToday})` : ''}` },
+                      { id: 'mine', label: `הלידים שלי (${user?.email ? leadCountOf(user.email) : 0})` },
+                      ...AGENTS.filter(a => a.email !== user?.email).map(a => ({ id: a.email, label: `לידים של ${a.name} (${leadCountOf(a.email)})` })),
+                      { id: 'all', label: `כל הלידים (${totalActiveLeads})` },
                     ].map(f => (
-                      <button key={f.id} onClick={() => setLeadsFilter(f.id as any)}
-                        className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsFilter === f.id ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'} ${f.id === 'today' && todayReminders > 0 ? 'animate-pulse' : ''}`}>
+                      <button key={f.id} data-testid={`leads-owner-${f.id}`} aria-pressed={leadsOwner === f.id} onClick={() => setLeadsOwner(f.id)}
+                        className={`text-sm px-4 py-1.5 rounded-lg font-bold border transition-colors ${leadsOwner === f.id ? 'bg-[#7B1315] text-white border-[#7B1315]' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'}`}>
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* תצוגה + שלב — בתוך הבעלים שנבחר */}
+                  <div className="flex items-center gap-2 mb-4 flex-wrap">
+                    {([
+                      { id: 'all', label: 'הכול' },
+                      { id: 'today', label: `תזכורות היום${todayReminders > 0 ? ` (${todayReminders})` : ''}` },
+                      { id: 'status_updated', label: `עודכנו היום בסטטוס${statusUpdatedToday > 0 ? ` (${statusUpdatedToday})` : ''}` },
+                    ] as const).map(f => (
+                      <button key={f.id} data-testid={`leads-view-${f.id}`} aria-pressed={leadsView === f.id} onClick={() => setLeadsView(f.id)}
+                        className={`text-xs px-3 py-1.5 rounded-full font-medium border transition-colors ${leadsView === f.id ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-300 hover:border-[#A55F60]'} ${f.id === 'today' && todayReminders > 0 && leadsView !== 'today' ? 'animate-pulse' : ''}`}>
                         {f.label}
                       </button>
                     ))}
                     {/* Picklist — סינון לפי שלב */}
                     <select
+                      data-testid="leads-stage-filter"
                       value={leadStageFilter}
                       onChange={e => setLeadStageFilter(e.target.value)}
                       className="text-xs px-3 py-1.5 rounded-full font-medium border border-slate-300 bg-white text-slate-600 hover:border-[#A55F60] outline-none focus:border-[#7B1315] cursor-pointer"
@@ -7243,7 +7262,7 @@ export default function App() {
                   </div>
 
                   {/* תצוגת "עודכנו לאחרונה" — כותרת הסבר, כדי שיהיה ברור שמדובר בשינויי סטטוס של היום בלבד */}
-                  {leadsFilter === 'status_updated' && (
+                  {leadsView === 'status_updated' && (
                     <div className="bg-slate-100 rounded-lg p-3 mb-4 text-sm text-slate-600 flex items-center gap-2">
                       <History className="w-4 h-4 text-slate-400 shrink-0"/>
                       <span>לידים שהסטטוס שלהם שונה היום ({new Date().toLocaleDateString('he-IL')}), מקובצים לפי השלב הנוכחי.</span>
@@ -7251,7 +7270,7 @@ export default function App() {
                   )}
 
                   {/* דחוף עכשיו — לא מוצג בפילטרים ממוקדים ("תזכורות היום" / "עודכנו לאחרונה") כדי לא לשכפל את מה שכבר מוצג למטה */}
-                  {leadsFilter !== 'today' && leadsFilter !== 'status_updated' && (urgentOverdue.length + urgentToday.length + urgentNew.length) > 0 && (
+                  {leadsView === 'all' && (urgentOverdue.length + urgentToday.length + urgentNew.length) > 0 && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
                         <AlertTriangle className="w-4 h-4 text-[#7B1315]"/>
@@ -7263,8 +7282,8 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Unassigned section */}
-                  {unassigned.length > 0 && leadsFilter === 'all' && (
+                  {/* Unassigned section — ליד בלי בעלים קיים רק תחת "כל הלידים", ומוצג בכל תצוגה */}
+                  {unassigned.length > 0 && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
                         <AlertTriangle className="w-4 h-4 text-amber-500"/>
@@ -7280,7 +7299,7 @@ export default function App() {
                   {/* Assigned leads — מקובצים לפי שלב, כל קבוצה עם כותרת משלה */}
                   {assigned.length > 0 && (
                     <div>
-                      {unassigned.length > 0 && leadsFilter === 'all' && (
+                      {unassigned.length > 0 && (
                         <h4 className="text-sm font-bold text-slate-600 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> לידים משויכים ({assigned.length})</h4>
                       )}
                       {LEAD_STAGE_ORDER.map(stage => {
@@ -7306,7 +7325,7 @@ export default function App() {
                   {filteredLeads.length === 0 && (
                     <div className="bg-white p-8 rounded-lg border border-slate-200 text-center text-slate-500 col-span-full">
                       <Users className="w-12 h-12 mx-auto text-slate-300 mb-3"/>
-                      <p className="font-medium text-lg">{leadsFilter === 'today' ? 'אין תזכורות להיום' : leadsFilter === 'status_updated' ? 'אף ליד לא שינה סטטוס היום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : leadStageFilter !== 'all' ? `אין לידים בשלב "${LEAD_STAGE_MAP[leadStageFilter]}"` : 'אין לידים להצגה'}</p>
+                      <p className="font-medium text-lg">{leadsView === 'today' ? 'אין תזכורות להיום' : leadsView === 'status_updated' ? 'אף ליד לא שינה סטטוס היום' : customerSearch ? `לא נמצאו לידים עבור "${customerSearch}"` : leadStageFilter !== 'all' ? `אין לידים בשלב "${LEAD_STAGE_MAP[leadStageFilter]}"` : 'אין לידים להצגה'}</p>
                     </div>
                   )}
 
@@ -7314,6 +7333,7 @@ export default function App() {
                   {archivedLeads.length > 0 && (
                     <div className="mt-8 border-t border-slate-200 pt-4">
                       <button
+                        data-testid="leads-archive-toggle"
                         onClick={() => setIsArchiveOpen(p => !p)}
                         className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 font-medium transition-colors w-full text-right"
                       >
