@@ -5337,13 +5337,28 @@ export default function App() {
     } catch (err) { alert("שגיאה בעדכון סטטוס."); }
   };
 
+  // --- פרטי הלקוח בהובלה: שם חי, טלפון/כתובת חיים רק בהובלה ממתינה ---
+  // רשומת ההובלה שומרת עותק (customerName/Phone/Address) מרגע פתיחתה. אם מציגים רק אותו,
+  // שינוי שם בכרטיס הלקוח לא מגיע למסך ההובלות. לכן השם נקרא מהלקוח (לפי customerId) תמיד.
+  // טלפון וכתובת חיים בהובלה שעדיין ממתינה, ונשארים כפי שנשמרו בהובלה שכבר נמסרה (היסטוריה).
+  // לקוח שנמחק / לא נמצא: נופלים לעותק השמור, כדי שההובלה לא תישאר בלי שם.
+  const resolveDeliveryParty = (d: any) => {
+    const c = customers.find((x: any) => x.id === d?.customerId);
+    const awaiting = (d?.deliveryStatus || 'awaiting') === 'awaiting';
+    return {
+      name: (c && (c.businessName || c.contactName)) || d?.customerName || '',
+      phone: (awaiting && c?.phone) || d?.customerPhone || '',
+      address: (awaiting && c?.address) || d?.customerAddress || '',
+    };
+  };
+
   // --- אישור הגעת הובלה ללקוח ---
   // זו הנקודה היחידה במערכת שמתחילה את ספירת האחריות. עד לרגע הזה הפריט מסומן
   // awaitingDelivery ואין לו warrantyStartDate, ולכן מוצג כ"אחריות טרם החלה".
   const confirmDeliveryArrival = async (delivery: any) => {
     const isPickup = delivery.deliveryMethod === 'pickup';
     const actionLabel = isPickup ? 'נאסף על ידי הלקוח' : 'הגיע ללקוח';
-    if (!window.confirm(`לסמן שההזמנה של ${delivery.customerName || 'הלקוח'} ${actionLabel}?\nפעולה זו תתחיל את ספירת האחריות על כל הפריטים בהזמנה.`)) return;
+    if (!window.confirm(`לסמן שההזמנה של ${resolveDeliveryParty(delivery).name || 'הלקוח'} ${actionLabel}?\nפעולה זו תתחיל את ספירת האחריות על כל הפריטים בהזמנה.`)) return;
     setIsSaving(true);
     try {
       const arrivalDate = israelToday();
@@ -5547,7 +5562,7 @@ export default function App() {
     setGeneratingDeliveryNoteId(delivery.id);
     try {
       const snapshot = await issueDeliveryNote(delivery);
-      setPrintingDeliveryNote({ snapshot, fileLabel: snapshot?.customer?.name || delivery.customerName || 'לקוח' });
+      setPrintingDeliveryNote({ snapshot, fileLabel: snapshot?.customer?.name || resolveDeliveryParty(delivery).name || 'לקוח' });
     } catch (err: any) {
       alert('שגיאה בהנפקת תעודת המשלוח: ' + (err?.message || ''));
       setGeneratingDeliveryNoteId(null);
@@ -6757,7 +6772,7 @@ export default function App() {
                           <div className="flex justify-between items-start gap-3 flex-wrap">
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-bold text-slate-800">{d.customerName || 'לקוח ללא שם'}</span>
+                                <span className="font-bold text-slate-800">{resolveDeliveryParty(d).name || 'לקוח ללא שם'}</span>
                                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isPickup ? 'bg-slate-100 text-slate-600' : 'bg-blue-100 text-blue-700'}`}>
                                   {DELIVERY_METHOD_MAP[d.deliveryMethod] || 'משלוח'}
                                 </span>
@@ -6799,8 +6814,8 @@ export default function App() {
                                 <span className="flex items-center gap-1 font-medium text-[#651011]">
                                   <Banknote className="w-3.5 h-3.5 text-slate-400"/> {isPickup ? 'ללא עלות הובלה' : `₪${Number(d.deliveryCost || 0).toLocaleString()}`}
                                 </span>
-                                {d.customerPhone && (
-                                  <a href={`tel:${d.customerPhone}`} className="flex items-center gap-1 text-slate-500 hover:text-[#7B1315]" dir="ltr"><Phone className="w-3.5 h-3.5"/> {d.customerPhone}</a>
+                                {resolveDeliveryParty(d).phone && (
+                                  <a href={`tel:${resolveDeliveryParty(d).phone}`} className="flex items-center gap-1 text-slate-500 hover:text-[#7B1315]" dir="ltr"><Phone className="w-3.5 h-3.5"/> {resolveDeliveryParty(d).phone}</a>
                                 )}
                               </div>
                               {deliveriesSubTab === 'delivered' && d.deliveredAt && (
