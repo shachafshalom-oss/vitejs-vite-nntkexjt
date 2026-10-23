@@ -149,7 +149,8 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   T.check(near(P().totalCostILS, 28976), 'החזרת השער ל-3.7 לא החזירה את העלות ל-28,976');
   await T.type(T.byId('cp-row-sale-0'), 11000);
   await T.sleep(AUTOSAVE_WAIT);
-  T.check(P().salePriceOverrides && Number(P().salePriceOverrides['0']) === 11000, `מחיר מכירה ידני לא נשמר: ${JSON.stringify(P().salePriceOverrides)}`);
+  // מחיר ידני נשמר לפי מזהה השורה (L:<lineId>), לא לפי מספר שורה — ראו custom-projects-lines
+  T.check(!!P().products[0].lineId && P().salePriceOverrides && Number(P().salePriceOverrides[`L:${P().products[0].lineId}`]) === 11000, `מחיר מכירה ידני לא נשמר: ${JSON.stringify(P().salePriceOverrides)}`);
   T.check(T.amountShown(38789, T.byId('cp-sale-total')), `סה"כ מכירה לא התעדכן ל-38,789: ${T.byId('cp-sale-total').textContent}`);
 
   // הובלה והתקנה נקבעות בחלון הפקת ההצעה ללקוח
@@ -311,7 +312,7 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   T.check(P2().products.length === 2 && P2().products[0].id === 'X2', 'מחיקת שורה לא נשמרה');
   const shownAfterDelete = [0, 1].map(i => Number(T.byId(`cp-row-sale-${i}`).value));
   T.check(shownAfterDelete.join(',') === `${shelfCalc},1500`, `CP-3: אחרי מחיקת הדלפק, המדף צריך לחזור למחיר המחושב (${shelfCalc}) והכיור להישאר 1,500: מוצג ${shownAfterDelete.join(',')}`);
-  T.check(JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ 1: 1500 }), `CP-3: המחירים הידניים שנשמרו לא זזו עם המוצרים: ${JSON.stringify(P2().salePriceOverrides)}`);
+  T.check(JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ [`L:${P2().products[1].lineId}`]: 1500 }), `CP-3: המחירים הידניים שנשמרו לא נשארו על המוצרים שלהם: ${JSON.stringify(P2().salePriceOverrides)}`);
   await T.selectAction(T.byId('cp-detail-status'), 'deposit_paid');
   await T.click(T.byId('cp-pay-test'));
   await T.flush(10);
@@ -350,16 +351,17 @@ async function fillRow(i, { name, usd, cbm, qty }) {
   T.check(shownUsd === '350' && P2().products[0].unitPriceUSD === 350, `CP-6: אחרי שמירה בחלון העריכה, דוח העלויות מציג את המוצרים הישנים (מחיר ${shownUsd}$ במקום 350$), ועריכה ישירה הבאה מחזירה אותם ל-Firestore (נשמר ${P2().products[0].unitPriceUSD}$)`);
   await T.click(T.byId('cp-detail-close'));
 
-  // CP-3 (חלון העריכה): מחיקת מוצר בחלון מזיזה גם את המחירים הידניים
+  // CP-3 (חלון העריכה): מחיקת מוצר בחלון — המחירים הידניים נשארים על המוצרים שלהם (לפי מזהה שורה)
   const overridesBeforeModal = P2().salePriceOverrides || {};
   const lastIdx = P2().products.length - 1;
   await T.click(T.byId('cp-edit-P2'));
-  const lastPrice = Number(overridesBeforeModal[lastIdx]);
+  const lastKey = `L:${P2().products[lastIdx].lineId}`;
+  const lastPrice = Number(overridesBeforeModal[lastKey]);
   T.check(lastPrice > 0, `צפוי מחיר ידני על המוצר האחרון לפני התרחיש: ${JSON.stringify(overridesBeforeModal)}`);
   await T.click(T.$('button[type="button"]', T.allById('cp-form-row')[0]) && T.$$('button[type="button"]', T.allById('cp-form-row')[0]).pop());
   await T.submit(form());
   await T.flush(10);
-  T.check(P2().products.length === lastIdx && JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ [lastIdx - 1]: lastPrice }), `CP-3: מחיקה בחלון העריכה לא הזיזה את המחירים הידניים: ${JSON.stringify(P2().salePriceOverrides)}`);
+  T.check(P2().products.length === lastIdx && JSON.stringify(P2().salePriceOverrides) === JSON.stringify({ [lastKey]: lastPrice }), `CP-3: מחיקה בחלון העריכה לא הזיזה את המחירים הידניים: ${JSON.stringify(P2().salePriceOverrides)}`);
 
   // מרווח 0 לא מתקבל: הודעה ברורה במקום שהמספר יתחלף בשקט ל-30, ושום דבר לא נשמר
   await T.click(T.byId('cp-edit-P2'));

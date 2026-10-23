@@ -108,12 +108,41 @@ const projectCustomsPct = (params: any): number => {
   const v = (raw === undefined || raw === null || raw === '') ? 12 : Number(raw);
   return (Number.isFinite(v) ? v : 12) / 100;
 };
-// מחירים ידניים של פרויקט שמורים לפי מספר שורה ("0", "1", ...). כשמוחקים שורה, המחירים
-// של השורות שאחריה חייבים לזוז שורה אחת למעלה — אחרת מחיר של מוצר שנמחק "עובר" למוצר
-// הבא ומחויב כך ב-Morning (CP-3).
-const shiftSaleOverridesAfterDelete = (overrides: any, removedIdx: number): Record<string, number> => {
+// מחירים ידניים של פרויקט שמורים לפי מזהה שורה ("L:<lineId>"). פרויקטים ישנים שמרו לפי מספר שורה
+// ("0", "1", ...) — מספר שורה זז כששורה נמחקת או כשסנכרון חיצוני (Bar Planner, מכשיר אחר) משנה את הרשימה,
+// ומחיר "עובר" למוצר הלא נכון ומחויב כך ב-Morning (CP-3). פרויקט ישן עובר למזהים ברגע שנפתח (withLineIds).
+const newLineId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+const priceKey = (pr: any, i: number): string => (pr?.lineId ? `L:${pr.lineId}` : String(i));
+const manualSalePrice = (overrides: any, pr: any, i: number): number | undefined => {
+  const v = overrides?.[priceKey(pr, i)];
+  return v === undefined || v === null || v === '' ? undefined : Number(v);
+};
+// מחיר נעול: שורה שהגיעה מ-Bar Planner נושאת את המחיר שהלקוח חתם עליו. הוא קודם לכל מחיר אחר,
+// לא מחושב מחדש ולא ניתן לעריכה ב-CRM.
+const lockedSalePrice = (pr: any): number | undefined =>
+  pr?.lockedSaleILS === undefined || pr?.lockedSaleILS === null || !Number.isFinite(Number(pr.lockedSaleILS)) ? undefined : Math.round(Number(pr.lockedSaleILS));
+// המחיר הקבוע של שורה (נעול, אחרת ידני), או undefined = לפי המרווח
+const fixedSalePrice = (overrides: any, pr: any, i: number): number | undefined => lockedSalePrice(pr) ?? manualSalePrice(overrides, pr, i);
+// נותן לכל שורה מזהה ומעביר מחירים שנשמרו לפי מספר שורה למזהה של אותה שורה (לשמור את שניהם באותה כתיבה).
+const withLineIds = (products: any[], overrides: any): { products: any[]; overrides: Record<string, number>; changed: boolean } => {
+  let changed = false;
+  const out: Record<string, number> = {};
+  Object.entries(overrides || {}).forEach(([k, v]) => { if (k.startsWith('L:')) out[k] = v as number; else changed = true; });
+  const prs = (products || []).map((pr: any, i: number) => {
+    if (pr?.lineId) return pr;
+    changed = true;
+    const id = newLineId() + i;
+    const legacy = overrides?.[String(i)];
+    if (legacy !== undefined && legacy !== null && legacy !== '' && out[`L:${id}`] === undefined) out[`L:${id}`] = Number(legacy);
+    return { ...pr, lineId: id };
+  });
+  return { products: prs, overrides: out, changed };
+};
+// מחיקת שורה: מחיר לפי מזהה של השורה שנמחקה יורד; מחירים ישנים לפי מספר שורה זזים שורה אחת למעלה.
+const shiftSaleOverridesAfterDelete = (overrides: any, removedIdx: number, removed?: any): Record<string, number> => {
   const out: Record<string, number> = {};
   Object.entries(overrides || {}).forEach(([k, v]) => {
+    if (k.startsWith('L:')) { if (!(removed?.lineId && k === `L:${removed.lineId}`)) out[k] = v as number; return; }
     const idx = Number(k);
     if (!Number.isInteger(idx) || idx === removedIdx) return;
     out[String(idx > removedIdx ? idx - 1 : idx)] = v as number;
@@ -4281,7 +4310,9 @@ export default function App() {
         })
       );
 
-      const { id: projId, ...formFields } = { ...customProjectForm, products: safeProducts };
+      // כל שורה נשמרת עם מזהה, והמחירים הידניים לפי המזהה (פרויקט חדש, ייבוא מ-Excel, או פרויקט ישן שנערך בחלון)
+      const lined = withLineIds(safeProducts, customProjectForm.salePriceOverrides || {});
+      const { id: projId, ...formFields } = { ...customProjectForm, products: lined.products, ...(lined.changed || customProjectForm.salePriceOverrides ? { salePriceOverrides: lined.overrides } : {}) };
       const TOTAL_KEYS = ['totalCBM', 'totalQty', 'totalFactoryUSD', 'totalFactoryILS', 'containerShippingILS', 'customsILS', 'portFeesILS', 'localTransportILS', 'installationILS', 'fixedOverheadILS', 'totalCostILS', 'suggestedPrice', 'shippingPerCBM', 'overheadPerUnit'];
 
       if (projId) {
@@ -4308,6 +4339,16 @@ export default function App() {
       setCustomProjectView(null);
     } catch (err: any) { alert('שגיאה בשמירת פרויקט: ' + err.message); }
     setIsSaving(false);
+  };
+
+  // פרויקט שנשמר לפני מזהי השורות: נותנים מזהה לכל שורה ומעבירים את המחירים הידניים למזהים —
+  // מוצרים ומחירים באותה כתיבה, כדי שלא יהיה רגע שבו הם לא תואמים.
+  const migrateProjectLines = (proj: any) => {
+    const m = withLineIds(proj.products || [], proj.salePriceOverrides || {});
+    if (!m.changed) return;
+    setInlineSalePrices(prev => ({ ...prev, [proj.id]: m.overrides }));
+    updateDoc(doc(db, 'crm_custom_projects', proj.id), { products: m.products, salePriceOverrides: m.overrides, updatedAt: new Date().toISOString() })
+      .catch((err: any) => console.error('migrate project lines', err));
   };
 
   const updateProjectField = async (projId: string, fields: Record<string, any>) => {
@@ -4862,9 +4903,9 @@ export default function App() {
       let unitPrice: number;
       // אותו סדר עדיפויות כמו המסך: מחיר שנערך כאן (כולל כזה שעוד לא נשמר) → מחיר שמור → חישוב.
       // העותק המקומי מסונכרן לשרת כשאין שמירה ממתינה, כך שהוא תמיד הגרסה העדכנית ביותר.
-      const overrides = effectiveSaleOverrides(proj);
-      if (overrides[`${i}`] !== undefined) {
-        unitPrice = Number(overrides[`${i}`]);
+      const fixed = fixedSalePrice(effectiveSaleOverrides(proj), pr, i);
+      if (fixed !== undefined) {
+        unitPrice = fixed;
       } else {
         unitPrice = projectUnitPricing(pr, params, totals, proj).calcSaleUnit;
       }
@@ -7598,7 +7639,7 @@ export default function App() {
                   const projStatus = proj.status || 'preparation';
                   const linkedCustomer = proj.customerId ? customers.find((c: any) => c.id === proj.customerId) : null;
                   return (
-                    <div key={proj.id} data-testid="cp-card" className="bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => { setCustomProjectLiveParams(null); setCustomProjectView(proj); if (proj.salePriceOverrides) setInlineSalePrices(prev => ({...prev, [proj.id]: proj.salePriceOverrides})); }}>
+                    <div key={proj.id} data-testid="cp-card" className="bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => { setCustomProjectLiveParams(null); setCustomProjectView(proj); if (proj.salePriceOverrides) setInlineSalePrices(prev => ({...prev, [proj.id]: proj.salePriceOverrides})); migrateProjectLines(proj); }}>
                       <div className={`h-1.5 rounded-t-xl ${PROJECT_STATUS_BAR[projStatus] || 'bg-purple-400'}`}/>
                       <div className="p-5">
                         <div className="flex justify-between items-start mb-3">
@@ -7854,7 +7895,7 @@ export default function App() {
                             <button
                               onClick={() => {
                                 const current = inlineProductEdits[proj.id] || proj.products || [];
-                                const updated = [...current, { id: `M${current.length+1}`, itemEn: 'New item', itemHe: 'פריט חדש', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
+                                const updated = [...current, { id: `M${current.length+1}`, lineId: newLineId(), itemEn: 'New item', itemHe: 'פריט חדש', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }];
                                 setInlineProductEdits(prev => ({...prev, [proj.id]: updated}));
                                 rememberProjectEdit(proj.id, { products: updated });
                                 debouncedSaveProjectField(proj.id, productsStatusKey, () => ({ products: updated, ...projectTotalsNow(proj.id) }), (ok) => settleProjectEdit(proj.id, 'products', updated, ok));
@@ -7893,7 +7934,7 @@ export default function App() {
                                   const updated = base.filter((_: any, idx: number) => idx !== i);
                                   // המחירים הידניים זזים יחד עם המוצרים, ונשמרים באותה כתיבה — כך הם לא יכולים
                                   // להיות לא מסונכרנים. שמירה ממתינה של מחירים (לפני המחיקה) מבוטלת כי היא כבר לא נכונה.
-                                  const shiftedOverrides = shiftSaleOverridesAfterDelete(effectiveSaleOverrides(proj), i);
+                                  const shiftedOverrides = shiftSaleOverridesAfterDelete(effectiveSaleOverrides(proj), i, base[i]);
                                   if (autosaveTimers.current[salePricesStatusKey]) {
                                     clearTimeout(autosaveTimers.current[salePricesStatusKey]);
                                     delete autosaveTimers.current[salePricesStatusKey];
@@ -7975,17 +8016,22 @@ export default function App() {
                                         aria-label={`מחיר מכירה ליחידה עבור ${pr.itemHe}`}
                                         data-testid={`cp-row-sale-${i}`}
                                         className="w-24 text-xs font-black text-center text-green-700 bg-green-50 border border-transparent hover:border-green-300 focus:border-green-500 focus:bg-white rounded-lg px-1 py-0.5 outline-none transition-colors"
-                                        value={effectiveSaleOverrides(proj)[`${i}`] !== undefined ? effectiveSaleOverrides(proj)[`${i}`] : Math.round(salePricePerUnit)}
+                                        value={fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? Math.round(salePricePerUnit)}
+                                        readOnly={lockedSalePrice(pr) !== undefined}
                                         onChange={e => {
+                                          if (lockedSalePrice(pr) !== undefined) return; // מחיר שהלקוח חתם עליו ב-Bar Planner
                                           const newVal = Number(e.target.value);
-                                          const updatedOverrides = { ...effectiveSaleOverrides(proj), [`${i}`]: newVal };
+                                          const updatedOverrides = { ...effectiveSaleOverrides(proj), [priceKey(pr, i)]: newVal };
                                           setInlineSalePrices(prev => ({ ...prev, [proj.id]: updatedOverrides }));
                                           debouncedSaveProjectField(proj.id, salePricesStatusKey, { salePriceOverrides: updatedOverrides });
                                         }}
-                                        title="עריכת מחיר מכירה — נשמר אוטומטית לפרויקט"
+                                        title={lockedSalePrice(pr) !== undefined ? 'מחיר נעול: זה המחיר שהלקוח חתם עליו ב-Bar Planner' : 'עריכת מחיר מכירה — נשמר אוטומטית לפרויקט'}
                                       />
+                                      {lockedSalePrice(pr) !== undefined && (
+                                        <div data-testid={`cp-row-locked-${i}`} className="text-[10px] font-bold text-slate-500" title="המחיר שהלקוח חתם עליו ב-Bar Planner">🔒 מחיר מאושר{pr?.source?.version ? ` (v${pr.source.version})` : ''}</div>
+                                      )}
                                       <div className="text-[11px] text-green-500 mt-0.5">
-                                        ₪{Math.round((effectiveSaleOverrides(proj)[`${i}`] !== undefined ? effectiveSaleOverrides(proj)[`${i}`] : salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
+                                        ₪{Math.round((fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? salePricePerUnit) * Number(pr.qty)).toLocaleString()} סה"כ
                                       </div>
                                     </td>
                                     <td className="px-3 py-2 text-center">
@@ -8020,9 +8066,7 @@ export default function App() {
                                   {(() => {
                                     const products = effectiveProducts;
                                     const totalSale = products.reduce((sum: number, pr: any, i: number) => {
-                                      const unitPrice = effectiveSaleOverrides(proj)[`${i}`] !== undefined
-                                        ? effectiveSaleOverrides(proj)[`${i}`]
-                                        : projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
+                                      const unitPrice = fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                                       return sum + unitPrice * Number(pr.qty);
                                     }, 0);
                                     return `₪${Math.round(totalSale).toLocaleString()}`;
@@ -8051,11 +8095,7 @@ export default function App() {
                               const initPrices: Record<string, number> = {};
                               products.forEach((pr: any, i: number) => {
                                 // Priority (same as screen and Morning): 1) edited here, 2) saved, 3) calc from margin
-                                if (effectiveSaleOverrides(proj)[`${i}`] !== undefined) {
-                                  initPrices[`${i}`] = effectiveSaleOverrides(proj)[`${i}`];
-                                } else {
-                                  initPrices[`${i}`] = projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
-                                }
+                                initPrices[`${i}`] = fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? projectUnitPricing(pr, liveParams, totals, proj).calcSaleUnit;
                               });
                               setPdfExportModal({ proj: {...proj, products, params: liveParams}, totals, type: 'internal', editablePrices: initPrices, shippingInstallationCost: Number(proj.deliveryCost || 0) });
                             }}
@@ -8078,9 +8118,7 @@ export default function App() {
                                 const { landedUnit, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj);
                                 const landedTotal = landedUnit * Number(pr.qty);
                                 // Use manually set sale price if exists (same priority as screen/PDF)
-                                const saleUnit = effectiveSaleOverrides(proj)[`${i}`] !== undefined
-                                  ? effectiveSaleOverrides(proj)[`${i}`]
-                                  : calcSaleUnit;
+                                const saleUnit = fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? calcSaleUnit;
                                 const saleTotal = saleUnit * Number(pr.qty);
                                 const sz2 = getProductSize(pr);
                                 return {
@@ -8112,8 +8150,8 @@ export default function App() {
                                 { 'פרמטר': 'התקנה (₪)', 'ערך': Math.round(totals.installationILS) },
                                 { 'פרמטר': '---', 'ערך': '---' },
                                 { 'פרמטר': 'עלות כוללת (₪)', 'ערך': Math.round(totals.totalCostILS) },
-                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=effectiveSaleOverrides(proj)[`${i}`]!==undefined?effectiveSaleOverrides(proj)[`${i}`]:calcSaleUnit; return s+su*Number(pr.qty); }, 0)) },
-                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { landedUnit: lu, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=effectiveSaleOverrides(proj)[`${i}`]!==undefined?effectiveSaleOverrides(proj)[`${i}`]:calcSaleUnit; return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': `מחיר מכירה (₪) — לפי מחירים מוגדרים`, 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? calcSaleUnit; return s+su*Number(pr.qty); }, 0)) },
+                                { 'פרמטר': 'רווח צפוי (₪)', 'ערך': Math.round(effectiveProducts.reduce((s: number, pr: any, i: number) => { const { landedUnit: lu, calcSaleUnit } = projectUnitPricing(pr, liveParams, totals, proj); const su=fixedSalePrice(effectiveSaleOverrides(proj), pr, i) ?? calcSaleUnit; return s+(su*Number(pr.qty))-lu*Number(pr.qty); }, 0)) },
                                 { 'פרמטר': 'סה"כ CBM', 'ערך': Number(totals.totalCBM.toFixed(3)) },
                                 { 'פרמטר': 'סה"כ יחידות', 'ערך': totals.totalQty },
                               ];
@@ -10529,14 +10567,17 @@ export default function App() {
                                   className="w-24 text-xs border border-green-300 rounded-lg px-2 py-1 text-center font-bold text-green-700 bg-green-50 outline-none focus:border-green-500 focus:ring-1 focus:ring-green-300"
                                   value={saleUnit}
                                   data-testid={`cp-pdf-sale-${i}`}
+                                  readOnly={lockedSalePrice(pr) !== undefined}
+                                  title={lockedSalePrice(pr) !== undefined ? 'מחיר נעול: זה המחיר שהלקוח חתם עליו ב-Bar Planner' : undefined}
                                   onChange={e => {
+                                    if (lockedSalePrice(pr) !== undefined) return;
                                     const newVal = Number(e.target.value);
-                                    const updatedOverrides = { ...editablePrices, [`${i}`]: newVal };
                                     setPdfExportModal({
                                       ...pdfExportModal,
-                                      editablePrices: updatedOverrides
+                                      editablePrices: { ...editablePrices, [`${i}`]: newVal }
                                     });
-                                    // סנכרון לתצוגה הראשית + שמירה אוטומטית ל-Firestore
+                                    // סנכרון לתצוגה הראשית + שמירה אוטומטית ל-Firestore — רק המחיר של השורה הזו, לפי המזהה שלה
+                                    const updatedOverrides = { ...effectiveSaleOverrides(proj), [priceKey(pr, i)]: newVal };
                                     setInlineSalePrices(prev => ({
                                       ...prev,
                                       [proj.id]: updatedOverrides
@@ -10917,7 +10958,7 @@ export default function App() {
                 )}
                 <button type="button"
                   className="mt-2 text-xs text-purple-600 hover:text-purple-800 font-medium flex items-center gap-1"
-                  onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}>
+                  onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, lineId: newLineId(), itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}>
                   <Plus className="w-3 h-3"/> הוסף פריט ידני (ללא Excel)
                 </button>
               </div>
@@ -10927,7 +10968,7 @@ export default function App() {
                 <div className="flex justify-between items-center mb-2">
                   <h4 className="text-sm font-bold text-slate-700">מוצרים ({customProjectForm.products.length})</h4>
                   <button type="button" data-testid="cp-form-add-product"
-                    onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}
+                    onClick={() => setCustomProjectForm({...customProjectForm, products: [...customProjectForm.products, { id: `M${customProjectForm.products.length+1}`, lineId: newLineId(), itemEn: 'Manual item', itemHe: 'פריט ידני', info: '', size: '', qty: 1, unitPriceUSD: 0, cbm: 0, images: [], noteHe: '' }]})}
                     className="text-xs bg-purple-100 text-purple-700 px-2.5 py-1 rounded-lg font-bold hover:bg-purple-200 flex items-center gap-1"><Plus className="w-3 h-3"/> הוסף ידני</button>
                 </div>
                 <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
@@ -10963,7 +11004,7 @@ export default function App() {
                         </div>
                       </div>
                       <input type="number" min="1" className="w-12 text-xs border border-slate-300 rounded p-1 text-center" value={pr.qty} onChange={e => { const p=[...customProjectForm.products]; p[i]={...p[i],qty:Number(e.target.value)}; setCustomProjectForm({...customProjectForm,products:p}); }} />
-                      <button type="button" onClick={() => setCustomProjectForm({...customProjectForm, products: customProjectForm.products.filter((_:any,j:number)=>j!==i), ...(customProjectForm.salePriceOverrides ? { salePriceOverrides: shiftSaleOverridesAfterDelete(customProjectForm.salePriceOverrides, i) } : {})})} className="text-slate-300 hover:text-red-400"><X className="w-3.5 h-3.5"/></button>
+                      <button type="button" onClick={() => setCustomProjectForm({...customProjectForm, products: customProjectForm.products.filter((_:any,j:number)=>j!==i), ...(customProjectForm.salePriceOverrides ? { salePriceOverrides: shiftSaleOverridesAfterDelete(customProjectForm.salePriceOverrides, i, customProjectForm.products[i]) } : {})})} className="text-slate-300 hover:text-red-400"><X className="w-3.5 h-3.5"/></button>
                     </div>
                   ))}
                 </div>
