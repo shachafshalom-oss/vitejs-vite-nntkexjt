@@ -5008,9 +5008,14 @@ export default function App() {
       depositAmount = Math.round(Number(m.proj?.depositAmount || 0));
       const remaining = m.productsTotal - depositAmount;
       if (depositAmount > 0) rows.push({ kind: 'deduction', description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -depositAmount });
+      // הסכם התכנון: מי שהזמין דרכנו בתוקף ההצעה מקבל את ההפרש מדמי התכנון בתשלום הסופי (לא בוטל)
+      const dc = m.proj?.designCredit;
+      const credit = dc && !dc.voidedAt ? Math.round(Number(dc.ils) || 0) : 0;
+      if (credit > 0) rows.push({ kind: 'deduction', description: `קיזוז דמי תכנון (הסכם v${dc.agreementVersion})`, quantity: 1, price: -credit });
       if (m.deliveryCost > 0) rows.push({ kind: 'delivery', description: 'הובלה והתקנה', quantity: 1, price: m.deliveryCost });
-      docTotal = remaining + m.deliveryCost;
+      docTotal = remaining - credit + m.deliveryCost;
       if (remaining < 0) invalidReason = 'המקדמה שנגבתה גבוהה משווי המוצרים הנוכחי — יש לבדוק את המחירים.';
+      else if (remaining - credit < 0) invalidReason = 'קיזוז דמי התכנון גבוה מהיתרה לתשלום — יש לבדוק את המחירים.';
       else if (!(docTotal > 0)) invalidReason = 'אין סכום חיובי לגבייה.';
       else if (rows.length === 0) invalidReason = 'אין שורות לשידור במסמך היתרה.';
     }
@@ -5055,6 +5060,15 @@ export default function App() {
     const ref = await addDoc(collection(db, 'crm_custom_projects'), { ...form, ...calcProjectTotals(form), createdAt: nowIso, updatedAt: nowIso });
     await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...da, customProjectId: ref.id } });
     return ref.id;
+  };
+  // ביטול הזמנה: הקיזוז מבוטל (ההפרש מנוכה מהחזר המקדמה, לפי ההסכם) ולא יופיע בדרישת היתרה
+  const voidDesignCredit = async (proj: any) => {
+    const dc = proj.designCredit;
+    if (!dc || dc.voidedAt) return;
+    if (!window.confirm(`לבטל את קיזוז דמי התכנון (₪${Math.round(dc.ils).toLocaleString()} + מע"מ)?\nזה המצב כשההזמנה בוטלה: הקיזוז לא יופיע בדרישת היתרה, וההפרש מנוכה מהחזר המקדמה.`)) return;
+    try {
+      await updateDoc(doc(db, 'crm_custom_projects', proj.id), { designCredit: { ...dc, voidedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() });
+    } catch (err: any) { alert('שגיאה בביטול הקיזוז: ' + (err?.message || err)); }
   };
   const markDesignFeePaid = async (cust: any) => {
     const da = cust.designAgreement;
@@ -7892,6 +7906,15 @@ export default function App() {
                                     {proj.designFee.paidAt ? <span className="text-green-700 font-bold">שולם ✓ {new Date(proj.designFee.paidAt).toLocaleDateString('he-IL')}</span> : <span className="text-amber-700">לא שולם</span>}
                                     {proj.designFee.morningUrl && <a href={proj.designFee.morningUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> המסמך ב-Morning</a>}
                                   </p>
+                                  {proj.designCredit && (
+                                    <div data-testid="cp-bp-credit" className={`mt-2 text-[11px] rounded p-1.5 border ${proj.designCredit.voidedAt ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                                      {proj.designCredit.voidedAt
+                                        ? <>קיזוז דמי תכנון ₪{Math.round(proj.designCredit.ils).toLocaleString()} <b>בוטל</b> ({new Date(proj.designCredit.voidedAt).toLocaleDateString('he-IL')})</>
+                                        : <>קיזוז דמי תכנון: <b>−₪{Math.round(proj.designCredit.ils).toLocaleString()}</b> + מע"מ בתשלום הסופי (ההזמנה נחתמה בתוקף, v{proj.designCredit.approvalVersion})
+                                            <button type="button" data-testid="cp-bp-credit-void" onClick={() => voidDesignCredit(proj)} className="block mt-1 text-[11px] text-red-700 underline">ההזמנה בוטלה — בטל קיזוז</button></>}
+                                    </div>
+                                  )}
+                                  <p className="text-[11px] text-slate-600 mt-1" data-testid="cp-bp-design-income">הכנסה מתכנון: <b>₪{Math.round((proj.designFee.feeIls || 0) - (proj.designCredit && !proj.designCredit.voidedAt ? proj.designCredit.ils || 0 : 0)).toLocaleString()}</b> לפני מע"מ</p>
                                 </>
                               ) : (
                                 <p className="text-xs text-slate-400">אין הסכם תכנון בפרויקט</p>

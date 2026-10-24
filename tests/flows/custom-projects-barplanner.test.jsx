@@ -37,6 +37,15 @@ T.seed({
   },
   'bp_shares/tokA1234567890abcdef/signatures': { 2: { version: 2, name: 'מאיה כהן', signedAt: 1761300000000, docHash: 'ab'.repeat(32) } },
   crm_custom_projects: {
+    P3: {
+      name: 'בר בהזמנה', clientName: 'גג בע"מ', customerId: 'C1', date: '2026-10-20', status: 'deposit_paid', params: PARAMS, marginPercent: 30,
+      products: [{ lineId: 'bp-s1', id: 'S1', itemHe: 'Prime 1', itemEn: '', info: '', size: '', qty: 1, unitPriceUSD: 900, cbm: 2, images: [], noteHe: '', lockedSaleILS: 20000, source: { kind: 'bar-planner', projectId: 'bp9', version: 3 } }],
+      salePriceOverrides: {}, depositType: 'percent', depositValue: 50, depositAmount: 10000, depositMorningInvoiceUrl: 'https://morning.test/dep', notes: '',
+      barPlanner: { projectId: 'bp9', code: 'BP-2026-010', url: `${PLANNER}/#/p/bp9` },
+      designFee: { feeIls: 4000, vatPct: 18, totalIls: 4720, agreementVersion: 1, paidAt: '2026-10-10T10:00:00.000Z' },
+      designCredit: { ils: 1500, agreementVersion: 1, approvalVersion: 3, signedAt: 1761300000000 },
+      createdAt: '2026-10-20T10:00:00.000Z',
+    },
     P2: { name: 'פרויקט רגיל', clientName: 'בר על הגג', customerId: 'C1', date: '2026-10-20', status: 'preparation', params: PARAMS, marginPercent: 30, products: [], salePriceOverrides: {}, notes: '', createdAt: '2026-10-20T10:00:00.000Z' },
   },
 });
@@ -45,6 +54,16 @@ T.setNav('sales', 'leads');
 const cust = (id) => T.docs('crm_customers')[id];
 const projects = () => T.docs('crm_custom_projects');
 const detail = () => T.byId('cp-detail-close')?.closest('.fixed');
+const payModal = () => { const h = T.$$('h3').find((x) => x.textContent.includes('שידור דרישת')); return h ? h.closest('.fixed') : null; };
+async function closePayModal() { if (payModal()) await T.click(payModal().querySelector('button[aria-label="סגור"]')); }
+async function balanceTestPrices() {
+  await T.selectAction(T.byId('cp-detail-status'), 'completed');
+  await T.click(T.byId('cp-pay-test'));
+  await T.flush(10);
+  const sent = (morningCalls[morningCalls.length - 1]?.income || []).map((l) => l.price).join(',');
+  await closePayModal();
+  return sent;
+}
 async function openLead(name) {
   if (T.byId('lead-panel-close')) await T.click(T.byId('lead-panel-close'));
   const row = T.allById('lead-row').find((r) => r.textContent.includes(name));
@@ -69,7 +88,7 @@ async function openDetail(id) {
   let opened = T.ui.opened.length;
   await T.click(T.byId('lead-design-send'));
   T.check(T.ui.opened.slice(opened).includes(`${PLANNER}/#/agreement?lead=C2`), `נפתח: ${T.ui.opened.slice(opened).join(' | ')}`);
-  T.check(Object.keys(projects()).length === 1, 'שליחת הסכם פתחה פרויקט');
+  T.check(Object.keys(projects()).length === 2, 'שליחת הסכם פתחה פרויקט');
   T.check(!T.byId('lead-design-paid'), 'כפתור תשלום מופיע לפני שנשלח הסכם');
 
   // =====================================================================
@@ -93,7 +112,7 @@ async function openDetail(id) {
   T.check(morningCalls[0]?.type === 300, `סוג המסמך: ${morningCalls[0]?.type} (צפוי חשבון עסקה 300)`);
   const da2 = cust('C1').designAgreement;
   T.check(String(da2.paidAt).startsWith('2026-10-24T') && da2.morningUrl === 'https://morning.test/doc/1', `הליד לא סומן ששולם: ${JSON.stringify(da2)}`);
-  const newIds = Object.keys(projects()).filter((id) => id !== 'P2');
+  const newIds = Object.keys(projects()).filter((id) => id !== 'P2' && id !== 'P3');
   T.check(newIds.length === 1 && da2.customProjectId === newIds[0], `פרויקט חדש: ${newIds.join(',')} · בליד: ${da2.customProjectId}`);
   const np = projects()[newIds[0]] || {};
   T.check(np.customerId === 'C1' && np.status === 'preparation' && Array.isArray(np.products) && np.products.length === 0, `הפרויקט החדש: ${JSON.stringify({ c: np.customerId, s: np.status, p: np.products })}`);
@@ -116,7 +135,7 @@ async function openDetail(id) {
   T.ui.confirmAnswers.length = 0;
   const da3 = cust('C3').designAgreement;
   T.check(!da3.paidAt && !da3.customProjectId && !!da3.morningError, `אחרי כשל: ${JSON.stringify(da3)}`);
-  T.check(Object.keys(projects()).length === 2, `נפתח פרויקט למרות הכשל: ${Object.keys(projects()).length}`);
+  T.check(Object.keys(projects()).length === 3, `נפתח פרויקט למרות הכשל: ${Object.keys(projects()).length}`);
   T.check(T.ui.confirms.some((c) => c.includes('עוד לא נחתם')), 'אין אזהרה על הסכם שלא נחתם');
   await T.click(T.byId('lead-panel-close'));
 
@@ -141,6 +160,23 @@ async function openDetail(id) {
   T.check((T.byId(`cp-bp-badge-${newIds[0]}`)?.textContent || '').includes('BP-2026-009') && !T.byId('cp-bp-badge-P2'), 'תג Bar Planner בכרטיס הפרויקט');
   T.check(await openDetail('P2'), 'הפרויקט הרגיל לא נפתח');
   T.check(!T.byId('cp-bp-box'), 'תיבת Bar Planner בפרויקט רגיל');
+
+  // =====================================================================
+  T.describe('6. קיזוז דמי תכנון בתשלום הסופי, וביטול שלו');
+  T.check(await openDetail('P3'), 'פרויקט ההזמנה לא נפתח');
+  T.check((T.byId('cp-bp-credit')?.textContent || '').includes('1,500'), `קיזוז לא מוצג: ${T.byId('cp-bp-credit')?.textContent}`);
+  T.check(T.amountShown(2500, T.byId('cp-bp-design-income')), `הכנסה מתכנון נטו: ${T.byId('cp-bp-design-income')?.textContent}`);
+  let prices = await balanceTestPrices();
+  T.check(prices === '20000,-10000,-1500', `שורות היתרה (צפוי מוצר, ניכוי מקדמה, קיזוז תכנון): ${prices}`);
+  T.check(projects().P3.status === 'deposit_paid', 'שידור בדיקה שינה סטטוס');
+  T.answerConfirms(true);
+  await T.click(T.byId('cp-bp-credit-void'));
+  await T.flush(6);
+  T.ui.confirmAnswers.length = 0;
+  T.check(!!projects().P3.designCredit.voidedAt && projects().P3.designCredit.ils === 1500, `ביטול הקיזוז: ${JSON.stringify(projects().P3.designCredit)}`);
+  T.check(T.amountShown(4000, T.byId('cp-bp-design-income')), 'אחרי ביטול, הכנסת התכנון לא חזרה למחיר המלא');
+  prices = await balanceTestPrices();
+  T.check(prices === '20000,-10000', `אחרי ביטול, שורות היתרה: ${prices}`);
 
   T.finish();
 })().catch(T.crash);
