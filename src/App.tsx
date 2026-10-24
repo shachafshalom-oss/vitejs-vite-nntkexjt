@@ -3,9 +3,9 @@ import { ISRAELI_CITIES } from './israeliCities';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, getDoc, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History } from 'lucide-react';
+import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History, PencilRuler } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -86,6 +86,9 @@ const PROJECT_STATUS_BAR: Record<string, string> = {
 };
 // סטטוסים שמפעילים שידור ל-Morning ולכן חסומים לעריכה ישירה בטופס
 const PROJECT_PAYMENT_STATUSES = ['deposit_paid', 'completed'];
+
+// Bar Planner — מערכת התכנון (אותו Firestore). ליד נפתח שם בכפתור, והפרויקט חוזר לכאן עם שורות נעולות.
+const BAR_PLANNER_URL = 'https://steelandspirit-bar-planner.netlify.app';
 
 // חישוב סכום המקדמה: לפי אחוז משווי המוצרים, או סכום קבוע בשקלים
 const calcDepositAmount = (type: string, value: number, productsTotal: number): number => {
@@ -1693,6 +1696,7 @@ export default function App() {
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
+  const [designFeeSending, setDesignFeeSending] = useState<string | null>(null); // מזהה הליד בזמן רישום דמי התכנון ושידור ל-Morning
   const [quotes, setQuotes] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -5014,6 +5018,85 @@ export default function App() {
     return { rows, docTotal, depositAmount, invalidReason };
   };
 
+  // --- הסכם תכנון (Bar Planner) — מתחיל בליד ---
+  // ההסכם הוא מסמך מכירה: נשלח מהליד (Bar Planner מפיק אותו בקישור לחתימה, בלי פרויקט) ונשמר
+  // ב-customer.designAgreement. רק כשהלקוח חתם ושילם: "התקבלו דמי תכנון" כאן ← דרישת תשלום ל-Morning
+  // (לבדיקה של שחף לפני חשבונית מס) ← נפתח פרויקט קסטום, וממנו פרויקט התכנון ב-Bar Planner.
+  // כך ליד שלא סגר לא משאיר פרויקט באף מערכת. כל הכסף ו-Morning — רק מה-CRM.
+  const openAgreementIssuer = (cust: any) => {
+    window.open(`${BAR_PLANNER_URL}/#/agreement?lead=${encodeURIComponent(cust.id)}`, '_blank', 'noopener');
+  };
+  const openDesignProject = (cpId: string) => {
+    window.open(`${BAR_PLANNER_URL}/#/new?cp=${encodeURIComponent(cpId)}`, '_blank', 'noopener');
+  };
+  // פרויקט הקסטום של ליד ששילם: בלי שורות (הן מגיעות מהתוכנית החתומה), מקדמה 50%, ודמי התכנון כהכנסה
+  const createDesignProject = async (cust: any, da: any) => {
+    const name = cust.companyName || cust.businessName || cust.contactName || '';
+    const nowIso = new Date().toISOString();
+    const form: any = {
+      name: `${name} · תכנון`,
+      clientName: name,
+      customerId: cust.id,
+      date: israelToday(),
+      status: 'preparation',
+      products: [],
+      params: { exchangeRate: 3.7, containerShippingUSD: 0, customsPercent: 0, portFeesILS: 0, localTransportILS: 0, installationILS: 0 },
+      marginPercent: 30,
+      depositType: 'percent',
+      depositValue: 50,
+      notes: 'נפתח בתשלום דמי התכנון',
+      designFee: {
+        feeIls: da.feeIls, vatPct: da.vatPct, totalIls: da.totalIls, agreementVersion: da.n,
+        ...(da.signedAt ? { signedAt: da.signedAt, signerName: da.signerName || '' } : {}),
+        paidAt: da.paidAt, ...(da.morningUrl ? { morningUrl: da.morningUrl } : {}),
+      },
+      bpDocuments: da.signedAt ? [{ kind: 'agreement', version: da.n, signedAt: da.signedAt, signerName: da.signerName || '', docHash: da.docHash || '' }] : [],
+    };
+    const ref = await addDoc(collection(db, 'crm_custom_projects'), { ...form, ...calcProjectTotals(form), createdAt: nowIso, updatedAt: nowIso });
+    await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...da, customProjectId: ref.id } });
+    return ref.id;
+  };
+  const markDesignFeePaid = async (cust: any) => {
+    const da = cust.designAgreement;
+    if (!da?.token) return;
+    if (da.paidAt) { alert('דמי התכנון כבר סומנו כמשולמים.'); return; }
+    if (!da.signedAt && !window.confirm('הסכם התכנון עוד לא נחתם ע"י הלקוח.\nלסמן תשלום בכל זאת?')) return;
+    const name = cust.companyName || cust.businessName || cust.contactName || '';
+    if (!window.confirm(`התקבלו דמי תכנון ₪${Math.round(da.feeIls).toLocaleString()} + מע"מ מ"${name}"?\n\nתשודר דרישת תשלום (חשבון עסקה) ל-Morning, וייפתח פרויקט.`)) return;
+    setDesignFeeSending(cust.id);
+    try {
+      const res = await sendMorningDocument([{ description: `שירות תכנון בר${name ? ` · ${name}` : ''}`, quantity: 1, price: Math.round(Number(da.feeIls)) }], cust);
+      const { morningError: _old, ...rest } = da;
+      void _old;
+      if (!res.url) {
+        await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...rest, morningError: String(res.error || 'שגיאה לא ידועה') } });
+        alert(`השידור ל-Morning נכשל, ולא סומן תשלום: ${res.error}`);
+      } else {
+        const paid = { ...rest, paidAt: new Date().toISOString(), morningUrl: res.url };
+        // הכסף נרשם קודם; אם פתיחת הפרויקט נכשלת, הכפתור "פתח פרויקט" נשאר בליד
+        await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: paid });
+        await createDesignProject(cust, paid);
+      }
+    } catch (err: any) {
+      alert('שגיאה ברישום דמי התכנון: ' + (err?.message || err));
+    }
+    setDesignFeeSending(null);
+  };
+  // חתימה על ההסכם נשמרת בקישור (bp_shares/<token>/signatures/<n>); כשתיק הליד נפתח — נרשמת גם בליד
+  const overviewCustomer = isCustomerOverviewOpen && selectedCustomer ? (customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer) : null;
+  const overviewDa = overviewCustomer?.designAgreement;
+  useEffect(() => {
+    if (!overviewCustomer || !overviewDa?.token || overviewDa.signedAt) return;
+    let alive = true;
+    getDoc(doc(db, `bp_shares/${overviewDa.token}/signatures`, String(overviewDa.n))).then(async (snap: any) => {
+      if (!alive || !snap.exists()) return;
+      const sig = snap.data();
+      await updateDoc(doc(db, 'crm_customers', overviewCustomer.id), { designAgreement: { ...overviewDa, signedAt: sig.signedAt, signerName: sig.name || '', docHash: sig.docHash || '' } });
+    }).catch((err: any) => console.error('design agreement signature', err));
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overviewCustomer?.id, overviewDa?.token, overviewDa?.n, overviewDa?.signedAt]);
+
   // מבצע בפועל את השידור ל-Morning עבור פרויקט קוסטום.
   // isTest=true: מוסיף [TEST] לשם הלקוח, ולא נוגע בסטטוס הפרויקט, בסטטוס הלקוח או בשדות התשלום.
   const executeProjectMorningSend = async (isTest: boolean) => {
@@ -7647,6 +7730,7 @@ export default function App() {
                             <h3 className="font-bold text-slate-800 truncate">{proj.name}</h3>
                             {proj.clientName && <p className="text-xs text-slate-500 mt-0.5">{proj.clientName}</p>}
                             {linkedCustomer && <p className="text-[10px] text-[#7B1315] mt-0.5 flex items-center gap-1"><User className="w-2.5 h-2.5"/>{linkedCustomer.businessName || linkedCustomer.contactName}</p>}
+                            {proj.barPlanner && <p data-testid={`cp-bp-badge-${proj.id}`} className="text-[10px] text-slate-500 mt-1 flex items-center gap-1"><PencilRuler className="w-2.5 h-2.5"/>Bar Planner · {proj.barPlanner.code}{proj.designFee ? ` · תכנון ${proj.designFee.paidAt ? 'שולם ✓' : proj.designFee.signedAt ? 'נחתם' : 'נשלח'}` : ''}</p>}
                           </div>
                           {/* בחירת סטטוס — מעבר ל"מקדמה שולמה"/"הושלם" פותח חלון אישור שידור ל-Morning */}
                           <select
@@ -7786,6 +7870,53 @@ export default function App() {
                     </div>
 
                     <div className="p-6 space-y-6">
+                      {/* BAR PLANNER: תכנון, מסמכים חתומים ודמי תכנון (נרשמו בליד; כאן לקריאה) */}
+                      {(proj.barPlanner || proj.designFee) && (
+                        <div data-testid="cp-bp-box" className="bg-[#FAF8F2] border border-[#DCD6C4] rounded-xl p-4">
+                          <div className="flex items-center justify-between gap-2 mb-3">
+                            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><PencilRuler className="w-4 h-4 text-[#7B1315]"/> Bar Planner{proj.barPlanner ? ` · ${proj.barPlanner.code}` : ''}</h3>
+                            {proj.barPlanner ? (
+                              <a href={proj.barPlanner.url} target="_blank" rel="noopener noreferrer" data-testid="cp-bp-open" className="text-xs text-[#7B1315] hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> פתח את התכנון</a>
+                            ) : (
+                              <button type="button" data-testid="cp-bp-open-new" onClick={() => openDesignProject(proj.id)} className="text-xs bg-[#7B1315] text-white px-2.5 py-1.5 rounded-lg font-bold hover:opacity-90 flex items-center gap-1"><PencilRuler className="w-3 h-3"/> פתח ב-Bar Planner</button>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="bg-white border border-slate-200 rounded-lg p-3" data-testid="cp-bp-fee">
+                              <p className="text-[11px] text-slate-500 mb-1">דמי תכנון</p>
+                              {proj.designFee ? (
+                                <>
+                                  <p className="font-black text-slate-800 text-lg">₪{Math.round(proj.designFee.feeIls || 0).toLocaleString()} <span className="text-[11px] font-normal text-slate-400">+ מע"מ · הסכם v{proj.designFee.agreementVersion}</span></p>
+                                  <p className="text-[11px] text-slate-500">{proj.designFee.signedAt ? `נחתם ע"י ${proj.designFee.signerName || 'הלקוח'} · ${new Date(proj.designFee.signedAt).toLocaleDateString('he-IL')}` : 'לא נחתם'}</p>
+                                  <p className="text-xs mt-1 flex flex-wrap items-center gap-2">
+                                    {proj.designFee.paidAt ? <span className="text-green-700 font-bold">שולם ✓ {new Date(proj.designFee.paidAt).toLocaleDateString('he-IL')}</span> : <span className="text-amber-700">לא שולם</span>}
+                                    {proj.designFee.morningUrl && <a href={proj.designFee.morningUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> המסמך ב-Morning</a>}
+                                  </p>
+                                </>
+                              ) : (
+                                <p className="text-xs text-slate-400">אין הסכם תכנון בפרויקט</p>
+                              )}
+                            </div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-3" data-testid="cp-bp-docs">
+                              <p className="text-[11px] text-slate-500 mb-1">מסמכים חתומים</p>
+                              {(proj.bpDocuments || []).length ? (
+                                <ul className="space-y-1.5">
+                                  {(proj.bpDocuments || []).map((d: any) => (
+                                    <li key={`${d.kind}${d.version}`} className="text-xs text-slate-700">
+                                      <b>{d.kind === 'agreement' ? 'הסכם שירות תכנון' : 'תוכנית סופית לאישור לייצור'}</b> · v{d.version}
+                                      <span className="text-slate-500"> · {d.signerName} · {new Date(d.signedAt).toLocaleDateString('he-IL')}</span>
+                                      <span className="block text-[10px] text-slate-400 break-all" title="טביעת אצבע של המסמך החתום (SHA-256)">{String(d.docHash || '').slice(0, 16)}…</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="text-xs text-slate-400">עוד אין מסמך חתום</p>
+                              )}
+                              <p className="text-[10px] text-slate-400 mt-2">העותק המלא נשמר ב-Bar Planner ("שתף" ← "PDF חתום").</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       {/* MORNING PAYMENTS STATUS */}
                       {(proj.depositMorningInvoiceUrl || proj.balanceMorningInvoiceUrl || proj.depositMorningError || proj.balanceMorningError || proj.testMorningInvoiceUrl) && (
                         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
@@ -9448,6 +9579,48 @@ export default function App() {
                     );
                   })()}
                 </div>
+
+                {/* הסכם תכנון (Bar Planner): נשלח מהליד, נחתם בקישור, התשלום נרשם כאן ← Morning ← פרויקט */}
+                {(() => {
+                  const cust = overviewCustomer || selectedCustomer;
+                  const da = cust.designAgreement;
+                  const cp = da?.customProjectId ? customProjects.find((p: any) => p.id === da.customProjectId) : null;
+                  return (
+                    <div data-testid="lead-design" className="bg-white border border-[#DCD6C4] rounded-lg p-3 space-y-2">
+                      <p className="text-xs font-bold text-slate-700 flex items-center gap-1.5"><PencilRuler className="w-3.5 h-3.5 text-[#7B1315]"/> הסכם תכנון</p>
+                      {!da ? (
+                        <>
+                          <p className="text-[11px] text-slate-500">עוד לא נשלח. ההסכם נפתח ב-Bar Planner עם פרטי הליד, ומשם נשלח בווטסאפ לחתימה.</p>
+                          <button type="button" data-testid="lead-design-send" onClick={() => openAgreementIssuer(cust)} className="w-full text-xs bg-[#7B1315] text-white py-1.5 rounded-lg font-bold hover:opacity-90">שלח הסכם תכנון</button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-slate-600" data-testid="lead-design-state">
+                            v{da.n} · ₪{Math.round(da.feeIls || 0).toLocaleString()} + מע"מ · נשלח {da.sentAt ? new Date(da.sentAt).toLocaleDateString('he-IL') : ''}
+                            <br/>{da.signedAt ? <span className="text-green-700 font-bold">נחתם ✓ ע"י {da.signerName || 'הלקוח'}</span> : <span className="text-amber-700">ממתין לחתימה</span>}
+                            {da.paidAt && <><br/><span className="text-green-700 font-bold">שולם ✓ {new Date(da.paidAt).toLocaleDateString('he-IL')}</span></>}
+                          </p>
+                          {da.morningUrl && <a href={da.morningUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-indigo-600 hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> המסמך ב-Morning</a>}
+                          {da.morningError && !da.paidAt && <p className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded p-1.5 break-words">שידור אחרון נכשל: {da.morningError}</p>}
+                          {!da.paidAt && (
+                            <div className="flex gap-1.5">
+                              <button type="button" data-testid="lead-design-paid" disabled={designFeeSending === cust.id} onClick={() => markDesignFeePaid(cust)} className="flex-1 text-xs bg-green-600 text-white py-1.5 rounded-lg font-bold hover:bg-green-700 disabled:opacity-50">{designFeeSending === cust.id ? 'משדר…' : 'התקבלו דמי תכנון'}</button>
+                              <button type="button" data-testid="lead-design-reissue" onClick={() => openAgreementIssuer(cust)} className="text-xs border border-slate-300 bg-white text-slate-600 px-2 py-1.5 rounded-lg hover:bg-slate-50">ההסכם</button>
+                            </div>
+                          )}
+                          {da.paidAt && !da.customProjectId && (
+                            <button type="button" data-testid="lead-design-create-project" onClick={() => createDesignProject(cust, da).catch((err: any) => alert('הפרויקט לא נפתח: ' + (err?.message || err)))} className="w-full text-xs bg-[#7B1315] text-white py-1.5 rounded-lg font-bold">פתח פרויקט (הפתיחה הקודמת נכשלה)</button>
+                          )}
+                          {da.customProjectId && (cp?.barPlanner ? (
+                            <a href={cp.barPlanner.url} target="_blank" rel="noopener noreferrer" data-testid="lead-design-planner" className="text-xs text-[#7B1315] hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> פתח את התכנון · {cp.barPlanner.code}</a>
+                          ) : (
+                            <button type="button" data-testid="lead-design-open" onClick={() => openDesignProject(da.customProjectId)} className="w-full text-xs bg-[#7B1315] text-white py-1.5 rounded-lg font-bold hover:opacity-90">פתח ב-Bar Planner</button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Lead-specific controls */}
                 {selectedCustomer.status === 'lead' && (
