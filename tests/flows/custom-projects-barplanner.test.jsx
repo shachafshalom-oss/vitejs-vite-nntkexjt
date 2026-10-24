@@ -91,6 +91,15 @@ async function openDetail(id) {
   T.check(T.ui.opened.slice(opened).includes(`${PLANNER}/#/agreement?lead=C2`), `נפתח: ${T.ui.opened.slice(opened).join(' | ')}`);
   T.check(Object.keys(projects()).length === 2, 'שליחת הסכם פתחה פרויקט');
   T.check(!T.byId('lead-design-paid'), 'כפתור תשלום מופיע לפני שנשלח הסכם');
+  // "שלח דוגמאות": גלריה בווטסאפ, ביומן הליד, וליד חדש עובר ליצירת קשר
+  opened = T.ui.opened.length;
+  await T.click(T.byId('customer-panel-examples'));
+  await T.flush(6);
+  const wa = T.ui.opened.slice(opened)[0] || '';
+  T.check(wa.startsWith('https://wa.me/972521111111?text=') && decodeURIComponent(wa).includes(`${PLANNER}/#/gallery`), `קישור הדוגמאות: ${wa.slice(0, 120)}`);
+  const c2 = cust('C2');
+  T.check((c2.interactionLogs || []).some((l) => l.type === 'examples'), 'שליחת דוגמאות לא נרשמה ביומן');
+  T.check(c2.leadStage === 'contacted', `ליד חדש לא עבר ליצירת קשר: ${c2.leadStage}`);
 
   // =====================================================================
   T.describe('2. חתימה בקישור נרשמת בליד');

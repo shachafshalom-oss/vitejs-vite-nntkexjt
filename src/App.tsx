@@ -4710,9 +4710,11 @@ export default function App() {
     }
   };
 
-  const logCatalogSent = async (customer: any) => {
+  const logCatalogSent = (customer: any) => logLeadOutreach(customer, 'נשלח קטלוג מוצרים', 'catalog');
+  // פנייה ללקוח (קטלוג / דוגמאות תכנון): רשומה ביומן, וליד "חדש" עובר ל"יצירת קשר"
+  const logLeadOutreach = async (customer: any, text: string, type: string) => {
     try {
-      const catalogLog = { date: new Date().toISOString(), text: 'נשלח קטלוג מוצרים', type: 'catalog', user: user?.email || '' };
+      const catalogLog = { date: new Date().toISOString(), text, type, user: user?.email || '' };
       const currentLogs = Array.isArray(customer.interactionLogs) ? customer.interactionLogs : [];
       let updatedLogs = [...currentLogs, catalogLog];
       const payload: Record<string, any> = {};
@@ -5055,6 +5057,15 @@ export default function App() {
   // ב-customer.designAgreement. רק כשהלקוח חתם ושילם: "התקבלו דמי תכנון" כאן ← דרישת תשלום ל-Morning
   // (לבדיקה של שחף לפני חשבונית מס) ← נפתח פרויקט קסטום, וממנו פרויקט התכנון ב-Bar Planner.
   // כך ליד שלא סגר לא משאיר פרויקט באף מערכת. כל הכסף ו-Morning — רק מה-CRM.
+  // "שלח דוגמאות": קישור לגלריה הציבורית של Bar Planner (ברים שתכננו, בלי פרטי לקוחות) בווטסאפ
+  const sendDesignExamples = (cust: any) => {
+    const rawPhone = (cust.phone || '').replace(/\D/g, '');
+    const waPhone = rawPhone.startsWith('0') ? '972' + rawPhone.slice(1) : rawPhone;
+    const name = cust.contactName || cust.businessName || '';
+    const msg = `שלום${name ? ` ${name}` : ''}, כמה ברים שתכננו לאחרונה: מבט על, חזיתות והדמיות של כל עמדה.\n${BAR_PLANNER_URL}/#/gallery\n\nנשמח לתכנן גם את הבר שלך.`;
+    window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+    void logLeadOutreach(cust, 'נשלחו דוגמאות תכנון (גלריה)', 'examples');
+  };
   const openAgreementIssuer = (cust: any) => {
     window.open(`${BAR_PLANNER_URL}/#/agreement?lead=${encodeURIComponent(cust.id)}`, '_blank', 'noopener');
   };
@@ -9611,6 +9622,10 @@ export default function App() {
                 <button data-testid="customer-panel-catalog" title="שלח קטלוג בוואטסאפ" aria-label="שלח קטלוג בוואטסאפ" className="text-slate-400 hover:text-green-600 p-1"
                   onClick={() => { setCatalogSendTarget(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>
                   <Send className="w-5 h-5"/>
+                </button>
+                <button data-testid="customer-panel-examples" title="שלח דוגמאות תכנון בוואטסאפ (גלריה)" aria-label="שלח דוגמאות תכנון" className="text-slate-400 hover:text-[#7B1315] p-1"
+                  onClick={() => sendDesignExamples(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer)}>
+                  <ImageIcon className="w-5 h-5"/>
                 </button>
                 <button data-testid="customer-panel-quote" title="הצעת מחיר חדשה ללקוח זה" aria-label="הצעת מחיר חדשה ללקוח זה" className="text-slate-400 hover:text-blue-600 p-1"
                   onClick={() => openQuoteForCustomer(selectedCustomer)}>
