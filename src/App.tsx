@@ -62,17 +62,22 @@ const getProductSize = (pr: any): string => {
 // שממנו נשלחת דרישת תשלום ל-Morning. לעולם אין לכתוב אותם ישירות ל-Firestore
 // מחוץ ל-executeProjectMorningSend — אחרת ייווצר פרויקט שמסומן כשולם בלי מסמך.
 // =========================================================================
-const PROJECT_STATUS_ORDER = ['preparation', 'submitted', 'deposit_paid', 'completed'];
+// awaiting_payment: התוכנית לייצור נחתמה (Bar Planner), מחכים למקדמה. design_only: הלקוח לקח את התוכנית בלי ייצור — הפרויקט נסגר
+const PROJECT_STATUS_ORDER = ['preparation', 'submitted', 'awaiting_payment', 'deposit_paid', 'completed', 'design_only'];
 const PROJECT_STATUS_LABELS: Record<string, string> = {
   preparation: 'הכנה',
   submitted: 'הוגש',
+  awaiting_payment: 'ממתין לתשלום',
   deposit_paid: 'מקדמה שולמה',
   completed: 'הושלם',
+  design_only: 'שולמו רק מדידות',
   approved: 'אושר (סטטוס ישן)', // פרויקטים שנוצרו לפני מודל המקדמה/יתרה
 };
 const PROJECT_STATUS_COLORS: Record<string, string> = {
   preparation: 'bg-blue-100 text-blue-700 border-blue-300',
   submitted: 'bg-amber-100 text-amber-700 border-amber-300',
+  awaiting_payment: 'bg-orange-100 text-orange-800 border-orange-300',
+  design_only: 'bg-teal-100 text-teal-800 border-teal-300',
   deposit_paid: 'bg-indigo-100 text-indigo-800 border-indigo-300',
   completed: 'bg-green-100 text-green-800 border-green-300',
   approved: 'bg-slate-100 text-slate-600 border-slate-300',
@@ -80,6 +85,8 @@ const PROJECT_STATUS_COLORS: Record<string, string> = {
 const PROJECT_STATUS_BAR: Record<string, string> = {
   preparation: 'bg-purple-400',
   submitted: 'bg-amber-400',
+  awaiting_payment: 'bg-orange-400',
+  design_only: 'bg-teal-400',
   deposit_paid: 'bg-indigo-400',
   completed: 'bg-green-400',
   approved: 'bg-slate-400',
@@ -2756,6 +2763,19 @@ export default function App() {
         }
     });
 
+    // הכנסות מתכנון (Bar Planner): דמי תכנון ששולמו (בליד) וסבבי תיקונים בתשלום (בפרויקט), לפני מע"מ,
+    // בחודש שבו סומן התשלום. מזומן שנכנס — הקיזוז למי שבונה איתנו יורד מהתשלום הסופי של ההזמנה.
+    const addDesignIncome = (paidAt: any, amount: number) => {
+      if (!paidAt || !(amount > 0)) return;
+      const ds = israelDateStr(paidAt);
+      const [y, m] = ds.split('-').map(Number);
+      if (y === financeYear && m >= 1 && m <= 12) monthlyFinance[m - 1].income += amount;
+      if (ds.substring(0, 7) === currentMonthStr) currentMonthIncome += amount;
+      if (ds.substring(0, 7) === lastMonthStr) lastMonthIncome += amount;
+    };
+    customers.forEach((c: any) => { const da = c.designAgreement; if (da?.paidAt) addDesignIncome(da.paidAt, Number(da.feeIls) || 0); });
+    customProjects.forEach((p: any) => (p.roundCharges || []).forEach((r: any) => { if (r.paidAt) addDesignIncome(r.paidAt, Number(r.ils) || 0); }));
+
     const yearlyIncome = monthlyFinance.reduce((sum, m) => sum + m.income, 0);
     const yearlyExpense = monthlyFinance.reduce((sum, m) => sum + m.expense, 0);
     const calculatedAvgProfit = soldCount > 0 ? Math.round(totalProfit / soldCount) : 0;
@@ -2849,7 +2869,7 @@ export default function App() {
         return stats;
       })()
     };
-  }, [items, shipments, campaigns, customers, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr, suppliers, localPurchases]);
+  }, [items, shipments, campaigns, customers, customProjects, expenses, settings, modelsList, financeYear, financeMonth, currentMonthStr, lastMonthStr, thirtyDaysAgoStr, suppliers, localPurchases]);
 
   // --- Handlers ---
   const generateWithGemini = async (prompt: string) => {
@@ -4973,6 +4993,12 @@ export default function App() {
       return;
     }
 
+    // תכנון בלבד: הלקוח לוקח את התוכנית בלי ייצור דרכנו. Bar Planner פותח את "תוכנית סופית – מסירה"
+    if (newStatus === 'design_only') {
+      const paidNote = proj.designFee?.paidAt ? '' : '\n\nשים לב: דמי התכנון לא סומנו כמשולמים בפרויקט הזה.';
+      if (!window.confirm(`לסגור את "${proj.name}" כ"שולמו רק מדידות"?\nהלקוח לוקח את התוכנית בלי ייצור דרכנו: ב-Bar Planner תיפתח "תוכנית סופית – מסירה", ושורות ייצור לא יישלחו לפרויקט.${paidNote}`)) return;
+    }
+
     // חזרה אחורה מסטטוס תשלום — מסמך ה-Morning שכבר הופק אינו מתבטל אוטומטית
     if (PROJECT_PAYMENT_STATUSES.includes(current)) {
       if (!window.confirm(
@@ -5072,6 +5098,27 @@ export default function App() {
     await saveLeadField(cust.id, { followUpDate: date, followUpNote: `מדידה סופית באתר${address}` });
     await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...da, measureAt: date } });
     setMeasureDraft('');
+  };
+  // סבב תיקונים בתשלום (Bar Planner): התשלום התקבל ← דרישת תשלום ל-Morning ← הקישור ללקוח נפתח שם
+  const markRoundPaid = async (proj: any, version: number) => {
+    const list = proj.roundCharges || [];
+    const r = list.find((x: any) => x.version === version);
+    if (!r || r.paidAt) return;
+    const customer = customers.find((c: any) => c.id === proj.customerId);
+    if (!customer) { alert('הלקוח המקושר לא נמצא ב-CRM.'); return; }
+    if (!window.confirm(`התקבל תשלום על סבב תיקונים ${r.round}: ₪${Math.round(r.ils).toLocaleString()} + מע"מ?\n\nתשודר דרישת תשלום (חשבון עסקה) ל-Morning, והסבב ייפתח ללקוח בקישור.`)) return;
+    setDesignFeeSending(`${proj.id}:${version}`);
+    try {
+      const res = await sendMorningDocument([{ description: `סבב תיקונים נוסף ${r.round}${proj.barPlanner?.code ? ` · ${proj.barPlanner.code}` : ''}`, quantity: 1, price: Math.round(Number(r.ils)) }], customer);
+      const { morningError: _e, ...rest } = r;
+      void _e;
+      const next = res.url ? { ...rest, paidAt: new Date().toISOString(), morningUrl: res.url } : { ...rest, morningError: String(res.error || 'שגיאה לא ידועה') };
+      await updateDoc(doc(db, 'crm_custom_projects', proj.id), { roundCharges: list.map((x: any) => (x.version === version ? next : x)), updatedAt: new Date().toISOString() });
+      if (!res.url) alert(`השידור ל-Morning נכשל, ולא סומן תשלום: ${res.error}`);
+    } catch (err: any) {
+      alert('שגיאה ברישום התשלום: ' + (err?.message || err));
+    }
+    setDesignFeeSending(null);
   };
   // ביטול הזמנה: הקיזוז מבוטל (ההפרש מנוכה מהחזר המקדמה, לפי ההסכם) ולא יופיע בדרישת היתרה
   const voidDesignCredit = async (proj: any) => {
@@ -6075,7 +6122,7 @@ export default function App() {
                 <div className="md:col-span-2 bg-gradient-to-br from-[#7B1315] via-[#651011] to-purple-700 p-6 rounded-2xl shadow-lg text-white relative overflow-hidden">
                   <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 80% 20%, white 0%, transparent 60%)'}}/>
                   <p className="text-sm font-medium text-[#DABDBD] mb-1">הכנסות חודש נוכחי</p>
-                  <p className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
+                  <p data-testid="dash-month-income" className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
                   <div className="flex items-center gap-3 flex-wrap">
                     {(() => {
                       if (calculatedData.avgPastMonthsCount === 0) {
@@ -7927,7 +7974,19 @@ export default function App() {
                                             <button type="button" data-testid="cp-bp-credit-void" onClick={() => voidDesignCredit(proj)} className="block mt-1 text-[11px] text-red-700 underline">ההזמנה בוטלה — בטל קיזוז</button></>}
                                     </div>
                                   )}
-                                  <p className="text-[11px] text-slate-600 mt-1" data-testid="cp-bp-design-income">הכנסה מתכנון: <b>₪{Math.round((proj.designFee.feeIls || 0) - (proj.designCredit && !proj.designCredit.voidedAt ? proj.designCredit.ils || 0 : 0)).toLocaleString()}</b> לפני מע"מ</p>
+                                  {(proj.roundCharges || []).map((r: any) => (
+                                    <div key={r.version} data-testid={`cp-bp-round-${r.version}`} className="mt-2 text-[11px] flex flex-wrap items-center gap-2 border-t border-slate-100 pt-1.5">
+                                      <span>סבב תיקונים {r.round} · ₪{Math.round(r.ils).toLocaleString()} + מע"מ ·</span>
+                                      {r.paidAt ? (
+                                        <span className="text-green-700 font-bold">שולם ✓ {new Date(r.paidAt).toLocaleDateString('he-IL')}</span>
+                                      ) : (
+                                        <button type="button" data-testid={`cp-bp-round-paid-${r.version}`} disabled={designFeeSending === `${proj.id}:${r.version}`} onClick={() => markRoundPaid(proj, r.version)} className="bg-green-600 text-white px-2 py-0.5 rounded font-bold disabled:opacity-50">{designFeeSending === `${proj.id}:${r.version}` ? 'משדר…' : 'התקבל תשלום'}</button>
+                                      )}
+                                      {r.morningUrl && <a href={r.morningUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Morning</a>}
+                                      {r.morningError && !r.paidAt && <span className="text-red-600">שידור נכשל: {r.morningError}</span>}
+                                    </div>
+                                  ))}
+                                  <p className="text-[11px] text-slate-600 mt-1" data-testid="cp-bp-design-income">הכנסה מתכנון: <b>₪{Math.round((proj.designFee.feeIls || 0) - (proj.designCredit && !proj.designCredit.voidedAt ? proj.designCredit.ils || 0 : 0) + (proj.roundCharges || []).filter((r: any) => r.paidAt).reduce((s: number, r: any) => s + (Number(r.ils) || 0), 0)).toLocaleString()}</b> לפני מע"מ</p>
                                 </>
                               ) : (
                                 <p className="text-xs text-slate-400">אין הסכם תכנון בפרויקט</p>
@@ -7939,7 +7998,7 @@ export default function App() {
                                 <ul className="space-y-1.5">
                                   {(proj.bpDocuments || []).map((d: any) => (
                                     <li key={`${d.kind}${d.version}`} className="text-xs text-slate-700">
-                                      <b>{d.kind === 'agreement' ? 'הסכם שירות תכנון' : 'תוכנית סופית לאישור לייצור'}</b> · v{d.version}
+                                      <b>{d.kind === 'agreement' ? 'הסכם שירות תכנון' : d.kind === 'delivery' ? 'קבלת תוכנית סופית (מסירה)' : 'תוכנית סופית לאישור לייצור'}</b> · v{d.version}
                                       <span className="text-slate-500"> · {d.signerName} · {new Date(d.signedAt).toLocaleDateString('he-IL')}</span>
                                       <span className="block text-[10px] text-slate-400 break-all" title="טביעת אצבע של המסמך החתום (SHA-256)">{String(d.docHash || '').slice(0, 16)}…</span>
                                     </li>

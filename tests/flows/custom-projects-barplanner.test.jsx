@@ -44,6 +44,7 @@ T.seed({
       barPlanner: { projectId: 'bp9', code: 'BP-2026-010', url: `${PLANNER}/#/p/bp9` },
       designFee: { feeIls: 4000, vatPct: 18, totalIls: 4720, agreementVersion: 1, paidAt: '2026-10-10T10:00:00.000Z' },
       designCredit: { ils: 1500, agreementVersion: 1, approvalVersion: 3, signedAt: 1761300000000 },
+      roundCharges: [{ version: 5, round: 3, ils: 300, createdAt: '2026-10-22T10:00:00.000Z' }],
       createdAt: '2026-10-20T10:00:00.000Z',
     },
     P2: { name: 'פרויקט רגיל', clientName: 'בר על הגג', customerId: 'C1', date: '2026-10-20', status: 'preparation', params: PARAMS, marginPercent: 30, products: [], salePriceOverrides: {}, notes: '', createdAt: '2026-10-20T10:00:00.000Z' },
@@ -185,6 +186,46 @@ async function openDetail(id) {
   T.check(T.amountShown(4000, T.byId('cp-bp-design-income')), 'אחרי ביטול, הכנסת התכנון לא חזרה למחיר המלא');
   prices = await balanceTestPrices();
   T.check(prices === '20000,-10000', `אחרי ביטול, שורות היתרה: ${prices}`);
+
+  // =====================================================================
+  T.describe('7. סבב תיקונים בתשלום: "התקבל תשלום" ← Morning ← שולם');
+  T.check(await openDetail('P3'), 'פרויקט ההזמנה לא נפתח');
+  const before = morningCalls.length;
+  T.answerConfirms(true);
+  await T.click(T.byId('cp-bp-round-paid-5'));
+  await T.flush(12);
+  T.ui.confirmAnswers.length = 0;
+  const rc = morningCalls[before]?.income || [];
+  T.check(morningCalls.length === before + 1 && rc.length === 1 && rc[0].price === 300 && String(rc[0].description).includes('סבב תיקונים נוסף 3'), `מסמך הסבב: ${JSON.stringify(rc)}`);
+  const r5 = projects().P3.roundCharges[0];
+  T.check(String(r5.paidAt).startsWith('2026-10-24T') && !!r5.morningUrl && r5.version === 5, `הסבב לא סומן ששולם: ${JSON.stringify(r5)}`);
+  T.check(!T.byId('cp-bp-round-paid-5') && (T.byId('cp-bp-round-5')?.textContent || '').includes('שולם ✓'), 'הכפתור נשאר אחרי תשלום');
+  T.check(T.amountShown(4300, T.byId('cp-bp-design-income')), `הכנסה מתכנון עם הסבב: ${T.byId('cp-bp-design-income')?.textContent}`);
+  T.check(projects().P3.status === 'deposit_paid', 'תשלום על סבב שינה את סטטוס הפרויקט');
+  await T.click(T.byId('cp-detail-close'));
+
+  // =====================================================================
+  T.describe('8. "שולמו רק מדידות" ו"ממתין לתשלום"');
+  T.answerConfirms(true);
+  await T.selectAction(T.byId('cp-status-P2'), 'design_only');
+  await T.flush(6);
+  T.ui.confirmAnswers.length = 0;
+  T.check(projects().P2.status === 'design_only', `סטטוס תכנון בלבד: ${projects().P2.status}`);
+  T.check(T.lastConfirm().includes('שולמו רק מדידות'), 'אין אישור לפני סגירה כתכנון בלבד');
+  T.answerConfirms(false);
+  await T.selectAction(T.byId('cp-status-P2'), 'awaiting_payment');
+  await T.flush(4);
+  T.ui.confirmAnswers.length = 0;
+  T.check(projects().P2.status === 'awaiting_payment', `ממתין לתשלום (בלי חלון Morning): ${projects().P2.status}`);
+  T.check(morningCalls.length === before + 1, 'שינוי סטטוס לא-תשלום שידר ל-Morning');
+
+  // =====================================================================
+  T.describe('9. הכנסות מתכנון בדשבורד');
+  T.setNav('sales', 'sales_dashboard');
+  await T.nav('sales_dashboard');
+  await T.flush(6);
+  // דמי התכנון של C1 (2,500, שולמו היום) + סבב 3 (300, שולם היום)
+  T.check(T.amountShown(2800, T.byId('dash-month-income')), `הכנסות החודש: ${T.byId('dash-month-income')?.textContent}`);
 
   T.finish();
 })().catch(T.crash);
