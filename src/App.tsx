@@ -1696,6 +1696,7 @@ export default function App() {
   const [items, setItems] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
+  const [measureDraft, setMeasureDraft] = useState<string>(''); // תאריך מדידה סופית שנבחר בתיק הליד
   const [designFeeSending, setDesignFeeSending] = useState<string | null>(null); // מזהה הליד בזמן רישום דמי התכנון ושידור ל-Morning
   const [quotes, setQuotes] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
@@ -5061,6 +5062,17 @@ export default function App() {
     await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...da, customProjectId: ref.id } });
     return ref.id;
   };
+  // מדידה סופית באתר: נרשמת בהסכם של הליד (Bar Planner מציג אותה) ונקבעת כתזכורת בדשבורד וביומן
+  const scheduleMeasurement = async (cust: any, date: string) => {
+    const da = cust.designAgreement;
+    if (!da || !/^\d{4}-\d{2}-\d{2}$/.test(date)) { alert('בחר תאריך למדידה.'); return; }
+    if (cust.followUpDate && cust.followUpDate !== date && !String(cust.followUpNote || '').startsWith('מדידה סופית')
+      && !window.confirm(`לליד יש כבר תזכורת ל-${new Date(cust.followUpDate).toLocaleDateString('he-IL')}${cust.followUpNote ? ` (${cust.followUpNote})` : ''}.\nלהחליף אותה בתזכורת המדידה?`)) return;
+    const address = cust.address ? ` · ${cust.address}` : '';
+    await saveLeadField(cust.id, { followUpDate: date, followUpNote: `מדידה סופית באתר${address}` });
+    await updateDoc(doc(db, 'crm_customers', cust.id), { designAgreement: { ...da, measureAt: date } });
+    setMeasureDraft('');
+  };
   // ביטול הזמנה: הקיזוז מבוטל (ההפרש מנוכה מהחזר המקדמה, לפי ההסכם) ולא יופיע בדרישת היתרה
   const voidDesignCredit = async (proj: any) => {
     const dc = proj.designCredit;
@@ -5110,6 +5122,7 @@ export default function App() {
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overviewCustomer?.id, overviewDa?.token, overviewDa?.n, overviewDa?.signedAt]);
+  useEffect(() => setMeasureDraft(''), [overviewCustomer?.id]);
 
   // מבצע בפועל את השידור ל-Morning עבור פרויקט קוסטום.
   // isTest=true: מוסיף [TEST] לשם הלקוח, ולא נוגע בסטטוס הפרויקט, בסטטוס הלקוח או בשדות התשלום.
@@ -9633,6 +9646,15 @@ export default function App() {
                           )}
                           {da.paidAt && !da.customProjectId && (
                             <button type="button" data-testid="lead-design-create-project" onClick={() => createDesignProject(cust, da).catch((err: any) => alert('הפרויקט לא נפתח: ' + (err?.message || err)))} className="w-full text-xs bg-[#7B1315] text-white py-1.5 rounded-lg font-bold">פתח פרויקט (הפתיחה הקודמת נכשלה)</button>
+                          )}
+                          {da.paidAt && (
+                            <div className="border-t border-slate-100 pt-2" data-testid="lead-design-measure">
+                              <p className="text-[11px] text-slate-500 mb-1">מדידה סופית באתר{da.measureAt ? <>: <b className="text-slate-700">{new Date(da.measureAt).toLocaleDateString('he-IL')}</b></> : ' (אחרי התכנון הראשוני)'}</p>
+                              <div className="flex gap-1.5">
+                                <input type="date" data-testid="lead-design-measure-date" className="flex-1 min-w-0 text-xs border border-slate-300 rounded px-2 py-1" value={measureDraft} onChange={e => setMeasureDraft(e.target.value)} />
+                                <button type="button" data-testid="lead-design-measure-set" disabled={!measureDraft} onClick={() => scheduleMeasurement(cust, measureDraft).catch((err: any) => alert('המדידה לא נקבעה: ' + (err?.message || err)))} className="text-xs bg-slate-700 text-white px-2 py-1 rounded disabled:opacity-40">{da.measureAt ? 'שנה' : 'קבע מדידה'}</button>
+                              </div>
+                            </div>
                           )}
                           {da.customProjectId && (cp?.barPlanner ? (
                             <a href={cp.barPlanner.url} target="_blank" rel="noopener noreferrer" data-testid="lead-design-planner" className="text-xs text-[#7B1315] hover:underline flex items-center gap-1"><ExternalLink className="w-3 h-3"/> פתח את התכנון · {cp.barPlanner.code}</a>

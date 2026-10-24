@@ -123,6 +123,14 @@ async function openDetail(id) {
   opened = T.ui.opened.length;
   await T.click(T.byId('lead-design-open'));
   T.check(T.ui.opened.slice(opened).includes(`${PLANNER}/#/new?cp=${newIds[0]}`), `פתיחת התכנון: ${T.ui.opened.slice(opened).join(' | ')}`);
+  // מדידה סופית: תזכורת בדשבורד, ונרשמת בהסכם (Bar Planner מציג אותה)
+  T.check(!!T.byId('lead-design-measure'), 'אין "קבע מדידה" אחרי תשלום');
+  await T.type(T.byId('lead-design-measure-date'), '2026-11-03');
+  await T.click(T.byId('lead-design-measure-set'));
+  await T.flush(8);
+  const c1 = cust('C1');
+  T.check(c1.followUpDate === '2026-11-03' && String(c1.followUpNote).startsWith('מדידה סופית באתר'), `תזכורת המדידה: ${c1.followUpDate} ${c1.followUpNote}`);
+  T.check(c1.designAgreement.measureAt === '2026-11-03' && c1.designAgreement.customProjectId === newIds[0], `המדידה בהסכם: ${JSON.stringify(c1.designAgreement)}`);
 
   // =====================================================================
   T.describe('4. כשל ב-Morning — לא שולם, אין פרויקט');
