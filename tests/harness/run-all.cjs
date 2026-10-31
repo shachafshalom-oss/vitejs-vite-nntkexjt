@@ -21,7 +21,7 @@ const mocksPlugin = {
     const to = (file) => () => ({ path: path.join(H, file) });
     build.onResolve({ filter: /^firebase\/firestore$/ }, to('firestore-web-mock.cjs'));
     build.onResolve({ filter: /^firebase\/(app|auth|messaging|storage)$/ }, to('firebase-web-others-mock.cjs'));
-    build.onResolve({ filter: /^firebase-admin\/(app|auth|firestore|messaging)$/ }, to('firebase-admin-mock.cjs'));
+    build.onResolve({ filter: /^firebase-admin\/(app|firestore|messaging)$/ }, to('firebase-admin-mock.cjs'));
     build.onResolve({ filter: /^jspdf$/ }, to('jspdf-shim.mjs'));
     build.onResolve({ filter: /^html2canvas$/ }, to('html2canvas-shim.mjs'));
     // פונקציות ה-Netlify כתובות ב-CommonJS, אבל ה-package.json של הפרויקט מוגדר "type":"module",
