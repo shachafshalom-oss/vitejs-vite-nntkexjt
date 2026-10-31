@@ -268,6 +268,7 @@ async function openInventoryGroup(model) {
   await T.act(async () => { await T.api().setDoc(T.api().doc(null, 'crm_items', 'DMG1'), { model: 'Prime', modelId: 'm_prime', status: 'in_warehouse', shipmentId: 'S_NIGHT', factoryUnitCostUSD: 800, arrivalDate: '2026-10-08', serialNumber: 'DMG-1', repairCost: 0, addOnCost: 0, salePrice: 0, addOnPrice: 0, campaignId: '', createdAt: '2026-10-08T10:00:00.000Z' }); });
   await T.flush(4);
   await T.nav('finance');
+  await T.click(T.byId('finance-view-cashflow')); // ברירת המחדל בטאב היא "ניתוח מכירות" (31.10.2026)
   const expenseBefore = T.byId('finance-month-expense')?.textContent;
   T.check(!!expenseBefore, 'סכום ההוצאות החודשי לא נמצא בדוח הכספים');
   // מכירה מהירה רואה את היחידה לפני הנטרול
@@ -324,6 +325,7 @@ async function openInventoryGroup(model) {
   T.check(T.docs('crm_items').DMG1.status === 'defective', `שינוי סטטוס המשלוח החזיר את היחידה התקולה: ${T.docs('crm_items').DMG1.status}`);
   // דוח הכספים: שורת מידע, בלי לשנות את סך ההוצאות (העלות כבר נרשמה בהזמנה ובהגעה)
   await T.nav('finance');
+  await T.click(T.byId('finance-view-cashflow')); // ברירת המחדל בטאב היא "ניתוח מכירות" (31.10.2026)
   T.check(T.byId('finance-month-expense')?.textContent === expenseBefore, `הנטרול שינה את סך ההוצאות (ספירה כפולה): ${expenseBefore} → ${T.byId('finance-month-expense')?.textContent}`);
   const info = T.byId('finance-defective-info')?.textContent || '';
   T.check(info.includes("נוטרלו החודש: 1 יח'") && /₪[\d,]+/.test(info), `שורת המידע על יחידות שנוטרלו חסרה/שגויה: "${info}"`);

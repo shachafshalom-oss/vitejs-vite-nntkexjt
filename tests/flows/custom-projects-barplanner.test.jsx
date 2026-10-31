@@ -229,12 +229,17 @@ async function openDetail(id) {
   T.check(morningCalls.length === before + 1, 'שינוי סטטוס לא-תשלום שידר ל-Morning');
 
   // =====================================================================
-  T.describe('9. הכנסות מתכנון בדשבורד');
-  T.setNav('sales', 'sales_dashboard');
-  await T.nav('sales_dashboard');
+  // ההכנסות עברו מדשבורד המכירות ("היום שלי", 31.10.2026) לטאב הכספים — שם בודקים את הכנסות התכנון.
+  T.describe('9. הכנסות מתכנון בתזרים החודשי');
+  await T.click(T.byId('space-operations'));
+  await T.nav('finance');
+  await T.click(T.byId('finance-view-cashflow'));
   await T.flush(6);
   // דמי התכנון של C1 (2,500, שולמו היום) + סבב 3 (300, שולם היום)
-  T.check(T.amountShown(2800, T.byId('dash-month-income')), `הכנסות החודש: ${T.byId('dash-month-income')?.textContent}`);
+  T.check(T.amountShown(2800, T.byId('finance-month-income')), `הכנסות החודש: ${T.byId('finance-month-income')?.textContent}`);
+  // דמי תכנון הם הכנסה, לא מכירה — לא נכנסים לניתוח המכירות
+  await T.click(T.byId('finance-view-analytics'));
+  T.check(!!T.byId('sales-analytics'), 'מסך ניתוח המכירות נפתח');
 
   T.finish();
 })().catch(T.crash);

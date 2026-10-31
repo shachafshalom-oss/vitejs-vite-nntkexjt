@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ISRAELI_CITIES } from './israeliCities';
+import SalesDashboard from './components/SalesDashboard';
+import SalesAnalytics from './components/SalesAnalytics';
+import { buildDeals, type ProjectEconomics } from './lib/metrics';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
@@ -1857,6 +1860,8 @@ export default function App() {
   // Finance States
   const [financeYear, setFinanceYear] = useState<number>(Number(israelToday().slice(0, 4)));
   const [financeMonth, setFinanceMonth] = useState<number>(Number(israelToday().slice(5, 7)));
+  // טאב הכספים: 'analytics' = ניתוח מכירות (ברירת מחדל), 'cashflow' = תזרים חודשי (המסך הקיים)
+  const [financeView, setFinanceView] = useState<'analytics' | 'cashflow'>('analytics');
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseData, setExpenseData] = useState<any>({ title: '', amount: 0, type: 'variable', startDate: israelToday(), installments: 1 });
 
@@ -2543,7 +2548,9 @@ export default function App() {
 
       const totalLandedCost = factoryCostILS + importCostILS + repairCostILS + addOnCostILS + marketingCostILS;
       const totalRevenue = (Number(item.salePrice) || 0) + (Number(item.addOnPrice) || 0);
-      const profit = item.status === 'sold' ? totalRevenue - totalLandedCost : 0;
+      // רווח גולמי בלבד (החלטת שחף 31.10.2026): עלות המוצר בלי הקצאת שיווק — נתוני הקמפיינים לא מלאים ב-CRM.
+      // totalLandedCost עצמו לא משתנה (שווי המלאי לא כולל שיווק ממילא — campaignId נקבע רק במכירה).
+      const profit = item.status === 'sold' ? totalRevenue - (totalLandedCost - marketingCostILS) : 0;
 
       let isWarrantyActive = false;
       let warrantyDaysLeft = 0;
@@ -4959,6 +4966,25 @@ export default function App() {
     return { lines, productsTotal, deliveryCost: Math.round(Number(proj.deliveryCost || 0)) };
   };
 
+  // עסקאות לדשבורדים (src/lib/metrics.ts). כלכלת פרויקט קסטום מחושבת כאן, באותן פונקציות שמזינות
+  // את Morning ואת מסך הפרויקט (buildProjectSaleLines / projectUnitPricing) — מקור אמת יחיד למחיר ולעלות.
+  const deals = useMemo(() => {
+    const projectEconomics = (proj: any): ProjectEconomics | null => {
+      const params = proj.params || {};
+      const products = inlineProductEdits[proj.id] || proj.products || [];
+      if (!products.length) return null;
+      const built = buildProjectSaleLines(proj);
+      const totals = calcProjectTotals({ ...proj, products, params });
+      const lines = products.map((pr: any, i: number) => {
+        const qty = Number(pr.qty) || 0;
+        return { model: 'פרויקט קסטום', qty, revenue: built.lines[i]?.lineTotal || 0, cost: projectUnitPricing(pr, params, totals, proj).landedUnit * qty };
+      });
+      return { revenue: built.productsTotal, cost: lines.reduce((s: number, l: any) => s + l.cost, 0), lines };
+    };
+    return buildDeals({ items: calculatedData.enrichedItems, quotes, customProjects, customers, quoteItemPrice: getEffectivePrice, projectEconomics });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calculatedData.enrichedItems, quotes, customProjects, customers, inlineProductEdits, inlineSalePrices]);
+
   // נקודת הכניסה היחידה לשינוי סטטוס פרויקט. סטטוסי תשלום לא נכתבים כאן —
   // הם רק פותחים את חלון האישור, והכתיבה מתבצעת ב-executeProjectMorningSend.
   const handleProjectStatusChange = (proj: any, newStatus: string, paramsOverride?: any) => {
@@ -6117,232 +6143,23 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {/* --- TAB: SALES DASHBOARD --- */}
+        {/* --- TAB: SALES DASHBOARD — "היום שלי" (src/components/SalesDashboard.tsx) --- */}
         {activeTab === 'sales_dashboard' && (
-          <div className="space-y-8">
-
-            {/* ROW 0: Header */}
-            <div className="flex justify-between items-center">
-              <div>
-                <h2 className="text-2xl font-bold text-slate-800">תמונת מצב — מכירות</h2>
-                <p className="text-sm text-slate-400 mt-0.5">{new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-              </div>
-              <button onClick={handleGetInsights} className="bg-gradient-to-l from-[#7B1315] to-purple-600 hover:from-[#651011] hover:to-purple-700 text-white px-4 py-2 rounded-lg font-medium shadow-md transition-all flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-yellow-300"/>
-                <span className="hidden sm:inline">יועץ עסקי AI ✨</span>
-              </button>
-            </div>
-
-            {/* ROW 1 — REVENUE HERO */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-1 h-5 bg-[#7B1315] rounded-full"/>
-                <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">הכנסות</h3>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2 bg-gradient-to-br from-[#7B1315] via-[#651011] to-purple-700 p-6 rounded-2xl shadow-lg text-white relative overflow-hidden">
-                  <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 80% 20%, white 0%, transparent 60%)'}}/>
-                  <p className="text-sm font-medium text-[#DABDBD] mb-1">הכנסות חודש נוכחי</p>
-                  <p data-testid="dash-month-income" className="text-5xl font-black tracking-tight mb-3">₪{calculatedData.currentMonthIncome.toLocaleString()}</p>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    {(() => {
-                      if (calculatedData.avgPastMonthsCount === 0) {
-                        return <span className="text-[#C49596] text-sm">אין נתוני עבר להשוואה עדיין</span>;
-                      }
-                      const diff = calculatedData.currentMonthIncome - calculatedData.avgPastMonthsIncome;
-                      const pct = calculatedData.avgPastMonthsIncome > 0 ? Math.round((diff / calculatedData.avgPastMonthsIncome) * 100) : 0;
-                      const isUp = diff >= 0;
-                      return (
-                        <>
-                          <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${isUp ? 'bg-green-400/20 text-green-200' : 'bg-red-400/20 text-red-200'}`}>
-                            {isUp ? <ArrowUpRight className="w-4 h-4"/> : <ArrowDownRight className="w-4 h-4"/>}
-                            {isUp ? '+' : ''}{pct}% לעומת ממוצע
-                          </div>
-                          <span className="text-[#C49596] text-sm">ממוצע חודשי ({calculatedData.avgPastMonthsCount} חודשים): ₪{calculatedData.avgPastMonthsIncome.toLocaleString()}</span>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-                <div className="flex flex-col gap-4">
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="bg-green-100 p-1.5 rounded-lg"><TrendingUp className="w-4 h-4 text-green-600"/></div>
-                      <p className="text-xs text-slate-500 font-medium">רווח ממוצע לבר</p>
-                    </div>
-                    <p className="text-2xl font-black text-slate-800">₪{calculatedData.avgProfit.toLocaleString()}</p>
-                  </div>
-                  <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex-1 cursor-pointer hover:border-[#C49596] hover:shadow-md transition-all group">
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="bg-[#EDDEDE] p-1.5 rounded-lg group-hover:bg-[#DABDBD] transition-colors"><Package className="w-4 h-4 text-[#7B1315]"/></div>
-                      <p className="text-xs text-slate-500 font-medium flex items-center gap-1">פריטים במלאי <span className="text-[10px] text-[#A55F60] group-hover:text-[#7B1315]">פירוט ▸</span></p>
-                    </div>
-                    <p className="text-2xl font-black text-slate-800">{calculatedData.inWarehouseCount} <span className="text-sm font-medium text-slate-400">יח'</span></p>
-                    <p className="text-xs text-slate-400 mt-0.5">שווי: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* ROW 2 — LEADS COMMAND CENTER */}
-            {(() => {
-              const todayStr4 = getLocalYYYYMMDD(new Date());
-              const allLeads = customers.filter((c: any) => c.status === 'lead');
-              // תזכורות אישיות: כל משתמש רואה רק את הלידים שלו (אותו כלל בעלות כמו בלשונית הלידים),
-              // בלי בורר. ליד "לא רלוונטי" (ארכיון) לא מזכיר — כמו בלשונית הלידים.
-              // המשפך, "לידים לפי נציג" ו"לא מוקצים" נשארים על כל החברה — אלה מספרי ניהול.
-              const myReminderLeads = allLeads.filter((c: any) => c.leadStage !== 'not_relevant' && !!user?.email && leadOwnerOf(c) === user.email);
-              const overdueReminders = myReminderLeads.filter((c: any) => c.followUpDate && c.followUpDate < todayStr4);
-              const todayReminders2 = myReminderLeads.filter((c: any) => c.followUpDate && c.followUpDate === todayStr4);
-              const unassignedLeads = allLeads.filter((c: any) => !c.assignedTo && !c.createdBy);
-              const urgentLeads = [...overdueReminders, ...todayReminders2].filter((v: any, i: number, a: any[]) => a.findIndex((x: any) => x.id === v.id) === i);
-              const stageCount: Record<string, number> = {};
-              allLeads.forEach((c: any) => { const s = c.leadStage || 'new'; stageCount[s] = (stageCount[s] || 0) + 1; });
-              return (
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1 h-5 bg-orange-500 rounded-full"/>
-                      <h3 className="text-base font-bold text-slate-700 uppercase tracking-wide">לידים</h3>
-                      <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">{allLeads.length} פעילים</span>
-                    </div>
-                    <button onClick={() => navigateTo('sales', 'leads')} className="text-xs text-[#7B1315] hover:text-[#4E2426] font-medium flex items-center gap-1">לכל הלידים ▸</button>
-                  </div>
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    {/* Lead stage funnel */}
-                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-4">משפך לידים</p>
-                      <div className="space-y-2.5">
-                        {Object.entries(LEAD_STAGE_MAP).map(([k, v]) => {
-                          const count = stageCount[k] || 0;
-                          const pct = allLeads.length > 0 ? Math.round((count / allLeads.length) * 100) : 0;
-                          return (
-                            <div key={k}>
-                              <div className="flex justify-between text-xs mb-1">
-                                <span className="font-medium text-slate-600">{v}</span>
-                                <span className="font-bold text-slate-700">{count}</span>
-                              </div>
-                              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${k === 'new' ? 'bg-blue-400' : k === 'contacted' ? 'bg-orange-400' : k === 'callback' ? 'bg-teal-400' : k === 'quote_sent' ? 'bg-purple-400' : k === 'waiting' ? 'bg-green-400' : 'bg-slate-300'}`} style={{ width: pct + '%' }}/>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {unassignedLeads.length > 0 && (
-                        <div className="mt-4 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700 font-medium">
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0"/>{unassignedLeads.length} לידים לא מוקצים
-                        </div>
-                      )}
-                    </div>
-                    {/* Today's follow-ups */}
-                    <div data-testid="dash-followups" className={`rounded-xl p-5 shadow-sm border ${urgentLeads.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
-                      <div className="flex items-center gap-2 mb-4">
-                        <CalendarDays className={`w-4 h-4 ${urgentLeads.length > 0 ? 'text-amber-600' : 'text-slate-400'}`}/>
-                        <p className="text-xs font-bold text-slate-600 uppercase tracking-wide">לחזור היום / באיחור — הלידים שלי</p>
-                        {urgentLeads.length > 0 && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-black animate-pulse">{urgentLeads.length}</span>}
-                      </div>
-                      {urgentLeads.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-6 text-slate-300">
-                          <CalendarDays className="w-10 h-10 mb-2"/>
-                          <p className="text-sm font-medium text-slate-400">אין תזכורות להיום 🎉</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-2 max-h-44 overflow-y-auto">
-                          {urgentLeads.map((c: any) => {
-                            const isOverdue = c.followUpDate < todayStr4;
-                            return (
-                              <div key={c.id} data-testid="dash-followup-row" onClick={() => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
-                                className={`flex items-start gap-3 p-2.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity ${isOverdue ? 'bg-red-100 border border-red-200' : 'bg-white border border-amber-200'}`}>
-                                <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${isOverdue ? 'bg-red-500' : 'bg-amber-500'}`}/>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs font-bold text-slate-800 truncate">{c.businessName || c.contactName}</p>
-                                  <p className={`text-[10px] font-medium ${isOverdue ? 'text-red-600' : 'text-amber-700'}`}>{isOverdue ? '⚠️ ' + new Date(c.followUpDate).toLocaleDateString('he-IL') : '📅 היום'}</p>
-                                  {c.followUpNote && <p className="text-[10px] text-slate-400 truncate italic">"{c.followUpNote}"</p>}
-                                </div>
-                                {c.phone && <a href={'tel:' + c.phone} onClick={e => e.stopPropagation()} className="text-green-600 hover:text-green-800 shrink-0"><Phone className="w-3.5 h-3.5"/></a>}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    {/* Leads by agent */}
-                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-4">לידים לפי נציג</p>
-                      {(() => {
-                        const agentMap: any = {};
-                        allLeads.forEach((c: any) => { const agent = c.assignedTo || c.createdBy || 'לא מוקצה'; if (!agentMap[agent]) agentMap[agent] = { leads: 0, converted: 0 }; agentMap[agent].leads++; });
-                        customers.filter((c: any) => c.status !== 'lead').forEach((c: any) => { const agent = c.assignedTo || c.createdBy || null; if (agent && agentMap[agent]) agentMap[agent].converted++; });
-                        const agents = Object.entries(agentMap);
-                        if (agents.length === 0) return <p className="text-sm text-slate-400 text-center py-6">אין נתונים</p>;
-                        return (
-                          <div className="space-y-3">
-                            {agents.map(([agent, data]: any) => {
-                              const total = data.leads + (data.converted || 0);
-                              const pct = total > 0 ? Math.round(((data.converted || 0) / total) * 100) : 0;
-                              const shortName = agent === 'לא מוקצה' ? agent : agent.split('@')[0];
-                              return (
-                                <div key={agent} className="flex items-center gap-3">
-                                  <div className="w-7 h-7 bg-[#EDDEDE] text-[#651011] rounded-full flex items-center justify-center text-xs font-black shrink-0">{shortName[0]?.toUpperCase()}</div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex justify-between text-xs mb-0.5">
-                                      <span className="font-medium text-slate-700 truncate">{shortName}</span>
-                                      <span className="text-slate-500 shrink-0 mr-2">{data.leads} לידים</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <div className="flex-1 bg-slate-100 rounded-full h-1.5"><div className="bg-[#7B1315] h-1.5 rounded-full" style={{ width: pct + '%' }}/></div>
-                                      <span className="text-[10px] font-bold text-[#7B1315] w-8 text-left">{pct}%</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* ROW 3 — WARRANTY ALERTS */}
-            {(() => {
-              const todayMs = new Date().getTime();
-              const warrantyAlerts = calculatedData.enrichedItems
-                .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && getWarrantyStartDate(item))
-                .map((item: any) => { const expiry = new Date(getWarrantyStartDate(item) as string); expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths)); const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24)); return { ...item, daysLeft }; })
-                .filter((item: any) => item.daysLeft <= 30)
-                .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
-              if (warrantyAlerts.length === 0) return null;
-              return (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-1 h-5 bg-amber-400 rounded-full"/>
-                    <h3 className="text-base font-bold text-slate-500 uppercase tracking-wide">התראות אחריות ({warrantyAlerts.length})</h3>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {warrantyAlerts.map((item: any) => {
-                      const customer = customers.find((c: any) => c.id === item.customerId);
-                      const isExpired = item.daysLeft <= 0;
-                      return (
-                        <div key={item.id} className={`p-4 rounded-xl border flex items-start gap-3 ${isExpired ? 'bg-red-50 border-red-200' : item.daysLeft <= 7 ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'}`}>
-                          <ShieldAlert className={`w-4 h-4 mt-0.5 shrink-0 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}/>
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-800 text-sm truncate">{customer?.businessName || customer?.contactName || 'לקוח לא ידוע'}</p>
-                            <p className="text-xs text-slate-500">דגם: {item.model}</p>
-                            <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>{isExpired ? 'פגה לפני ' + Math.abs(item.daysLeft) + ' ימים' : item.daysLeft + ' ימים לפקיעה'}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-
-          </div>
+          <SalesDashboard
+            customers={customers}
+            quotes={quotes}
+            deals={deals}
+            userEmail={user?.email || ''}
+            agents={AGENTS}
+            today={israelToday()}
+            price={getEffectivePrice}
+            stageLabels={LEAD_STAGE_MAP}
+            stageColors={LEAD_STAGE_COLORS}
+            onOpen={(c: any) => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
+            onSaveLead={saveLeadField}
+            onLogContact={(c: any, text: string) => logLeadOutreach(c, text, 'call')}
+            onGoAnalytics={() => { setFinanceView('analytics'); navigateTo('operations', 'finance'); }}
+          />
         )}
 
         {/* --- TAB: OPERATIONS DASHBOARD --- */}
@@ -6356,8 +6173,8 @@ export default function App() {
 
             {/* ROW 1 — מלאי + כספים */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Package className="w-3.5 h-3.5 text-green-500"/> פריטים במחסן</p>
+              <div onClick={() => setIsStockBreakdownModalOpen(true)} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm cursor-pointer hover:border-green-300 hover:shadow-md transition-all">
+                <p className="text-xs text-slate-500 font-medium mb-1 flex items-center gap-1"><Package className="w-3.5 h-3.5 text-green-500"/> פריטים במחסן <span className="text-[10px] text-green-600">פירוט ▸</span></p>
                 <p className="text-3xl font-black text-slate-800">{calculatedData.inWarehouseCount}</p>
                 <p className="text-xs text-slate-400 mt-0.5">שווי עלות: ₪{Math.round(calculatedData.totalInventoryValueILS).toLocaleString()}</p>
               </div>
@@ -6426,6 +6243,41 @@ export default function App() {
               </div>
             </div>
 
+            {/* התראות אחריות (הועבר מדשבורד המכירות) */}
+            {(() => {
+              const todayMs = new Date().getTime();
+              const warrantyAlerts = calculatedData.enrichedItems
+                .filter((item: any) => item.status === 'sold' && item.warrantyMonths > 0 && getWarrantyStartDate(item))
+                .map((item: any) => { const expiry = new Date(getWarrantyStartDate(item) as string); expiry.setMonth(expiry.getMonth() + Number(item.warrantyMonths)); const daysLeft = Math.ceil((expiry.getTime() - todayMs) / (1000 * 60 * 60 * 24)); return { ...item, daysLeft }; })
+                .filter((item: any) => item.daysLeft <= 30)
+                .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
+              if (warrantyAlerts.length === 0) return null;
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-1 h-5 bg-amber-400 rounded-full"/>
+                    <h3 className="text-base font-bold text-slate-500 uppercase tracking-wide">התראות אחריות ({warrantyAlerts.length})</h3>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {warrantyAlerts.map((item: any) => {
+                      const customer = customers.find((c: any) => c.id === item.customerId);
+                      const isExpired = item.daysLeft <= 0;
+                      return (
+                        <div key={item.id} className={`p-4 rounded-xl border flex items-start gap-3 ${isExpired ? 'bg-red-50 border-red-200' : item.daysLeft <= 7 ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'}`}>
+                          <ShieldAlert className={`w-4 h-4 mt-0.5 shrink-0 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}/>
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-800 text-sm truncate">{customer?.businessName || customer?.contactName || 'לקוח לא ידוע'}</p>
+                            <p className="text-xs text-slate-500">דגם: {item.model}</p>
+                            <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-600' : item.daysLeft <= 7 ? 'text-orange-600' : 'text-amber-700'}`}>{isExpired ? 'פגה לפני ' + Math.abs(item.daysLeft) + ' ימים' : item.daysLeft + ' ימים לפקיעה'}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ROW 3 — משלוחים אחרונים */}
             <div>
               <div className="flex items-center gap-2 mb-3">
@@ -6457,6 +6309,24 @@ export default function App() {
 
                 {/* --- TAB: FINANCE --- */}
         {activeTab === 'finance' && (
+          <div className="flex bg-slate-100 rounded-lg p-0.5 text-sm font-bold w-fit mb-6" role="group" aria-label="תצוגת כספים">
+            {([['analytics', 'ניתוח מכירות'], ['cashflow', 'תזרים חודשי']] as const).map(([k, l]) => (
+              <button key={k} type="button" data-testid={`finance-view-${k}`} aria-pressed={financeView === k} onClick={() => setFinanceView(k)} className={`px-4 py-1.5 rounded-md ${financeView === k ? 'bg-white text-[#651011] shadow-sm' : 'text-slate-500'}`}>{l}</button>
+            ))}
+          </div>
+        )}
+        {activeTab === 'finance' && financeView === 'analytics' && (
+          <SalesAnalytics
+            deals={deals}
+            customers={customers}
+            quotes={quotes}
+            agents={AGENTS}
+            today={israelToday()}
+            price={getEffectivePrice}
+            onAiInsights={handleGetInsights}
+          />
+        )}
+        {activeTab === 'finance' && financeView === 'cashflow' && (
           <div className="space-y-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
               <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Banknote className="w-6 h-6 text-[#7B1315]"/> ניהול כספים ותזרים</h2>
@@ -6477,7 +6347,7 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
               <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 border-t-4 border-t-green-500">
                 <p className="text-sm text-slate-500 font-medium mb-1">הכנסות ממכירות</p>
-                <p className="text-3xl font-bold text-green-600">₪{Math.round(calculatedData.selectedMonthData.income).toLocaleString()}</p>
+                <p data-testid="finance-month-income" className="text-3xl font-bold text-green-600">₪{Math.round(calculatedData.selectedMonthData.income).toLocaleString()}</p>
               </div>
               <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 border-t-4 border-t-red-500">
                 <p className="text-sm text-slate-500 font-medium mb-1 flex justify-between">
