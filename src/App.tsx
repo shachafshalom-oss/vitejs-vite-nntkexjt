@@ -803,12 +803,15 @@ const planLeadMerge = (survivor: any, absorbedList: any[], userEmail: string, no
 };
 
 // --- פיד יומן מנוי (ICS) לתזכורות מעקב, לפי נציג ---
-// הטוקן הוא חלק מהכתובת עצמה (ראה netlify/functions/calendar-feed.js) — לא סוד אמיתי,
-// אלא כתובת ארוכה ובלתי-ניחושית, בדיוק כמו קישור "יומן פרטי" של גוגל קלנדר.
-// גלוי בבאנדל הפרונט — זה בסדר: רק שחף ודניאל מחוברים ל-CRM ורואים זה את זה ממילא.
-const CALENDAR_FEED_LINKS: Record<string, { name: string; url: string }> = {
-  'shachafshalom@gmail.com': { name: 'שחף', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=c25b80bb64edec123c05166c38f8d4d3726315a57b633eb2c5c844ee8aeff380' },
-  'danielyos205@gmail.com': { name: 'דניאל', url: 'https://dslogistic.netlify.app/.netlify/functions/calendar-feed?t=67cf8cf55dd0e2beb541395eeb30774ae43d2ede1dc32bec4d1698aa6ce2db8b' },
+// הקישור האישי *הוא* ההרשאה לפיד (שמות, טלפונים והערות של לידים), ולכן הוא לא נמצא בקוד הפרונט:
+// הקוד נטען לכל מבקר באתר עוד לפני התחברות. הנציג המחובר מקבל אותו מ-calendar-link (רק את שלו).
+const fetchCalendarLink = async (): Promise<{ name: string; url: string }> => {
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!idToken) throw new Error('צריך להתחבר מחדש');
+  const res = await fetch('/.netlify/functions/calendar-link', { method: 'POST', headers: { Authorization: `Bearer ${idToken}` } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body?.url) throw new Error(body?.error || 'לא נמצא קישור יומן עבור המשתמש הזה');
+  return body;
 };
 
 // escape לטקסט חופשי בתוך שדה ICS (RFC 5545) — זהה במכוון ל-icsEscape שב-calendar-feed.js.
@@ -6062,12 +6065,19 @@ export default function App() {
               </button>
             )}
             <button
-              onClick={() => {
-                const link = CALENDAR_FEED_LINKS[user?.email || ''];
-                if (!link) { alert('לא נמצא קישור יומן עבור המשתמש הזה.'); return; }
-                navigator.clipboard.writeText(link.url);
-                alert(`קישור היומן של ${link.name} הועתק!\n\nבאפליקציית היומן בטלפון: הוסף יומן חדש ← מנוי / מ-כתובת URL ← הדבק את הקישור.\nהיומן יתעדכן ברקע לבד כשמוסיפים/משנים תזכורות מעקב.`);
+              onClick={async () => {
+                let link: { name: string; url: string };
+                try { link = await fetchCalendarLink(); } catch (e: any) { alert(e?.message || 'לא נמצא קישור יומן עבור המשתמש הזה.'); return; }
+                const how = 'באפליקציית היומן בטלפון: הוסף יומן חדש ← מנוי / מ-כתובת URL ← הדבק את הקישור.\nהיומן יתעדכן ברקע לבד כשמוסיפים/משנים תזכורות מעקב.';
+                try {
+                  await navigator.clipboard.writeText(link.url);
+                  alert(`קישור היומן של ${link.name} הועתק!\n\n${how}`);
+                } catch {
+                  // אחרי המתנה לשרת חלק מהדפדפנים חוסמים העתקה אוטומטית — מציגים את הקישור להעתקה ידנית
+                  window.prompt(`קישור היומן של ${link.name}. העתק אותו:\n${how}`, link.url);
+                }
               }}
+              data-testid="calendar-link"
               className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-[#7B1315] transition-colors"
               title="העתק קישור מנוי ליומן התזכורות שלך"
             ><CalendarDays className="w-4 h-4"/> <span className="hidden sm:inline">יומן תזכורות</span></button>

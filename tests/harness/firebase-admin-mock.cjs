@@ -123,5 +123,13 @@ module.exports = {
   getFirestore: () => db,
   // firebase-admin/messaging
   getMessaging: () => messaging,
-  __reset: () => { state.store = {}; state.log = []; state.sent = []; state.messagingFailTokens = {}; autoId = 0; },
+  // firebase-admin/auth: a test sets state.idTokens = { '<token>': { email, uid } }
+  getAuth: () => ({
+    verifyIdToken: async (t) => {
+      const d = (state.idTokens || {})[t];
+      if (!d) throw Object.assign(new Error('invalid token'), { code: 'auth/argument-error' });
+      return clone(d);
+    },
+  }),
+  __reset: () => { state.idTokens = {}; state.store = {}; state.log = []; state.sent = []; state.messagingFailTokens = {}; autoId = 0; },
 };
