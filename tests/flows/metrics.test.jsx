@@ -80,7 +80,7 @@ try {
   const src = Object.fromEntries(M.conversion(customers, deals, '2026-09-01', '2026-10-31', 'source').map(r => [r.key, r]));
   check(src.website?.leads === 1 && src.website?.won === 1, 'אתר: 1/1');
   check(src.facebook?.leads === 2 && src.facebook?.won === 1, `פייסבוק: 1 מתוך 2: ${src.facebook?.won}/${src.facebook?.leads}`);
-  check(src.manual?.leads === 1 && !src.manual?.k, 'ידני: רק C2 (שהיה ליד). K1 שלא היה ליד לא נספר');
+  check(src.manual?.leads === 1, 'לא סומן: רק C2 (שהיה ליד). K1 שלא היה ליד לא נספר');
   check(src.website?.avgDaysToSale === 9, `ימים מליד למכירה (1.9 → 10.9): ${src.website?.avgDaysToSale}`);
   const own = Object.fromEntries(M.conversion(customers, deals, '', '', 'owner').map(r => [r.key, r]));
   check(own['dn@x']?.leads === 2 && own['לא משויך']?.leads === 1, 'לפי נציג: דניאל 2, לא משויך 1');
@@ -128,6 +128,39 @@ try {
   check(day.pipelineValue === 9500 + 5800 + 10400, `שווי הצעות פתוחות שלי: ${day.pipelineValue}`);
   const partner = M.buildMyDay({ today: TODAY, userEmail: SH, scope: 'partner', price, customers: [{ id: 'G', status: 'lead', leadStage: 'new', assignedTo: DN, followUpDate: '2026-10-01' }, { id: 'A', status: 'lead', assignedTo: SH, followUpDate: '2026-10-01' }], quotes: [] });
   check(ids(partner.overdue) === 'G', 'של השותף: רק הלידים של השותף');
+
+  describe('8. אותו אדם בכמה כרטיסים — ייחוס מקור לפי הכרטיס הראשון (31.10.2026)');
+  // ליד מפייסבוק (FB1) — במעמד המכירה נפתח כרטיס חדש (NEW1) עם אותו טלפון בפורמט אחר, והמכירה נרשמה עליו
+  const people = [
+    { id: 'FB1', status: 'lead', leadStage: 'new', source: 'facebook', phone: '+972 50-111-2222', assignedTo: 'dn@x', createdAt: '2026-09-01T08:00:00.000Z' },
+    { id: 'NEW1', status: 'active', phone: '0501112222', createdBy: 'sh@x', createdAt: '2026-09-20T08:00:00.000Z' },
+    // ליד מהאתר שנפתח לו כרטיס חדש בטלפון אחר, אבל סומן "כפילות אפשרית" שלו
+    { id: 'W1', status: 'lead', leadStage: 'contacted', source: 'website', phone: '0502223333', assignedTo: 'sh@x', createdAt: '2026-09-05T08:00:00.000Z' },
+    { id: 'NEW2', status: 'active', phone: '0539998888', possibleDuplicateOfId: 'W1', createdAt: '2026-09-25T08:00:00.000Z' },
+    // ליד פייסבוק שלא נסגר
+    { id: 'FB2', status: 'lead', leadStage: 'waiting', source: 'facebook', phone: '0504445555', assignedTo: 'dn@x', createdAt: '2026-09-10T08:00:00.000Z' },
+    // ליד ידני חדש שסומן "אחר"
+    { id: 'O1', status: 'lead', leadStage: 'new', source: 'other', phone: '0506667777', createdAt: '2026-09-12T08:00:00.000Z' },
+  ];
+  const pDeals = [
+    { id: 'd1', kind: 'stock', date: '2026-09-21', customerId: 'NEW1', owner: '', revenue: 9500, cost: 4500, profit: 5000, units: 1, lines: [] },
+    { id: 'd2', kind: 'custom', date: '2026-10-02', customerId: 'NEW2', owner: '', revenue: 40000, cost: 28000, profit: 12000, units: 2, lines: [] },
+  ];
+  const ps = Object.fromEntries(M.conversion(people, pDeals, '2026-09-01', '2026-10-31', 'source').map(r => [r.key, r]));
+  check(ps.facebook?.leads === 2 && ps.facebook?.won === 1, `פייסבוק: אדם אחד מתוך 2 נסגר (המכירה על הכרטיס החדש נזקפת לליד המקורי): ${ps.facebook?.won}/${ps.facebook?.leads}`);
+  check(ps.facebook?.avgDaysToSale === 20, `ימים לסגירה מהכרטיס הראשון (1.9 → 21.9): ${ps.facebook?.avgDaysToSale}`);
+  check(ps.website?.leads === 1 && ps.website?.won === 1, 'אתר: נסגר דרך סימון "כפילות אפשרית" גם בטלפון אחר');
+  check(!ps.manual, `הכרטיסים החדשים לא נספרים כ"לא סומן" נפרד: ${Object.keys(ps)}`);
+  check(ps.other?.leads === 1 && M.sourceLabel('other') === 'אחר' && M.sourceLabel('manual') === 'לא סומן', 'מקור "אחר" ותווית "לא סומן"');
+  const po = Object.fromEntries(M.conversion(people, pDeals, '', '', 'owner').map(r => [r.key, r]));
+  check(po['dn@x']?.leads === 2 && po['dn@x']?.won === 1, `לפי נציג: הליד של דניאל נזקף לדניאל: ${po['dn@x']?.won}/${po['dn@x']?.leads}`);
+  const g = M.groupPeople(people);
+  check(g.FB1 === g.NEW1 && g.W1 === g.NEW2 && g.FB2 !== g.FB1, 'קיבוץ לפי טלפון מנורמל ולפי כפילות אפשרית');
+
+  const twinDay = M.buildMyDay({ today: '2026-10-31', userEmail: 'dn@x', scope: 'mine', price, customers: people.concat([{ id: 'FB3', status: 'lead', leadStage: 'new', source: 'facebook', phone: '0508889999', assignedTo: 'dn@x', createdAt: '2026-10-30T08:00:00.000Z' }]), quotes: [] });
+  const tid = (rows) => rows.map(r => r.customer.id).join(',');
+  check(tid(twinDay.merge) === 'FB1' && twinDay.merge[0].customerTwin?.id === 'NEW1', `"היום שלי": ליד שכבר קנה עובר ל"למזג" עם הכרטיס התאום: ${tid(twinDay.merge)}`);
+  check(!tid(twinDay.fresh).includes('FB1') && tid(twinDay.fresh) === 'O1,FB3', `ולא מופיע בחדשים (O1 — ליד בלי בעלים, כן מוצג): ${tid(twinDay.fresh)}`);
 
   describe('7. עזרים');
   check(M.toWhatsAppNumber('054-805-0870') === '972548050870' && M.toWhatsAppNumber('+972548050870') === '972548050870', 'מספר וואטסאפ בינלאומי');

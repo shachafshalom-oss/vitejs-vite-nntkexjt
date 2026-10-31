@@ -3990,10 +3990,38 @@ export default function App() {
         // זיהוי פנייה חוזרת — לא חוסם. שם זהה לבדו אינו כפילות (שמות דומים בין לקוחות
         // הם מצב לגיטימי), ולכן ההשוואה היא על הטלפון המנורמל בלבד.
         const dup = findDuplicateByPhone(data.phone, customers);
-        data.possibleDuplicateOfId = dup ? dup.id : null;
-        data.possibleDuplicateAt = dup ? new Date().toISOString() : null;
-        const docRef = await addDoc(collection(db, 'crm_customers'), data); 
-        newCustomerId = docRef.id;
+        // כרטיס קיים עם אותו טלפון: מציעים לעדכן אותו במקום לפתוח כרטיס חדש (אושר ע"י שחף 31.10.2026).
+        // כרטיס חדש במעמד המכירה ניתק את המכירה מהליד המקורי — פייסבוק נראה 0% המרה, והליד נשאר "פתוח".
+        // עדכון: רק שדות פרטים שמולאו בטופס. המקור, תאריך הכניסה, היומן, הנציג והסטטוס של הכרטיס הקיים נשמרים.
+        const SOURCE_NAMES: Record<string, string> = { facebook: 'פייסבוק', website: 'אתר', other: 'אחר' };
+        const useExisting = !!dup && window.confirm(
+          `כבר קיים כרטיס עם הטלפון הזה:\n"${dup.businessName || dup.contactName || 'ללא שם'}" — ${dup.status === 'lead' ? 'ליד' : 'לקוח'}` +
+          `${dup.source ? `, מקור: ${SOURCE_NAMES[dup.source] || dup.source}` : ''}` +
+          `${dup.createdAt ? `, נוצר ${new Date(dup.createdAt).toLocaleDateString('he-IL')}` : ''}` +
+          `${leadOwnerOf(dup) ? `, נציג: ${AGENTS.find(a => a.email === leadOwnerOf(dup))?.name || leadOwnerOf(dup)}` : ''}.\n\n` +
+          `אישור — לעדכן את הכרטיס הקיים בפרטים מהטופס (המקור, היומן והנציג נשמרים).\nביטול — ליצור כרטיס חדש בכל זאת.`
+        );
+        if (dup && useExisting) {
+          const DETAIL_FIELDS = ['contactName', 'businessName', 'companyName', 'hp', 'email', 'address', 'city', 'businessType']; // הערות לא נדרסות
+          const updates: Record<string, any> = {};
+          DETAIL_FIELDS.forEach(f => {
+            const v = typeof data[f] === 'string' ? data[f].trim() : data[f];
+            if (v !== undefined && v !== null && v !== '' && v !== dup[f]) updates[f] = v;
+          });
+          if (!dup.source && data.source) updates.source = data.source;
+          const changed = Object.keys(updates).filter(f => f !== 'source');
+          await updateDoc(doc(db, 'crm_customers', dup.id), {
+            ...updates,
+            updatedAt: new Date().toISOString(),
+            interactionLogs: arrayUnion({ date: new Date().toISOString(), text: changed.length ? `פרטים עודכנו מטופס לקוח חדש (${changed.length} שדות) — במקום כרטיס כפול` : 'נפתח טופס לקוח חדש עם אותו טלפון — נבחר הכרטיס הקיים', user: user?.email || 'משתמש מערכת', type: 'system' }),
+          });
+          newCustomerId = dup.id;
+        } else {
+          data.possibleDuplicateOfId = dup ? dup.id : null;
+          data.possibleDuplicateAt = dup ? new Date().toISOString() : null;
+          const docRef = await addDoc(collection(db, 'crm_customers'), data); 
+          newCustomerId = docRef.id;
+        }
       }
       setIsCustomerModalOpen(false);
       
@@ -4001,6 +4029,26 @@ export default function App() {
       if (isQuoteModalOpen) setQuoteData((prev: any) => ({...prev, customerId: newCustomerId}));
     } catch (err) { alert("שגיאה בשמירת לקוח"); }
     setIsSaving(false);
+  };
+
+  // ליד שנשאר פתוח אחרי שנפתח לאותו אדם כרטיס לקוח חדש במעמד המכירה (31.10.2026).
+  // מיזוג הלידים הקיים עובד רק ליד-לתוך-ליד, ולכן כאן: המקור עובר לכרטיס הלקוח (אם חסר בו),
+  // והליד עובר לארכיון ("לא רלוונטי") עם הפניה לכרטיס. הקיבוץ לפי טלפון בניתוח ממשיך לזקוף
+  // את המכירה למקור המקורי, כך ששום נתון לא הולך לאיבוד.
+  const closeLeadAsCustomerDuplicate = async (lead: any, customer: any) => {
+    try {
+      const nowIso = new Date().toISOString();
+      const custName = customer.businessName || customer.contactName || '';
+      await updateDoc(doc(db, 'crm_customers', customer.id), {
+        ...(!customer.source && lead.source ? { source: lead.source } : {}),
+        updatedAt: nowIso,
+        interactionLogs: arrayUnion({ date: nowIso, text: `קושר לליד המקורי "${lead.businessName || lead.contactName || ''}"${lead.source ? ` (מקור: ${lead.source === 'facebook' ? 'פייסבוק' : lead.source === 'website' ? 'אתר' : 'אחר'})` : ''}, שנסגר ככפילות`, user: user?.email || 'משתמש מערכת', type: 'system' }),
+      });
+      const note = { date: nowIso, text: `נסגר ככפילות של כרטיס הלקוח "${custName}"`, user: user?.email || 'משתמש מערכת', type: 'system' };
+      // saveLeadField רושם את שינוי השלב ביומן בעצמו (ודורס interactionLogs שמועבר אליו) — ההערה נכתבת בנפרד
+      await saveLeadField(lead.id, { leadStage: 'not_relevant', followUpDate: null, followUpNote: '', duplicateOfCustomerId: customer.id });
+      await updateDoc(doc(db, 'crm_customers', lead.id), { interactionLogs: arrayUnion(note) });
+    } catch (err) { console.error('closeLeadAsCustomerDuplicate', err); alert('שגיאה בסגירת הליד ככפילות'); }
   };
 
   const saveLeadField = async (customerId: string, fields: Record<string, any>) => {
@@ -6158,6 +6206,7 @@ export default function App() {
             onOpen={(c: any) => { setSelectedCustomer(c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}
             onSaveLead={saveLeadField}
             onLogContact={(c: any, text: string) => logLeadOutreach(c, text, 'call')}
+            onCloseAsDuplicate={closeLeadAsCustomerDuplicate}
             onGoAnalytics={() => { setFinanceView('analytics'); navigateTo('operations', 'finance'); }}
           />
         )}
@@ -7340,6 +7389,7 @@ export default function App() {
                 const sourceBadge =
                   c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק' }
                   : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
+                  : c.source === 'other' ? { Icon: UserPlus, cls: 'bg-slate-500 text-white', label: 'מקור: אחר' }
                   : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };
 
                 // שורה קומפקטית אחת עם שם + דחיפות (תזכורת/ימים), ושורה שנייה קבועה
@@ -9301,6 +9351,17 @@ export default function App() {
                       <option value="lead">ליד (מתעניין)</option>
                       <option value="active">לקוח פעיל (רוכש)</option>
                       <option value="inactive">לקוח עבר (לא פעיל)</option>
+                    </select>
+                  </div>
+                  {/* מקור הליד (31.10.2026): ליד ידני לא קיבל מקור בכלל, ולכן לידים מפייסבוק שנרשמו ידנית
+                      נספרו בניתוח כ"לא סומן". ייבוא פייסבוק והאתר ממלאים את השדה אוטומטית. */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">מקור הליד</label>
+                    <select data-testid="customer-source" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.source || ''} onChange={e => setCustomerEditingData({...customerEditingData, source: e.target.value})}>
+                      <option value="">לא סומן</option>
+                      <option value="facebook">פייסבוק</option>
+                      <option value="website">אתר</option>
+                      <option value="other">אחר</option>
                     </select>
                   </div>
                   {/* שיוך קמפיין: לליד ידני (למשל מישהו שראה מודעה והתקשר), או תיקון ידני של שיוך אוטומטי.

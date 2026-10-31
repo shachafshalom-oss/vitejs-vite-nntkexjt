@@ -17,6 +17,9 @@ interface Props {
 const ils = (n: number) => '₪' + Math.round(n).toLocaleString('en-US');
 const pct = (n: number) => `${Math.round(n)}%`;
 type RangeKey = '3m' | '6m' | '12m' | 'ytd' | 'all';
+type Segment = 'stock' | 'custom' | 'all';
+const SEGMENTS: [Segment, string][] = [['stock', 'מוצרי מלאי'], ['custom', 'קסטום'], ['all', 'הכול']];
+const kShort = (n: number) => (Math.abs(n) >= 10000 ? `₪${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K` : '₪' + Math.round(n).toLocaleString('en-US'));
 const RANGES: [RangeKey, string][] = [['3m', '3 חודשים'], ['6m', '6 חודשים'], ['12m', '12 חודשים'], ['ytd', 'השנה'], ['all', 'הכול']];
 
 const rangeFrom = (key: RangeKey, today: string): string => {
@@ -75,6 +78,18 @@ function BarChart({ rows, value, color, trend, testId, fmt, sub }: { rows: Month
   );
 }
 
+function SplitTile({ label, stock, custom, id }: { label: string; stock: string; custom: string; id: string }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-3.5">
+      <p className="text-[11px] text-slate-500 font-medium">{label}</p>
+      <div data-testid={id} className="mt-1 space-y-0.5">
+        <p className="flex justify-between items-baseline gap-2"><span className="text-[11px] text-slate-500">מלאי</span><span className="text-base font-black text-slate-800">{stock}</span></p>
+        <p className="flex justify-between items-baseline gap-2"><span className="text-[11px] text-slate-500">קסטום</span><span className="text-base font-black text-slate-800">{custom}</span></p>
+      </div>
+    </div>
+  );
+}
+
 function Tile({ label, value, sub, id }: { label: string; value: string; sub?: any; id: string }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-3.5">
@@ -87,28 +102,37 @@ function Tile({ label, value, sub, id }: { label: string; value: string; sub?: a
 
 export default function SalesAnalytics(p: Props) {
   const [range, setRange] = useState<RangeKey>('12m');
+  // מלאי וקסטום הם שני עסקים שונים (ממוצע עסקה פי ~20) — ערבוב נותן ממוצעים חסרי משמעות. ברירת מחדל: מלאי.
+  const [seg, setSeg] = useState<Segment>('stock');
   const from = rangeFrom(range, p.today);
   const to = p.today;
 
   const data = useMemo(() => {
-    const sel = inRange(p.deals, from, to);
+    const segDeals = p.deals.filter(d => seg === 'all' || (seg === 'custom' ? d.kind === 'custom' : d.kind !== 'custom'));
+    const sel = inRange(segDeals, from, to);
     const summary = summarize(sel);
-    const months = monthly(p.deals, from || (p.deals[0]?.date ?? ''), to);
+    const mFrom = from || (p.deals[0]?.date ?? '');
+    const months = monthly(segDeals, mFrom, to);
+    // ב"הכול": חודשים לכל סוג בנפרד, על אותו ציר (לגרף דו-סדרתי)
+    const monthsStock = seg === 'all' ? monthly(p.deals.filter(d => d.kind !== 'custom'), mFrom, to) : [];
+    const monthsCustom = seg === 'all' ? monthly(p.deals.filter(d => d.kind === 'custom'), mFrom, to) : [];
+    const align = (rows: MonthRow[]) => months.map(m => rows.find(r => r.month === m.month) || { ...m, count: 0, revenue: 0, avgDeal: 0, profit: 0, marginPct: 0 });
     const slope = trendSlope(months);
     const models = byModel(sel);
     const sources = conversion(p.customers, p.deals, from, to, 'source');
     const owners = conversion(p.customers, p.deals, from, to, 'owner');
     const pipe = pipeline(p.quotes, p.price, p.today);
-    const stock = summarize(sel.filter(d => d.kind !== 'custom'));
-    const custom = summarize(sel.filter(d => d.kind === 'custom'));
+    const allSel = inRange(p.deals, from, to);
+    const stock = summarize(allSel.filter(d => d.kind !== 'custom'));
+    const custom = summarize(allSel.filter(d => d.kind === 'custom'));
     // השוואה לתקופה הקודמת באותו אורך
     let prev = null as null | ReturnType<typeof summarize>;
     if (from) {
       const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
-      prev = summarize(inRange(p.deals, addDaysYmd(from, -days - 1), addDaysYmd(from, -1)));
+      prev = summarize(inRange(segDeals, addDaysYmd(from, -days - 1), addDaysYmd(from, -1)));
     }
-    return { summary, months, slope, models, sources, owners, pipe, stock, custom, prev, found: insights({ deals: sel, months, models, sources, pipe, summary }) };
-  }, [p.deals, p.customers, p.quotes, p.price, p.today, from, to]);
+    return { summary, months, monthsStock: align(monthsStock), monthsCustom: align(monthsCustom), slope, models, sources, owners, pipe, stock, custom, prev, found: insights({ deals: sel, months, models, sources, pipe, summary }) };
+  }, [p.deals, p.customers, p.quotes, p.price, p.today, from, to, seg]);
 
   const { summary: s, prev } = data;
   const delta = (cur: number, old: number | undefined) => {
@@ -133,6 +157,12 @@ export default function SalesAnalytics(p: Props) {
         )}
       </div>
 
+      <div className="flex bg-slate-100 rounded-lg p-0.5 text-sm font-bold w-full sm:w-fit" role="group" aria-label="סוג מכירות">
+        {SEGMENTS.map(([k, l]) => (
+          <button key={k} type="button" data-testid={`analytics-seg-${k}`} aria-pressed={seg === k} onClick={() => setSeg(k)} className={`flex-1 sm:flex-none px-4 py-2 rounded-md ${seg === k ? 'bg-white text-[#651011] shadow-sm' : 'text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
+
       <div className="flex gap-1 flex-wrap" role="group" aria-label="טווח זמן">
         {RANGES.map(([k, l]) => (
           <button key={k} type="button" data-testid={`analytics-range-${k}`} aria-pressed={range === k} onClick={() => setRange(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${range === k ? 'bg-[#2A3134] text-white border-[#2A3134]' : 'bg-white text-slate-600 border-slate-300'}`}>{l}</button>
@@ -146,10 +176,23 @@ export default function SalesAnalytics(p: Props) {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
             <Tile id="an-count" label="מכירות" value={String(s.count)} sub={delta(s.count, prev?.count)} />
             <Tile id="an-revenue" label="הכנסה" value={ils(s.revenue)} sub={delta(s.revenue, prev?.revenue)} />
-            <Tile id="an-avg-deal" label="ממוצע לעסקה" value={ils(s.avgDeal)} sub={delta(s.avgDeal, prev?.avgDeal)} />
+            {seg === 'all' ? (
+              <SplitTile id="an-avg-deal" label="ממוצע לעסקה" stock={ils(data.stock.avgDeal)} custom={ils(data.custom.avgDeal)} />
+            ) : (
+              <Tile id="an-avg-deal" label="ממוצע לעסקה" value={ils(s.avgDeal)} sub={delta(s.avgDeal, prev?.avgDeal)} />
+            )}
             <Tile id="an-profit" label="רווח גולמי" value={ils(s.profit)} sub={delta(s.profit, prev?.profit)} />
-            <Tile id="an-margin" label="מרווח גולמי" value={pct(s.marginPct)} sub={<span className="text-[11px] text-slate-400">רווח ממוצע לעסקה {ils(s.avgProfitPerDeal)}</span>} />
-            <Tile id="an-profit-unit" label="רווח ממוצע לעמדה" value={ils(s.avgProfitPerUnit)} sub={<span className="text-[11px] text-slate-400">{s.units} יחידות</span>} />
+            {seg === 'all' ? (
+              <>
+                <SplitTile id="an-margin" label="מרווח גולמי" stock={pct(data.stock.marginPct)} custom={pct(data.custom.marginPct)} />
+                <SplitTile id="an-profit-unit" label="רווח ממוצע לעסקה" stock={ils(data.stock.avgProfitPerDeal)} custom={ils(data.custom.avgProfitPerDeal)} />
+              </>
+            ) : (
+              <>
+                <Tile id="an-margin" label="מרווח גולמי" value={pct(s.marginPct)} sub={<span className="text-[11px] text-slate-400">רווח ממוצע לעסקה {ils(s.avgProfitPerDeal)}</span>} />
+                <Tile id="an-profit-unit" label={seg === 'custom' ? 'רווח ממוצע ליחידה' : 'רווח ממוצע לעמדה'} value={ils(s.avgProfitPerUnit)} sub={<span className="text-[11px] text-slate-400">{s.units} יחידות</span>} />
+              </>
+            )}
           </div>
           {prev && <p className="text-[11px] text-slate-400 -mt-4">החצים: שינוי לעומת התקופה הקודמת באותו אורך.</p>}
           {s.missingCost > 0 && (
@@ -176,14 +219,26 @@ export default function SalesAnalytics(p: Props) {
             <div className="bg-white border border-slate-200 rounded-xl p-4">
               <div className="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
                 <h3 className="text-sm font-bold text-slate-700">ממוצע לעסקה לפי חודש</h3>
-                {data.slope !== null && (
+                {seg !== 'all' && data.slope !== null && (
                   <span data-testid="an-trend" className={`text-xs font-bold ${data.slope >= 0 ? 'text-green-700' : 'text-red-600'}`}>
                     מגמה: {data.slope >= 0 ? '+' : '−'}{ils(Math.abs(data.slope))} לחודש
                   </span>
                 )}
               </div>
-              <BarChart testId="an-chart-avg" rows={data.months} value={r => r.avgDeal} color="#7B1315" trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
-              <p className="text-[11px] text-slate-400 mt-1">הקו המקווקו: מגמה על פני חודשים עם מכירות.</p>
+              {seg === 'all' ? (
+                <>
+                  {/* שני גרפים נפרדים, כל אחד בסקאלה שלו — עסקת קסטום גדולה פי ~20 ובגרף משותף המלאי נעלם */}
+                  <p className="text-xs font-bold text-[#7B1315] mt-1">מוצרי מלאי</p>
+                  <BarChart testId="an-chart-avg" rows={data.monthsStock} value={r => r.avgDeal} color="#7B1315" trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                  <p className="text-xs font-bold text-[#2A3134] mt-3">קסטום</p>
+                  <BarChart testId="an-chart-avg-custom" rows={data.monthsCustom} value={r => r.avgDeal} color="#2A3134" fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                </>
+              ) : (
+                <>
+                  <BarChart testId="an-chart-avg" rows={data.months} value={r => r.avgDeal} color={seg === 'custom' ? '#2A3134' : '#7B1315'} trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                  <p className="text-[11px] text-slate-400 mt-1">הקו המקווקו: מגמה על פני חודשים עם מכירות.</p>
+                </>
+              )}
             </div>
             <div className="bg-white border border-slate-200 rounded-xl p-4">
               <h3 className="text-sm font-bold text-slate-700 mb-2">רווח גולמי לפי חודש</h3>
@@ -193,28 +248,30 @@ export default function SalesAnalytics(p: Props) {
           </div>
 
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <h3 className="text-sm font-bold text-slate-700 p-4 pb-2">רווחיות לפי דגם</h3>
+            <h3 className="text-sm font-bold text-slate-700 p-4 pb-2">{seg === 'custom' ? 'רווחיות קסטום' : 'רווחיות לפי דגם'}</h3>
+            {/* טבלה צרה שנכנסת ברוחב טלפון: עמודת דגם צרה עם שבירת שורה, ריווח מינימלי, הכנסה מקוצרת */}
             <div className="overflow-x-auto">
-              <table data-testid="an-models" className="min-w-full text-sm">
-                <thead className="bg-slate-50 text-xs text-slate-500">
+              <table data-testid="an-models" className="w-full table-fixed text-xs">
+                <colgroup><col className="w-[30%]" /><col className="w-[9%]" /><col className="w-[17%]" /><col className="w-[17%]" /><col className="w-[14%]" /><col className="w-[13%]" /></colgroup>
+                <thead className="bg-slate-50 text-[11px] text-slate-500">
                   <tr>
-                    <th className="px-3 py-2 text-right font-medium">דגם</th>
-                    <th className="px-3 py-2 text-right font-medium">יח'</th>
-                    <th className="px-3 py-2 text-right font-medium">הכנסה</th>
-                    <th className="px-3 py-2 text-right font-medium">רווח ליח'</th>
-                    <th className="px-3 py-2 text-right font-medium">מרווח</th>
-                    <th className="px-3 py-2 text-right font-medium">הנחה</th>
+                    <th className="px-1.5 py-2 text-right font-medium">דגם</th>
+                    <th className="px-1 py-2 text-center font-medium">יח'</th>
+                    <th className="px-1 py-2 text-right font-medium">הכנסה</th>
+                    <th className="px-1 py-2 text-right font-medium">רווח/יח'</th>
+                    <th className="px-1 py-2 text-center font-medium">מרווח</th>
+                    <th className="px-1 py-2 text-center font-medium">הנחה</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {data.models.map(m => (
-                    <tr key={m.model}>
-                      <td className="px-3 py-2 font-bold text-slate-800 whitespace-nowrap">{m.model}</td>
-                      <td className="px-3 py-2">{m.units}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{ils(m.revenue)}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{m.profitUnits ? ils(m.avgProfitPerUnit) : '—'}</td>
-                      <td className={`px-3 py-2 font-bold ${m.profitUnits ? (m.marginPct < s.marginPct - 5 ? 'text-red-600' : 'text-green-700') : 'text-slate-400'}`}>{m.profitUnits ? pct(m.marginPct) : '—'}</td>
-                      <td className="px-3 py-2 text-slate-500">{m.discountPct >= 0.5 ? pct(m.discountPct) : '—'}</td>
+                    <tr key={m.model} className="align-top">
+                      <td className="px-1.5 py-2 font-bold text-slate-800 break-words leading-snug">{m.model}</td>
+                      <td className="px-1 py-2 text-center">{m.units}</td>
+                      <td className="px-1 py-2 whitespace-nowrap">{kShort(m.revenue)}</td>
+                      <td className="px-1 py-2 whitespace-nowrap">{m.profitUnits ? kShort(m.avgProfitPerUnit) : '—'}</td>
+                      <td className={`px-1 py-2 text-center font-bold ${m.profitUnits ? (m.marginPct < s.marginPct - 5 ? 'text-red-600' : 'text-green-700') : 'text-slate-400'}`}>{m.profitUnits ? pct(m.marginPct) : '—'}</td>
+                      <td className="px-1 py-2 text-center text-slate-500">{m.discountPct >= 0.5 ? pct(m.discountPct) : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -222,7 +279,7 @@ export default function SalesAnalytics(p: Props) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          {seg === 'all' && <div className="grid grid-cols-2 gap-3">
             {([['מלאי', data.stock, 'an-kind-stock'], ['קסטום', data.custom, 'an-kind-custom']] as const).map(([label, k, id]) => (
               <div key={id} data-testid={id} className="bg-white border border-slate-200 rounded-xl p-3.5">
                 <p className="text-sm font-bold text-slate-700">{label}</p>
@@ -231,7 +288,7 @@ export default function SalesAnalytics(p: Props) {
                 <p className="text-xs font-bold text-slate-700">{k.profitDeals ? `מרווח ${pct(k.marginPct)}` : 'אין נתוני עלות'}</p>
               </div>
             ))}
-          </div>
+          </div>}
         </>
       )}
 

@@ -95,21 +95,73 @@ const cust = (id) => T.docs('crm_customers')[id];
   await T.flush(6);
   T.check(!!T.byId('sales-analytics') && T.byId('finance-view-analytics')?.getAttribute('aria-pressed') === 'true', 'נפתח טאב הכספים בתצוגת ניתוח מכירות');
   const v = (id) => T.byId(id)?.textContent.trim();
-  T.check(v('an-count') === '2', `2 מכירות (מלאי + קסטום; הצעה ממתינה לא נספרת): ${v('an-count')}`);
-  T.check(T.amountShown(21500, T.byId('an-revenue')), `הכנסה 21,500: ${v('an-revenue')}`);
-  T.check(T.amountShown(10000, T.byId('an-profit')), `רווח גולמי 10,000 — בלי 3,000 שיווק: ${v('an-profit')}`);
-  T.check(v('an-margin') === '47%', `מרווח 47% (10,000/21,500): ${v('an-margin')}`);
-  T.check(T.amountShown(10750, T.byId('an-avg-deal')), `ממוצע לעסקה 10,750: ${v('an-avg-deal')}`);
-  T.check(T.amountShown(5000, T.byId('an-profit-unit')), `רווח ממוצע לעמדה 5,000: ${v('an-profit-unit')}`);
-  T.check(T.byId('an-models')?.textContent.includes('Prime') && T.byId('an-models').textContent.includes('פרויקט קסטום'), 'טבלת דגמים: Prime ופרויקט קסטום');
-  T.check(T.byId('an-kind-custom')?.textContent.includes('1 עסקאות'), 'קסטום נספר בהשוואת מלאי מול קסטום');
+  // ברירת מחדל: מוצרי מלאי בלבד (31.10.2026) — הקסטום לא מעוות את הממוצעים
+  T.check(T.byId('analytics-seg-stock')?.getAttribute('aria-pressed') === 'true', 'ברירת מחדל: מוצרי מלאי');
+  T.check(v('an-count') === '1' && T.amountShown(9500, T.byId('an-revenue')), `מלאי: מכירה אחת, 9,500: ${v('an-count')} ${v('an-revenue')}`);
+  T.check(T.amountShown(5000, T.byId('an-profit')) && v('an-margin') === '53%', `מלאי: רווח 5,000 (בלי 3,000 שיווק), מרווח 53%: ${v('an-profit')} ${v('an-margin')}`);
+  T.check(T.amountShown(9500, T.byId('an-avg-deal')) && T.amountShown(5000, T.byId('an-profit-unit')), 'מלאי: ממוצע לעסקה 9,500, רווח לעמדה 5,000');
+  T.check(T.byId('an-models')?.textContent.includes('Prime') && !T.byId('an-models').textContent.includes('פרויקט קסטום'), 'טבלת דגמים במלאי — בלי קסטום');
+  T.check(!T.byId('an-kind-custom'), 'השוואת מלאי/קסטום מוצגת רק ב"הכול"');
+
+  await T.click(T.byId('analytics-seg-custom'));
+  T.check(v('an-count') === '1' && T.amountShown(12000, T.byId('an-revenue')) && T.amountShown(5000, T.byId('an-profit')), `קסטום: עסקה אחת 12,000, רווח 5,000: ${v('an-revenue')} ${v('an-profit')}`);
+  T.check(T.byId('an-models')?.textContent.includes('פרויקט קסטום') && !T.byId('an-models').textContent.includes('Prime'), 'טבלה בקסטום — רק קסטום');
+
+  await T.click(T.byId('analytics-seg-all'));
+  T.check(v('an-count') === '2' && T.amountShown(21500, T.byId('an-revenue')) && T.amountShown(10000, T.byId('an-profit')), `הכול: 2 מכירות, 21,500, רווח 10,000: ${v('an-count')} ${v('an-revenue')}`);
+  T.check(v('an-avg-deal')?.includes('₪9,500') && v('an-avg-deal')?.includes('₪12,000'), `הכול: ממוצע לעסקה בנפרד למלאי ולקסטום, לא מספר מעורבב: ${v('an-avg-deal')}`);
+  T.check(v('an-margin')?.includes('53%') && v('an-margin')?.includes('42%'), `הכול: מרווח בנפרד: ${v('an-margin')}`);
+  T.check(T.byId('an-kind-custom')?.textContent.includes('1 עסקאות'), 'השוואת מלאי מול קסטום');
   T.check(T.byId('an-pipeline')?.textContent.includes('ממתינות מעל 14 יום') && T.amountShown(18000, T.byId('an-pipeline')), 'הצעות פתוחות: 18,000');
   T.check(T.byId('an-conv-source')?.textContent.includes('אתר') && T.byId('an-conv-source').textContent.includes('פייסבוק'), 'המרה לפי מקור');
   T.check(!!T.byId('an-chart-avg') && !!T.byId('an-chart-profit'), 'שני הגרפים מוצגים');
+  T.check(!!T.byId('an-models')?.className.includes('table-fixed'), 'טבלת הדגמים ברוחב קבוע (בלי גלילה הצידה)');
 
   T.describe('7. התזרים הקיים לא נפגע');
   await T.click(T.byId('finance-view-cashflow'));
   T.check(!!T.byId('finance-month-income') && !T.byId('sales-analytics'), 'מתג לתזרים החודשי');
+
+  T.describe('8. ליד מפייסבוק שנפתח לו כרטיס חדש במכירה — חלון "כבר קיים כרטיס"');
+  await T.click(T.byId('space-sales'));
+  await T.nav('leads');
+  const before = Object.keys(T.docs('crm_customers')).length;
+  await T.click(T.byId('lead-new'));
+  let form = document.getElementById('customerForm');
+  await T.type(T.$('input[placeholder="לדוגמה: הבר של משה"]', form), 'בר חם בע"מ');
+  await T.type(T.$('input[placeholder="050-0000000"]', form), '+972-50-100-0003'); // הטלפון של "בר חם" (H) בפורמט אחר
+  T.answerConfirms(true);
+  await T.submit(form);
+  await T.flush(4);
+  T.check(T.lastConfirm().includes('כבר קיים כרטיס עם הטלפון הזה') && T.lastConfirm().includes('פייסבוק'), `נשאל לפני פתיחת כרטיס כפול, עם המקור: ${T.lastConfirm().slice(0, 80)}`);
+  T.check(Object.keys(T.docs('crm_customers')).length === before, 'אישור — לא נוצר כרטיס חדש');
+  T.check(cust('H').businessName === 'בר חם בע"מ' && cust('H').source === 'facebook' && cust('H').assignedTo === SH, `הכרטיס הקיים עודכן, המקור והנציג נשמרו: ${cust('H').businessName} ${cust('H').source}`);
+  T.check((cust('H').interactionLogs || []).some(l => l.type === 'system' && l.text.includes('במקום כרטיס כפול')), 'נרשם ביומן');
+
+  await T.click(T.byId('lead-new'));
+  form = document.getElementById('customerForm');
+  await T.type(T.$('input[placeholder="לדוגמה: הבר של משה"]', form), 'סניף 2');
+  await T.type(T.$('input[placeholder="050-0000000"]', form), '0501000003');
+  await T.select(T.byId('customer-source'), 'other');
+  T.answerConfirms(false);
+  await T.submit(form);
+  await T.flush(4);
+  const branch = T.docsWhere('crm_customers', c => c.businessName === 'סניף 2')[0];
+  T.check(!!branch && branch.possibleDuplicateOfId === 'H' && branch.source === 'other', `ביטול — נוצר כרטיס חדש, מסומן ככפילות אפשרית, עם המקור שנבחר: ${JSON.stringify({ d: branch?.possibleDuplicateOfId, s: branch?.source })}`);
+
+  T.describe('9. "היום שלי": ליד שכבר קנה עובר ל"כבר לקוחות" ונסגר ככפילות');
+  // ליד מפייסבוק שהמכירה נרשמה על כרטיס לקוח אחר (CW — אותו טלפון)
+  await T.api().setDoc(T.api().doc(null, 'crm_customers', 'FBX'), { status: 'lead', leadStage: 'new', businessName: 'ליד ישן של לקוח המלאי', phone: '0501000007', source: 'facebook', assignedTo: SH, interactionLogs: [], createdAt: '2026-09-25T08:00:00.000Z' });
+  await T.flush(4);
+  await T.nav('sales_dashboard');
+  T.check(T.byId('myday-merge')?.textContent.includes('ליד ישן של לקוח המלאי') && T.byId('myday-merge').textContent.includes('לקוח מלאי'), 'מופיע ב"כבר לקוחות" עם שם כרטיס הלקוח');
+  T.check(!T.byId('myday-fresh')?.textContent.includes('ליד ישן של לקוח המלאי'), 'ולא ב"חדשים"');
+  T.answerConfirms(true);
+  await T.click(T.byId('myday-merge').querySelector('[data-testid="myday-dedupe"]'));
+  await T.flush(6);
+  T.check(cust('FBX').leadStage === 'not_relevant' && cust('FBX').duplicateOfCustomerId === 'CW', `הליד בארכיון עם הפניה לכרטיס: ${cust('FBX').leadStage} ${cust('FBX').duplicateOfCustomerId}`);
+  T.check((cust('FBX').interactionLogs || []).some(l => l.text.includes('נסגר ככפילות')), 'נרשם ביומן הליד');
+  T.check(cust('CW').source === 'website', `לכרטיס הלקוח כבר היה מקור — לא נדרס: ${cust('CW').source}`);
+  T.check(!T.byId('myday-merge'), 'הרשימה התרוקנה');
 
   T.finish();
 })().catch(T.crash);

@@ -2,7 +2,7 @@
 // סדר העדיפות: באיחור → היום → חמים (הצעה פתוחה) → חדשים בלי מגע. כל ליד מופיע פעם אחת בלבד.
 // כל הלוגיקה ב-src/lib/metrics.ts (buildMyDay) — כאן רק תצוגה ופעולות.
 import { useMemo, useState } from 'react';
-import { Phone, MessageCircle, Clock, Flame, UserPlus, AlertTriangle, CalendarDays, ChevronLeft, BarChart3, Check, X, Target, PenLine } from 'lucide-react';
+import { Phone, MessageCircle, Clock, Flame, UserPlus, AlertTriangle, CalendarDays, ChevronLeft, BarChart3, Check, X, Target, PenLine, GitMerge } from 'lucide-react';
 import { buildMyDay, snoozeDate, toWhatsAppNumber, summarize, type DayRow, type Deal, type OwnerScope } from '../lib/metrics';
 
 interface Props {
@@ -18,6 +18,7 @@ interface Props {
   onOpen: (c: any) => void;
   onSaveLead: (id: string, fields: Record<string, any>) => Promise<void> | void;
   onLogContact: (c: any, text: string) => Promise<void> | void;
+  onCloseAsDuplicate: (lead: any, customer: any) => Promise<void> | void;
   onGoAnalytics: () => void;
 }
 
@@ -28,12 +29,13 @@ const SOURCE_TAG: Record<string, { label: string; cls: string }> = {
 };
 const daysLabel = (n: number) => (n === 0 ? 'היום' : n === 1 ? 'יום אחד' : `${n} ימים`);
 
-type Section = 'overdue' | 'today' | 'hot' | 'fresh';
+type Section = 'overdue' | 'today' | 'hot' | 'fresh' | 'merge';
 const SECTION_META: Record<Section, { title: string; icon: any; accent: string; empty: string }> = {
   overdue: { title: 'באיחור', icon: AlertTriangle, accent: 'border-r-red-500', empty: '' },
   today: { title: 'לחזור היום', icon: CalendarDays, accent: 'border-r-amber-500', empty: '' },
   hot: { title: 'חמים לסגירה — הצעה פתוחה', icon: Flame, accent: 'border-r-[#7B1315]', empty: '' },
   fresh: { title: 'חדשים — עוד לא דיברו איתם', icon: UserPlus, accent: 'border-r-sky-500', empty: '' },
+  merge: { title: 'כבר לקוחות — ליד כפול שנשאר פתוח', icon: GitMerge, accent: 'border-r-slate-400', empty: '' },
 };
 
 export default function SalesDashboard(p: Props) {
@@ -75,6 +77,7 @@ export default function SalesDashboard(p: Props) {
   const reason = (r: DayRow, s: Section) => {
     if (s === 'overdue') return <span className="text-red-600 font-bold">באיחור {daysLabel(r.daysOverdue)}</span>;
     if (s === 'today') return <span className="text-amber-700 font-bold">להיום</span>;
+    if (s === 'merge') return <span className="text-slate-600 font-bold">כבר קיים ככרטיס לקוח: "{name(r.customerTwin)}"</span>;
     if (s === 'hot') return <span className="text-[#7B1315] font-bold">{ils(r.quoteValue)}{r.daysSinceQuote !== null ? ` · נשלחה לפני ${daysLabel(r.daysSinceQuote)}` : ''}</span>;
     return <span className="text-sky-700 font-bold">ממתין {daysLabel(r.waitingDays)}</span>;
   };
@@ -113,7 +116,10 @@ export default function SalesDashboard(p: Props) {
           <ChevronLeft className="w-4 h-4 text-slate-300 mt-1 shrink-0" />
         </div>
 
-        <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
+        {s === 'merge' && (
+          <button type="button" data-testid="myday-dedupe" disabled={busy === `dd:${c.id}`} onClick={() => { if (window.confirm(`לסגור את הליד "${name(c)}" ככפילות של הלקוח "${name(r.customerTwin)}"?\n\nהמקור של הליד יועבר לכרטיס הלקוח (אם חסר בו), והליד יעבור לארכיון עם הפניה לכרטיס.`)) run(`dd:${c.id}`, () => p.onCloseAsDuplicate(c, r.customerTwin)); }} className="mt-2.5 flex items-center gap-1 text-xs font-bold bg-slate-800 text-white rounded-md px-3 py-1.5"><GitMerge className="w-3.5 h-3.5" /> סגור ככפילות של הלקוח</button>
+        )}
+        {s !== 'merge' && <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
           {c.phone && <a href={`tel:${c.phone}`} data-testid="myday-call" className="flex items-center gap-1 text-xs font-bold bg-green-50 text-green-700 border border-green-200 rounded-md px-2.5 py-1.5 hover:bg-green-100"><Phone className="w-3.5 h-3.5" /> חיוג</a>}
           {wa && <a href={`https://wa.me/${wa}`} target="_blank" rel="noopener noreferrer" data-testid="myday-wa" className="flex items-center gap-1 text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-2.5 py-1.5 hover:bg-emerald-100"><MessageCircle className="w-3.5 h-3.5" /> וואטסאפ</a>}
           <button type="button" data-testid="myday-log" onClick={() => { setLogFor(isLogging ? null : c.id); setLogText(''); setLogNext(null); }} className={`flex items-center gap-1 text-xs font-bold border rounded-md px-2.5 py-1.5 ${isLogging ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}><PenLine className="w-3.5 h-3.5" /> תיעוד</button>
@@ -128,7 +134,7 @@ export default function SalesDashboard(p: Props) {
           {r.unassigned && (
             <button type="button" data-testid="myday-claim" onClick={() => run(`as:${c.id}`, () => p.onSaveLead(c.id, { assignedTo: p.userEmail }))} className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-300 rounded-md px-2.5 py-1.5 hover:bg-amber-100">שייך אליי</button>
           )}
-        </div>
+        </div>}
 
         {isLogging && (
           <div className="mt-2.5 bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
@@ -227,6 +233,7 @@ export default function SalesDashboard(p: Props) {
       </div>
       {section('hot', day.hot)}
       {section('fresh', day.fresh)}
+      {section('merge', day.merge)}
 
       {!next && (
         <div data-testid="myday-empty" className="bg-white border border-slate-200 rounded-xl p-8 text-center">

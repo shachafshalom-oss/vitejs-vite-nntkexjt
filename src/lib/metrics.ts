@@ -209,25 +209,63 @@ export function byModel(deals: Deal[]): ModelRow[] {
   })).sort((a, b) => b.revenue - a.revenue);
 }
 
-// --- המרה: לידים שנוצרו בטווח → כמה הגיעו למכירה (בכל זמן) ---
-const SOURCE_LABELS: Record<string, string> = { website: 'אתר', facebook: 'פייסבוק', manual: 'ידני' };
+// --- זהות לקוח: כמה כרטיסים יכולים להיות אותו אדם ---
+// במעמד המכירה נפתח לעתים כרטיס לקוח חדש במקום לעדכן את הליד מפייסבוק/האתר (אושר ע"י שחף 31.10.2026).
+// לכן ההמרה נמדדת לפי אדם: כרטיסים עם אותו טלפון מנורמל, או שסומנו "כפילות אפשרית" זה של זה.
+// אותה נרמול טלפון בדיוק כמו normalizePhone ב-App.tsx וב-website-lead.js.
+export const normalizePhone = (raw: any): string => {
+  let p = String(raw || '').replace(/[\s\-().]/g, '');
+  if (!p) return '';
+  p = p.replace(/^(\+|00)?972/, '');
+  if (!p.startsWith('0')) p = '0' + p;
+  return p;
+};
+export function groupPeople(customers: any[]): Record<string, string> {
+  const parent: Record<string, string> = {};
+  const find = (x: string): string => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
+  customers.forEach((c: any) => { parent[c.id] = c.id; });
+  const byPhone: Record<string, string> = {};
+  customers.forEach((c: any) => {
+    const ph = normalizePhone(c.phone);
+    if (ph.length >= 7) { if (byPhone[ph]) union(byPhone[ph], c.id); else byPhone[ph] = c.id; }
+    if (c.possibleDuplicateOfId && parent[c.possibleDuplicateOfId]) union(c.possibleDuplicateOfId, c.id);
+  });
+  const out: Record<string, string> = {};
+  customers.forEach((c: any) => { out[c.id] = find(c.id); });
+  return out;
+}
+
+// --- המרה: אנשים שנכנסו כלידים בטווח → כמה הגיעו למכירה (בכל זמן) ---
+const SOURCE_LABELS: Record<string, string> = { website: 'אתר', facebook: 'פייסבוק', other: 'אחר', manual: 'לא סומן' };
 export const sourceLabel = (s: string) => SOURCE_LABELS[s] || s;
+export const LEAD_SOURCES = ['facebook', 'website', 'other'];
 export const wasLead = (c: any): boolean =>
-  c?.status === 'lead' || !!c?.leadStage || c?.previousStatusBeforeActive === 'lead' || c?.source === 'website' || c?.source === 'facebook';
+  c?.status === 'lead' || !!c?.leadStage || c?.previousStatusBeforeActive === 'lead' || LEAD_SOURCES.includes(c?.source);
 
 export interface ConvRow { key: string; leads: number; won: number; ratePct: number; avgDaysToSale: number | null; }
 export function conversion(customers: any[], deals: Deal[], from: string, to: string, by: 'source' | 'owner'): ConvRow[] {
+  const person = groupPeople(customers);
+  const people: Record<string, any[]> = {};
+  customers.forEach((c: any) => { (people[person[c.id]] = people[person[c.id]] || []).push(c); });
   const firstDeal: Record<string, string> = {};
-  deals.forEach(d => { if (d.customerId && (!firstDeal[d.customerId] || d.date < firstDeal[d.customerId])) firstDeal[d.customerId] = d.date; });
+  deals.forEach(d => {
+    const k = d.customerId && person[d.customerId];
+    if (k && (!firstDeal[k] || d.date < firstDeal[k])) firstDeal[k] = d.date;
+  });
   const map: Record<string, { leads: number; won: number; days: number[] }> = {};
-  customers.forEach((c: any) => {
-    if (!wasLead(c)) return;
-    const created = toIsraelDate(c.createdAt);
-    if (!created || (from && created < from) || (to && created > to)) return;
-    const key = by === 'source' ? (c.source === 'website' || c.source === 'facebook' ? c.source : 'manual') : (ownerOf(c) || 'לא משויך');
+  Object.entries(people).forEach(([k, recs]) => {
+    if (!recs.some(wasLead)) return;
+    const dated = recs.map(c => ({ c, d: toIsraelDate(c.createdAt) })).filter(x => x.d).sort((a, b) => a.d.localeCompare(b.d));
+    if (!dated.length) return;
+    const created = dated[0].d;
+    if ((from && created < from) || (to && created > to)) return;
+    // מקור = של הכרטיס המוקדם ביותר שיש לו מקור; בעלים = של הכרטיס הראשון
+    const src = dated.find(x => LEAD_SOURCES.includes(x.c.source))?.c.source || 'manual';
+    const key = by === 'source' ? src : (ownerOf(dated[0].c) || dated.map(x => ownerOf(x.c)).find(Boolean) || 'לא משויך');
     const r = (map[key] = map[key] || { leads: 0, won: 0, days: [] });
     r.leads++;
-    const fd = firstDeal[c.id];
+    const fd = firstDeal[k];
     if (fd) { r.won++; r.days.push(Math.max(0, daysBetween(created, fd))); }
   });
   return Object.entries(map).map(([key, r]) => ({
@@ -274,7 +312,7 @@ export function insights(args: { deals: Deal[]; months: MonthRow[]; models: Mode
   const srcs = sources.filter(s => s.leads >= 5);
   if (srcs.length >= 2) {
     const best = [...srcs].sort((x, y) => y.ratePct - x.ratePct)[0], worst = [...srcs].sort((x, y) => x.ratePct - y.ratePct)[0];
-    if (best.ratePct - worst.ratePct >= 5) out.push({ tone: 'info', text: `המרה של ${Math.round(best.ratePct)}% מלידים מ${sourceLabel(best.key)}, לעומת ${Math.round(worst.ratePct)}% מלידים מ${sourceLabel(worst.key)}.` });
+    if (best.ratePct - worst.ratePct >= 5) out.push({ tone: 'info', text: `המרה של ${Math.round(best.ratePct)}% בלידים ממקור "${sourceLabel(best.key)}", לעומת ${Math.round(worst.ratePct)}% בלידים ממקור "${sourceLabel(worst.key)}".` });
   }
   if (pipe.staleCount > 0) out.push({ tone: 'warn', text: `${pipe.staleCount === 1 ? 'הצעה אחת ממתינה' : `${pipe.staleCount} הצעות ממתינות`} יותר מ-14 יום, בשווי ${ils(pipe.staleValue)}. זה הכסף הכי קרוב לסגירה.` });
   const kinds = (k: DealKind) => summarize(deals.filter(d => d.kind === k));
@@ -298,8 +336,9 @@ export interface DayRow {
   quoteValue: number;
   daysSinceQuote: number | null;
   unassigned: boolean;
+  customerTwin: any | null; // כרטיס לקוח (לא ליד) של אותו אדם — הליד הזה כבר קנה וצריך מיזוג
 }
-export interface MyDay { overdue: DayRow[]; today: DayRow[]; fresh: DayRow[]; hot: DayRow[]; pipelineValue: number; }
+export interface MyDay { overdue: DayRow[]; today: DayRow[]; fresh: DayRow[]; hot: DayRow[]; merge: DayRow[]; pipelineValue: number; }
 
 export function buildMyDay(args: { customers: any[]; quotes: any[]; userEmail: string; scope: OwnerScope; today: string; price: (it: any) => number }): MyDay {
   const { customers, quotes, userEmail, scope, today, price } = args;
@@ -311,6 +350,12 @@ export function buildMyDay(args: { customers: any[]; quotes: any[]; userEmail: s
   };
   const pendingByCustomer: Record<string, any[]> = {};
   quotes.forEach((q: any) => { if (q.status === 'pending' && q.customerId) (pendingByCustomer[q.customerId] = pendingByCustomer[q.customerId] || []).push(q); });
+
+  // ליד שאותו אדם כבר קיים אצלנו ככרטיס לקוח (נפתח כרטיס חדש במעמד המכירה): לא משימה — למזג
+  const person = groupPeople(customers);
+  const customerOfPerson: Record<string, any> = {};
+  customers.forEach((c: any) => { if (c.status && c.status !== 'lead') customerOfPerson[person[c.id]] = customerOfPerson[person[c.id]] || c; });
+  const twinOf = (c: any) => (c.status === 'lead' ? customerOfPerson[person[c.id]] || null : null);
 
   const row = (c: any): DayRow => {
     const real = (c.interactionLogs || []).filter((l: any) => l.type !== 'system');
@@ -329,25 +374,28 @@ export function buildMyDay(args: { customers: any[]; quotes: any[]; userEmail: s
       quoteValue: qs.reduce((s: number, q: any) => s + quoteItemsTotal(q, price), 0),
       daysSinceQuote: lastQuote ? daysBetween(lastQuote, today) : null,
       unassigned: !ownerOf(c),
+      customerTwin: twinOf(c),
     };
   };
 
   const used = new Set<string>();
   const take = (list: any[]) => list.filter(c => !used.has(c.id)).map(c => { used.add(c.id); return row(c); });
-  const leads = customers.filter((c: any) => c.status === 'lead' && c.leadStage !== 'not_relevant');
+  const openLeads = customers.filter((c: any) => c.status === 'lead' && c.leadStage !== 'not_relevant');
+  const merge = take(openLeads.filter(c => twinOf(c) && (inScope(c) || !ownerOf(c))));
+  const leads = openLeads.filter(c => !used.has(c.id));
   const owned = leads.filter(inScope);
 
   const overdue = take(owned.filter(c => c.followUpDate && c.followUpDate < today)).sort((a, b) => b.daysOverdue - a.daysOverdue || b.quoteValue - a.quoteValue);
   const todays = take(owned.filter(c => c.followUpDate === today)).sort((a, b) => b.quoteValue - a.quoteValue);
   // "חמים": יש הצעה פתוחה — כולל לקוחות קיימים (הזמנה חוזרת). לא ליד שסומן לא רלוונטי.
-  const hotPool = customers.filter((c: any) => (pendingByCustomer[c.id] || []).length > 0 && !(c.status === 'lead' && c.leadStage === 'not_relevant') && inScope(c));
+  const hotPool = customers.filter((c: any) => (pendingByCustomer[c.id] || []).length > 0 && !(c.status === 'lead' && c.leadStage === 'not_relevant') && inScope(c) && !used.has(c.id));
   const hot = take(hotPool).sort((a, b) => b.quoteValue - a.quoteValue);
   // חדשים בלי מגע: גם לידים בלי בעלים (מהאתר/פייסבוק לפני שיוך), כדי שאף אחד לא ייפול בין הכיסאות
   const freshPool = leads.filter(c => (c.leadStage || 'new') === 'new' && !(c.interactionLogs || []).some((l: any) => l.type !== 'system') && (inScope(c) || !ownerOf(c)));
   const fresh = take(freshPool).sort((a, b) => b.waitingDays - a.waitingDays);
 
   const pipelineValue = [...overdue, ...todays, ...hot, ...fresh].reduce((s, r) => s + r.quoteValue, 0);
-  return { overdue, today: todays, fresh, hot, pipelineValue };
+  return { overdue, today: todays, fresh, hot, merge, pipelineValue };
 }
 
 export const toWhatsAppNumber = (phone: any): string => {
