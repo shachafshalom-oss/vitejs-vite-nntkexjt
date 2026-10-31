@@ -162,6 +162,15 @@ try {
   check(tid(twinDay.merge) === 'FB1' && twinDay.merge[0].customerTwin?.id === 'NEW1', `"היום שלי": ליד שכבר קנה עובר ל"למזג" עם הכרטיס התאום: ${tid(twinDay.merge)}`);
   check(!tid(twinDay.fresh).includes('FB1') && tid(twinDay.fresh) === 'O1,FB3', `ולא מופיע בחדשים (O1 — ליד בלי בעלים, כן מוצג): ${tid(twinDay.fresh)}`);
 
+  describe('9. קנו בלי מקור — לתיוג ידני');
+  const ub = M.untaggedBuyers(people.concat([{ id: 'X1', status: 'active', phone: '0521110000', createdAt: '2026-08-01T08:00:00.000Z' }]), pDeals.concat([
+    { id: 'd3', kind: 'stock', date: '2026-08-10', customerId: 'X1', owner: '', revenue: 7800, cost: null, profit: null, units: 1, lines: [] },
+    { id: 'd4', kind: 'stock', date: '2026-10-10', customerId: 'X1', owner: '', revenue: 5800, cost: null, profit: null, units: 1, lines: [] },
+  ]));
+  check(ub.length === 1 && ub[0].customer.id === 'X1', `רק לקוח בלי מקור באף כרטיס (NEW1/NEW2 מקושרים לכרטיס עם מקור): ${ub.map(u => u.customer.id)}`);
+  check(ub[0].revenue === 13600 && ub[0].deals === 2 && ub[0].lastDate === '2026-10-10', 'סכום ומספר עסקאות, תאריך אחרון');
+  check(M.sourceLabel('facebook') === 'פייסבוק / אינסטגרם', 'תווית פייסבוק / אינסטגרם');
+
   describe('7. עזרים');
   check(M.toWhatsAppNumber('054-805-0870') === '972548050870' && M.toWhatsAppNumber('+972548050870') === '972548050870', 'מספר וואטסאפ בינלאומי');
   check(M.addDaysYmd('2026-10-31', 1) === '2026-11-01' && M.addDaysYmd('2026-12-31', 3) === '2027-01-03', 'הוספת ימים לתאריך');

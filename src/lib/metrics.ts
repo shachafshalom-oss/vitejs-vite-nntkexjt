@@ -237,7 +237,8 @@ export function groupPeople(customers: any[]): Record<string, string> {
 }
 
 // --- המרה: אנשים שנכנסו כלידים בטווח → כמה הגיעו למכירה (בכל זמן) ---
-const SOURCE_LABELS: Record<string, string> = { website: 'אתר', facebook: 'פייסבוק', other: 'אחר', manual: 'לא סומן' };
+// facebook = פייסבוק ואינסטגרם יחד: קובץ הלידים של Meta מערבב את שניהם (שחף, 31.10.2026)
+const SOURCE_LABELS: Record<string, string> = { website: 'אתר', facebook: 'פייסבוק / אינסטגרם', other: 'אחר', manual: 'לא סומן' };
 export const sourceLabel = (s: string) => SOURCE_LABELS[s] || s;
 export const LEAD_SOURCES = ['facebook', 'website', 'other'];
 export const wasLead = (c: any): boolean =>
@@ -272,6 +273,29 @@ export function conversion(customers: any[], deals: Deal[], from: string, to: st
     key, leads: r.leads, won: r.won, ratePct: r.leads ? (r.won / r.leads) * 100 : 0,
     avgDaysToSale: r.days.length ? r.days.reduce((s, x) => s + x, 0) / r.days.length : null,
   })).sort((a, b) => b.leads - a.leads);
+}
+
+// --- קנו בלי מקור: אנשים עם מכירה שלאף כרטיס שלהם אין מקור — לתיוג ידני של ההיסטוריה ---
+// רק שחף ודניאל יודעים מאיפה הגיע לקוח שפנה בהודעה/שיחה ונפתח ידנית במכירה — אין כאן ניחוש.
+export interface UntaggedBuyer { customer: any; firstDate: string; lastDate: string; revenue: number; deals: number; }
+export function untaggedBuyers(customers: any[], deals: Deal[]): UntaggedBuyer[] {
+  const person = groupPeople(customers);
+  const byId: Record<string, any> = {};
+  customers.forEach((c: any) => { byId[c.id] = c; });
+  const tagged = new Set<string>();
+  customers.forEach((c: any) => { if (LEAD_SOURCES.includes(c.source)) tagged.add(person[c.id]); });
+  const map: Record<string, UntaggedBuyer> = {};
+  deals.forEach(d => {
+    const c = byId[d.customerId];
+    if (!c) return;
+    const k = person[c.id];
+    if (tagged.has(k)) return;
+    const r = (map[k] = map[k] || { customer: c, firstDate: d.date, lastDate: d.date, revenue: 0, deals: 0 });
+    r.revenue += d.revenue; r.deals++;
+    if (d.date < r.firstDate) r.firstDate = d.date;
+    if (d.date >= r.lastDate) { r.lastDate = d.date; r.customer = c; } // מציגים את הכרטיס של המכירה האחרונה
+  });
+  return Object.values(map).sort((a, b) => b.lastDate.localeCompare(a.lastDate));
 }
 
 // --- הצעות פתוחות ---

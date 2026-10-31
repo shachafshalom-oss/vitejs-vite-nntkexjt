@@ -3993,7 +3993,7 @@ export default function App() {
         // כרטיס קיים עם אותו טלפון: מציעים לעדכן אותו במקום לפתוח כרטיס חדש (אושר ע"י שחף 31.10.2026).
         // כרטיס חדש במעמד המכירה ניתק את המכירה מהליד המקורי — פייסבוק נראה 0% המרה, והליד נשאר "פתוח".
         // עדכון: רק שדות פרטים שמולאו בטופס. המקור, תאריך הכניסה, היומן, הנציג והסטטוס של הכרטיס הקיים נשמרים.
-        const SOURCE_NAMES: Record<string, string> = { facebook: 'פייסבוק', website: 'אתר', other: 'אחר' };
+        const SOURCE_NAMES: Record<string, string> = { facebook: 'פייסבוק / אינסטגרם', website: 'אתר', other: 'אחר' };
         const useExisting = !!dup && window.confirm(
           `כבר קיים כרטיס עם הטלפון הזה:\n"${dup.businessName || dup.contactName || 'ללא שם'}" — ${dup.status === 'lead' ? 'ליד' : 'לקוח'}` +
           `${dup.source ? `, מקור: ${SOURCE_NAMES[dup.source] || dup.source}` : ''}` +
@@ -4049,6 +4049,18 @@ export default function App() {
       await saveLeadField(lead.id, { leadStage: 'not_relevant', followUpDate: null, followUpNote: '', duplicateOfCustomerId: customer.id });
       await updateDoc(doc(db, 'crm_customers', lead.id), { interactionLogs: arrayUnion(note) });
     } catch (err) { console.error('closeLeadAsCustomerDuplicate', err); alert('שגיאה בסגירת הליד ככפילות'); }
+  };
+
+  // תיוג מקור לקוח שקנה בלי מקור (מרשימת "קנו בלי מקור" בניתוח), עם רישום ביומן
+  const setCustomerSource = async (customerId: string, source: string) => {
+    const NAMES: Record<string, string> = { facebook: 'פייסבוק / אינסטגרם', website: 'אתר', other: 'אחר' };
+    try {
+      const nowIso = new Date().toISOString();
+      await updateDoc(doc(db, 'crm_customers', customerId), {
+        source, updatedAt: nowIso,
+        interactionLogs: arrayUnion({ date: nowIso, text: `מקור הלקוח סומן: ${NAMES[source] || source}`, user: user?.email || 'משתמש מערכת', type: 'system' }),
+      });
+    } catch (err) { console.error('setCustomerSource', err); alert('שגיאה בשמירת המקור'); }
   };
 
   const saveLeadField = async (customerId: string, fields: Record<string, any>) => {
@@ -6373,6 +6385,7 @@ export default function App() {
             today={israelToday()}
             price={getEffectivePrice}
             onAiInsights={handleGetInsights}
+            onSetSource={setCustomerSource}
           />
         )}
         {activeTab === 'finance' && financeView === 'cashflow' && (
@@ -7387,7 +7400,7 @@ export default function App() {
                 // מקור הליד: רק שני ערכים אמיתיים קיימים היום בנתונים — facebook ו-website.
                 // כל דבר אחר (כולל ריק) פירושו שהליד נוצר ידנית בתוך ה-CRM.
                 const sourceBadge =
-                  c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק' }
+                  c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק / אינסטגרם' }
                   : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
                   : c.source === 'other' ? { Icon: UserPlus, cls: 'bg-slate-500 text-white', label: 'מקור: אחר' }
                   : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };
@@ -9356,10 +9369,11 @@ export default function App() {
                   {/* מקור הליד (31.10.2026): ליד ידני לא קיבל מקור בכלל, ולכן לידים מפייסבוק שנרשמו ידנית
                       נספרו בניתוח כ"לא סומן". ייבוא פייסבוק והאתר ממלאים את השדה אוטומטית. */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">מקור הליד</label>
-                    <select data-testid="customer-source" className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.source || ''} onChange={e => setCustomerEditingData({...customerEditingData, source: e.target.value})}>
-                      <option value="">לא סומן</option>
-                      <option value="facebook">פייסבוק</option>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">איך הגיע אלינו?{!customerEditingData.id && <span className="text-red-500"> *</span>}</label>
+                    {/* חובה ביצירה ידנית (31.10.2026) — בלי זה מכירות מהודעות/שיחות נשארות בלי מקור. כרטיסים ישנים לא נחסמים בעריכה */}
+                    <select data-testid="customer-source" required={!customerEditingData.id} className="w-full border-slate-300 rounded-md p-2.5 bg-slate-50 border focus:bg-white focus:ring-2 focus:ring-[#7B1315] outline-none" value={customerEditingData.source || ''} onChange={e => setCustomerEditingData({...customerEditingData, source: e.target.value})}>
+                      <option value="">{customerEditingData.id ? 'לא סומן' : 'בחר מקור...'}</option>
+                      <option value="facebook">פייסבוק / אינסטגרם</option>
                       <option value="website">אתר</option>
                       <option value="other">אחר</option>
                     </select>

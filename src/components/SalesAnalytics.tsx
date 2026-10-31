@@ -2,7 +2,7 @@
 // מכירה = תשלום/מקדמה, שווי לפני מע"מ בלי הובלה, רווח גולמי = בלי שיווק והוצאות כלליות.
 import { useMemo, useState } from 'react';
 import { Sparkles, TrendingUp, TrendingDown, Lightbulb, AlertTriangle, Info, Users } from 'lucide-react';
-import { inRange, summarize, monthly, trendSlope, byModel, conversion, pipeline, insights, sourceLabel, addDaysYmd, type Deal, type MonthRow } from '../lib/metrics';
+import { inRange, summarize, monthly, trendSlope, byModel, conversion, pipeline, insights, sourceLabel, addDaysYmd, untaggedBuyers, LEAD_SOURCES, type Deal, type MonthRow } from '../lib/metrics';
 
 interface Props {
   deals: Deal[];
@@ -12,6 +12,7 @@ interface Props {
   today: string;
   price: (item: any) => number;
   onAiInsights?: () => void;
+  onSetSource?: (customerId: string, source: string) => Promise<void> | void;
 }
 
 const ils = (n: number) => '₪' + Math.round(n).toLocaleString('en-US');
@@ -104,6 +105,9 @@ export default function SalesAnalytics(p: Props) {
   const [range, setRange] = useState<RangeKey>('12m');
   // מלאי וקסטום הם שני עסקים שונים (ממוצע עסקה פי ~20) — ערבוב נותן ממוצעים חסרי משמעות. ברירת מחדל: מלאי.
   const [seg, setSeg] = useState<Segment>('stock');
+  const [showUntagged, setShowUntagged] = useState(false);
+  const [tagging, setTagging] = useState<string | null>(null);
+  const untagged = useMemo(() => untaggedBuyers(p.customers, p.deals), [p.customers, p.deals]);
   const from = rangeFrom(range, p.today);
   const to = p.today;
 
@@ -301,7 +305,10 @@ export default function SalesAnalytics(p: Props) {
               <p className="text-xs font-bold text-slate-500 mb-1.5">{title}</p>
               {rows.length === 0 ? <p className="text-xs text-slate-400">אין לידים בטווח.</p> : rows.map((r: any) => (
                 <div key={r.key} className="flex items-center gap-2 text-xs py-1">
-                  <span className="w-20 shrink-0 font-medium text-slate-700 truncate">{lbl(r.key)}</span>
+                  {id === 'an-conv-source' && r.key === 'manual' && untagged.length > 0 && p.onSetSource ? (
+                    <button type="button" data-testid="an-untagged-toggle" onClick={() => setShowUntagged(v => !v)} className="w-28 shrink-0 font-bold text-[#7B1315] underline text-right truncate">{lbl(r.key)}</button>
+                  ) : null}
+                  {!(id === 'an-conv-source' && r.key === 'manual' && untagged.length > 0 && p.onSetSource) && <span className="w-28 shrink-0 font-medium text-slate-700 truncate">{lbl(r.key)}</span>}
                   <div className="flex-1 bg-slate-100 rounded-full h-2"><div className="bg-[#7B1315] h-2 rounded-full" style={{ width: `${Math.min(100, r.ratePct)}%` }} /></div>
                   <span className="w-32 shrink-0 text-left text-slate-600"><b>{pct(r.ratePct)}</b> · {r.won} מ-{r.leads}{r.avgDaysToSale !== null ? ` · ${Math.round(r.avgDaysToSale)} ימ'` : ''}</span>
                 </div>
@@ -309,6 +316,31 @@ export default function SalesAnalytics(p: Props) {
             </div>
           ))}
           <p className="text-[10px] text-slate-400">ימ' = ימים בממוצע מכניסת הליד ועד המכירה.</p>
+          {p.onSetSource && untagged.length > 0 && (
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <button type="button" data-testid="an-untagged-open" onClick={() => setShowUntagged(v => !v)} className="w-full text-right text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                {untagged.length} לקוחות קנו בלי מקור מסומן — {showUntagged ? 'סגור' : 'סמן עכשיו'} ▸
+              </button>
+              {showUntagged && (
+                <div data-testid="an-untagged-list" className="mt-2 divide-y divide-slate-100">
+                  {untagged.map(u => (
+                    <div key={u.customer.id} data-testid="an-untagged-row" className="py-2">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-sm font-bold text-slate-800 truncate">{u.customer.businessName || u.customer.contactName || 'ללא שם'}</span>
+                        <span className="text-xs text-slate-500 whitespace-nowrap">{ils(u.revenue)}{u.deals > 1 ? ` · ${u.deals} עסקאות` : ''}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">{u.customer.contactName && u.customer.businessName ? `${u.customer.contactName} · ` : ''}קנה ב-{new Date(u.lastDate + 'T12:00:00Z').toLocaleDateString('he-IL')}</p>
+                      <div className="flex gap-1.5 mt-1.5">
+                        {LEAD_SOURCES.map(src => (
+                          <button key={src} type="button" data-testid={`an-tag-${src}`} disabled={tagging === u.customer.id} onClick={async () => { setTagging(u.customer.id); try { await p.onSetSource!(u.customer.id, src); } finally { setTagging(null); } }} className="text-xs font-bold border border-slate-300 rounded-md px-2.5 py-1 hover:bg-slate-50 disabled:opacity-40">{sourceLabel(src)}</button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div data-testid="an-pipeline" className="bg-white border border-slate-200 rounded-xl p-4">
           <h3 className="text-sm font-bold text-slate-700 mb-3">הצעות פתוחות (עכשיו)</h3>

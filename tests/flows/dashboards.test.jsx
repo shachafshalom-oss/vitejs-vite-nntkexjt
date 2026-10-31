@@ -163,5 +163,28 @@ const cust = (id) => T.docs('crm_customers')[id];
   T.check(cust('CW').source === 'website', `לכרטיס הלקוח כבר היה מקור — לא נדרס: ${cust('CW').source}`);
   T.check(!T.byId('myday-merge'), 'הרשימה התרוקנה');
 
+  T.describe('10. "איך הגיע אלינו?" — חובה ביצירה, לא בעריכה');
+  await T.nav('leads');
+  await T.click(T.byId('lead-new'));
+  T.check(T.byId('customer-source')?.required === true, 'שדה המקור חובה בכרטיס חדש');
+  T.check(T.$$('option', T.byId('customer-source')).some(o => o.value === 'facebook' && o.textContent === 'פייסבוק / אינסטגרם'), 'האפשרות "פייסבוק / אינסטגרם"');
+  await T.click(T.buttonByText('ביטול') || T.$('[data-testid="customer-modal-close"]'));
+
+  T.describe('11. תיוג לקוחות שקנו בלי מקור, מתוך הניתוח');
+  await T.api().setDoc(T.api().doc(null, 'crm_customers', 'U1'), { status: 'active', businessName: 'מסעדת הנמל', phone: '0527770000', assignedTo: SH, interactionLogs: [], createdAt: '2026-10-02T08:00:00.000Z' });
+  await T.api().updateDoc(T.api().doc(null, 'crm_items', 'I2'), { status: 'sold', saleDate: '2026-10-20', customerId: 'U1', salePrice: 9000 });
+  await T.flush(4);
+  await T.click(T.byId('space-operations'));
+  await T.nav('finance');
+  await T.click(T.byId('finance-view-analytics'));
+  T.check(T.byId('an-untagged-open')?.textContent.includes('1 לקוחות קנו בלי מקור'), `מונה "קנו בלי מקור": ${T.byId('an-untagged-open')?.textContent}`);
+  await T.click(T.byId('an-untagged-open'));
+  const urow = T.allById('an-untagged-row').find(r => r.textContent.includes('מסעדת הנמל'));
+  T.check(!!urow && T.amountShown(9000, urow), 'הלקוח ברשימה עם הסכום');
+  await T.click(urow.querySelector('[data-testid="an-tag-facebook"]'));
+  await T.flush(4);
+  T.check(cust('U1').source === 'facebook' && (cust('U1').interactionLogs || []).some(l => l.type === 'system' && l.text.includes('פייסבוק / אינסטגרם')), `נשמר מקור + יומן: ${cust('U1').source}`);
+  T.check(!T.byId('an-untagged-open'), 'הלקוח יצא מהרשימה');
+
   T.finish();
 })().catch(T.crash);
