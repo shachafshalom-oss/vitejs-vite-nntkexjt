@@ -97,7 +97,7 @@ export default function SalesDashboard(p: Props) {
               {c.contactName && c.businessName && <span className="text-xs text-slate-400 truncate">{c.contactName}</span>}
               {c.status === 'lead' && c.leadStage && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${p.stageColors[c.leadStage] || 'bg-slate-100 text-slate-600'}`}>{p.stageLabels[c.leadStage] || c.leadStage}</span>}
               {c.status !== 'lead' && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">לקוח קיים</span>}
-              {src && <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${src.cls}`}>{src.label}</span>}
+              {src && <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${c.metaPlatform === 'ig' ? 'bg-pink-50 text-pink-700 border-pink-200' : src.cls}`}>{c.metaPlatform === 'ig' ? 'אינסטגרם' : src.label}</span>}
               {r.unassigned && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold">לא משויך</span>}
             </div>
             <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">

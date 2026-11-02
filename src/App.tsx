@@ -8,7 +8,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, getDoc, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Globe, Truck, PackageCheck, Clock, History, PencilRuler } from 'lucide-react';
+import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Instagram, Globe, Truck, PackageCheck, Clock, History, PencilRuler } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -7400,7 +7400,10 @@ export default function App() {
                 // מקור הליד: רק שני ערכים אמיתיים קיימים היום בנתונים — facebook ו-website.
                 // כל דבר אחר (כולל ריק) פירושו שהליד נוצר ידנית בתוך ה-CRM.
                 const sourceBadge =
-                  c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק / אינסטגרם' }
+                  // ליד מה-webhook של Meta יודע את הפלטפורמה המדויקת (metaPlatform); ייבוא מקובץ — לא
+                  c.source === 'facebook' && c.metaPlatform === 'ig' ? { Icon: Instagram, cls: 'bg-pink-600 text-white', label: 'מקור: אינסטגרם' }
+                  : c.source === 'facebook' && c.metaPlatform === 'fb' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק' }
+                  : c.source === 'facebook' ? { Icon: Facebook, cls: 'bg-blue-600 text-white', label: 'מקור: פייסבוק / אינסטגרם' }
                   : c.source === 'website' ? { Icon: Globe, cls: 'bg-teal-600 text-white', label: 'מקור: האתר' }
                   : c.source === 'other' ? { Icon: UserPlus, cls: 'bg-slate-500 text-white', label: 'מקור: אחר' }
                   : { Icon: UserPlus, cls: 'bg-slate-400 text-white', label: 'נוצר ידנית ב-CRM' };

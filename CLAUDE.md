@@ -9,7 +9,7 @@ npm run build               # בדיקות ואז vite build — זה מה ש-Ne
 ```
 
 - `tests/flows/*.test.jsx` — האפליקציה האמיתית (`src/App.tsx`) רצה ב-jsdom מול Firestore מדומה בזיכרון, ונבדקים תהליכים שלמים: מכירה (ליד → הצעה → אישור → הובלה), תפעול (משלוח → מלאי → מכירה → נטרול יחידה תקולה), קטלוג דגמים, עריכת ליד, מיזוג לידים, סינון לידים לפי בעלים (לשונית + תזכורות בדשבורד), רשימת לקוחות (חיפוש טלפון 0/+972, קטלוג/הצעה/מחיקה מוגנת מתוך התיק), פרויקטים קסטום (עלויות → מקדמה ויתרה ב-Morning מדומה).
-- `tests/functions/*.test.cjs` — פונקציות ה-Netlify (website-lead, lead-notifier, calendar-feed, calendar-link) מול firebase-admin מדומה.
+- `tests/functions/*.test.cjs` — פונקציות ה-Netlify (website-lead, facebook-lead, lead-notifier, calendar-feed, calendar-link) מול firebase-admin מדומה (facebook-lead גם מול Graph API מדומה).
 - `tests/harness/` — המוקים וכלי העזר. המוק של Firestore זורק על `undefined` ועל מערך בתוך מערך, כמו Firestore האמיתי.
 
 ### כללים
