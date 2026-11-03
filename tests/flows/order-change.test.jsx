@@ -91,7 +91,9 @@ T.setNav('sales', 'quotes');
   const drafts = T.docsWhere('crm_quotes', q => q.replacesQuoteId === 'QA');
   T.check(drafts.length === 1, `צפויה טיוטת שינוי אחת, נמצאו ${drafts.length}`);
   const NQ = drafts[0] || {};
-  T.check(NQ.status === 'pending' && NQ.customerId === 'C1' && Number(NQ.depositAmount) === 2000, `שדות טיוטת השינוי שגויים: ${JSON.stringify({ s: NQ.status, c: NQ.customerId, d: NQ.depositAmount })}`);
+  T.check(NQ.status === 'pending' && NQ.customerId === 'C1', `שדות טיוטת השינוי שגויים: ${JSON.stringify({ s: NQ.status, c: NQ.customerId })}`);
+  // ברירת מחדל: המקדמה כוללת מע"מ (הסכום שבקבלה). לפני מע"מ בשתי ספרות — לא מעוגל לשקל.
+  T.check(NQ.depositInput === 2000 && NQ.depositInclVat === true && NQ.depositAmount === 1694.92, `שדות המקדמה שגויים: ${JSON.stringify({ i: NQ.depositInput, v: NQ.depositInclVat, a: NQ.depositAmount })}`);
   T.check(NQ.items?.length === 2 && NQ.items.every(it => it.model === 'Prime' && it.modelId === 'm_prime'), `השורות בטיוטה צריכות להיות 2 Prime: ${JSON.stringify(NQ.items?.map(i => i.model))}`);
   T.check(Number(NQ.items?.[0]?.discount) === 500 && Number(NQ.items?.[1]?.listPrice) === 9500, 'ההנחה בשורה הקיימת אבדה / מחיר ה-Prime החדש שגוי');
   T.check(T.docs('crm_quotes').QA.status === 'approved' && itemsSnapshot() === before2, 'שמירת הטיוטה שינתה את ההזמנה המקורית או את המלאי');
@@ -128,7 +130,7 @@ T.setNav('sales', 'quotes');
   T.check(T.docs('crm_customers').C1.status === 'active' && T.docs('crm_customers').C1.previousStatusBeforeActive === 'lead' && NQa.previousCustomerStatus === 'lead', 'הסטטוס הקודם של הלקוח נדרס ב"פעיל"');
   T.check(morningCalls.length === 1, `צפוי מסמך Morning אחד, נשלחו ${morningCalls.length}`);
   const inc = morningCalls[0]?.income || [];
-  T.check(inc.some(r => r.description.includes('מקדמה') && r.price === -2000) && inc.filter(r => r.description.includes('Prime')).length === 2 && inc.some(r => r.description === 'הובלה' && r.price === 400), `שורות Morning שגויות: ${JSON.stringify(inc)}`);
+  T.check(inc.some(r => r.description.includes('מקדמה') && r.price === -2000 && r.vatType === 1) && inc.filter(r => r.description.includes('Prime')).length === 2 && inc.some(r => r.description === 'הובלה' && r.price === 400), `שורות Morning שגויות: ${JSON.stringify(inc)}`);
   T.check(T.ui.alerts.slice(alertsBefore4).some(a => a.includes('לבטל ידנית') && a.includes('https://morning.test/old-QA')), 'לא הוזכר לבטל ב-Morning את דרישת התשלום הקודמת');
 
   T.describe('5. ההזמנה שהוחלפה — היסטוריה בלבד');
@@ -165,6 +167,27 @@ T.setNav('sales', 'quotes');
   const alertsBefore8 = T.ui.alerts.length;
   await T.click(T.byId('quote-save'));
   T.check(Object.keys(T.docs('crm_quotes')).length === countBefore8 && T.ui.alerts.slice(alertsBefore8).some(a => a.includes('המקדמה גבוה')), 'הצעה עם מקדמה גבוהה מסכום ההזמנה נשמרה');
+
+  // ───────────── 9. מקדמה לפני מע"מ, עם אגורות ─────────────
+  T.describe('9. מקדמה שהוזנה לפני מע"מ, עם אגורות');
+  await T.click(T.byId('quote-new'));
+  const ci = T.byId('customer-combobox-input', quoteModal());
+  await T.focus(ci);
+  await T.type(ci, 'בר המחיקה');
+  await T.mouseDown(T.$$('div', quoteModal()).find(d => d.children.length === 0 && d.textContent.includes('בר המחיקה')));
+  await T.type(T.byId('quote-deposit', quoteModal()), 1000.5);
+  await T.click(T.byId('quote-deposit-incl-vat', quoteModal()));
+  T.check(T.text(T.byId('quote-deposit-breakdown', quoteModal())).includes('1,180.59'), `הפירוט לא מציג 1,000.50 × 1.18 = 1,180.59: ${T.text(T.byId('quote-deposit-breakdown', quoteModal()))}`);
+
+  T.describe('10. כותרת ההצעה: שם משפטי, ח.פ, מחסן, טלפונים ומייל');
+  const hdr = T.text(T.byId('quote-company-header', quoteModal()));
+  T.check(['סטיל אנד ספיריט בע"מ', 'ח.פ 517356077', 'מחסן: אפעל 11, פתח תקווה', '050-2212880', '054-8050870', 'sales@steelandspirit.com'].every(x => hdr.includes(x)), `כותרת ההצעה חסרה פרטים: ${hdr}`);
+
+  const keysBefore9 = Object.keys(T.docs('crm_quotes'));
+  await T.click(T.byId('quote-save'));
+  const q9id = Object.keys(T.docs('crm_quotes')).find(k => !keysBefore9.includes(k));
+  const q9 = q9id ? T.docs('crm_quotes')[q9id] : {};
+  T.check(q9.depositInput === 1000.5 && q9.depositInclVat === false && q9.depositAmount === 1000.5, `מקדמה לפני מע"מ לא נשמרה כפי שהוזנה: ${JSON.stringify({ i: q9.depositInput, v: q9.depositInclVat, a: q9.depositAmount })}`);
 
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });

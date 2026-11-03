@@ -891,6 +891,21 @@ const COMPANY_INFO = {
   brandLine: 'Steel & Spirit Ltd · Crafted by Bartenders',
 };
 
+// --- מקדמה בהצעת מחיר רגילה ---
+// נשמר בדיוק מה שהוזן (depositInput) והאם הוא כולל מע"מ (depositInclVat, ברירת מחדל: כן — זה הסכום
+// שבקבלה). depositAmount הוא הסכום לפני מע"מ בשתי ספרות, ועליו נשענות הבדיקות מול סכום ההזמנה.
+// לא מעגלים לשקל: 2,000 כולל = 1,694.92 לפני. עיגול ל-1,695 היה מחזיר 2,000.10 ומקלקל את הניכוי.
+const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+const VAT_RATE = 0.18;
+const depositParts = (q: any) => {
+  const input = round2(q?.depositInput);
+  const inclVat = q?.depositInclVat !== false;
+  const preVat = inclVat ? round2(input / (1 + VAT_RATE)) : input;
+  const withVat = inclVat ? input : round2(input * (1 + VAT_RATE));
+  return { input, inclVat, preVat, withVat };
+};
+const fmtMoney = (n: number) => round2(n).toLocaleString('he-IL', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
 const formatDeliveryNoteNumber = (n: any) => String(Number(n) || 0).padStart(5, '0');
 
 // שדה הכתובת בכרטיס הלקוח הוא טקסט חופשי ולעתים כבר כולל את העיר ("הרצל 5, חיפה").
@@ -1307,7 +1322,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
   const totalDiscount = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.discount || 0) * Number(item.qty)), 0) || 0;
   const listTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.listPrice ?? item.price ?? 0) * Number(item.qty)), 0) || 0;
   const grandTotal = itemsTotal + Number(quote?.shippingCost || 0);
-  const depositAmount = Math.round(Number(quote?.depositAmount) || 0); // ₪ לפני מע"מ
+  const deposit = depositParts(quote);
 
   // חודשי אחריות בפועל על ההזמנה. 0 (או ריק) = אין אחריות כלל, רלוונטי אך ורק למוצרי מדף קיימים במלאי -
   // הזמנה אישית/קסטום תמיד כוללת אחריות, ולכן במצב הזה גם סעיפי האחריות למוצרי מדף/מוגבלת לא רלוונטיים.
@@ -1347,9 +1362,13 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
             <div style={{ width: '100%', height: '100%', border: '2px dashed #999', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '14px', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold' }}>Steel & Spirit</div>
           )}
         </div>
-        <div style={{ textAlign: 'left', fontWeight: 'bold', color: '#7B1315', direction: 'ltr', fontSize: '14px', lineHeight: '1.5' }}>
-          <p style={{ margin: '3px 0' }}>050-2212880 | 054-8050870</p>
-          <p style={{ margin: '3px 0' }}>sales@steelandspirit.com</p>
+        {/* פרטי החברה — מאותו מקור כמו תעודת המשלוח (COMPANY_INFO), כדי ששינוי יתעדכן בכל המסמכים */}
+        <div data-testid="quote-company-header" style={{ textAlign: 'left', fontWeight: 'bold', color: '#7B1315', fontSize: '14px', lineHeight: '1.5' }}>
+          <p style={{ margin: '3px 0', direction: 'rtl' }}>{COMPANY_INFO.legalName}</p>
+          <p style={{ margin: '3px 0', direction: 'rtl' }}>ח.פ {COMPANY_INFO.companyNumber}</p>
+          <p style={{ margin: '3px 0', direction: 'rtl', fontWeight: 'normal' }}>מחסן: {COMPANY_INFO.address}</p>
+          <p style={{ margin: '3px 0', direction: 'ltr' }}>{COMPANY_INFO.phones.replace(' · ', ' | ')}</p>
+          <p style={{ margin: '3px 0', direction: 'ltr' }}>{COMPANY_INFO.email}</p>
         </div>
       </div>
 
@@ -1444,13 +1463,13 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '15px' }}>
               <span>סה"כ כולל מע"מ (18%):</span><span>{(grandTotal * 1.18).toLocaleString()} ₪</span>
             </div>
-            {depositAmount > 0 && (
+            {deposit.input > 0 && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', color: '#555' }}>
-                  <span>בניכוי מקדמה ששולמה (כולל מע"מ):</span><span>−{Math.round(depositAmount * 1.18).toLocaleString()} ₪</span>
+                  <span>בניכוי מקדמה ששולמה (כולל מע"מ):</span><span>−{fmtMoney(deposit.withVat)} ₪</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '15px', color: '#7B1315' }}>
-                  <span>יתרה לתשלום כולל מע"מ:</span><span>{Math.round((grandTotal - depositAmount) * 1.18).toLocaleString()} ₪</span>
+                  <span>יתרה לתשלום כולל מע"מ:</span><span>{fmtMoney(grandTotal * (1 + VAT_RATE) - deposit.withVat)} ₪</span>
                 </div>
               </>
             )}
@@ -4690,7 +4709,8 @@ export default function App() {
       date: todayStr,
       campaignId: q.campaignId || '',
       warrantyMonths: Number(q.warrantyMonths) || 0,
-      depositAmount: Number(q.depositAmount) || 0,
+      depositInput: Number(q.depositInput) || 0,
+      depositInclVat: q.depositInclVat !== false,
       replacesQuoteId: q.id,
       replacesQuoteDate: q.date, // לתצוגה במחולל וב-PDF בלבד, לא נשמר
     });
@@ -5039,9 +5059,12 @@ export default function App() {
 
   // מסלול הצעות המחיר — בונה את שורות ה-income בדיוק כפי שהיה קודם, ומעביר לליבה.
   // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט.
-  // depositAmount (₪ לפני מע"מ): מקדמה שכבר שולמה — יורדת כשורה שלילית, כמו במסלול פרויקטי הקוסטום.
-  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any, depositAmount = 0): Promise<{url: string|null, error: string|null}> => {
-    const income = quoteItems.map((item: any) => ({
+  // deposit: מקדמה שכבר שולמה — יורדת כשורה שלילית, כמו במסלול פרויקטי הקוסטום.
+  // מקדמה שהוזנה כולל מע"מ נשלחת כמו שהיא עם vatType=1 ברמת השורה (INCLUDED: המחיר כולל מע"מ),
+  // כך שהניכוי ב-Morning שווה בדיוק לסכום שבקבלה ולא תלוי בעיגול. מקור: שדה income.vatType
+  // (Default/Included/Exempt = 0/1/2). מקדמה לפני מע"מ נשלחת כרגיל (vatType ברירת מחדל).
+  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any, deposit?: { input: number; inclVat: boolean; preVat: number }): Promise<{url: string|null, error: string|null}> => {
+    const income: any[] = quoteItems.map((item: any) => ({
       description: `עמדת נירוסטה דגם ${item.model}`,
       quantity: Number(item.qty),
       price: Number(item.price ?? 0),
@@ -5049,8 +5072,10 @@ export default function App() {
     if (Number(shippingCost) > 0) {
       income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
     }
-    if (Math.round(Number(depositAmount) || 0) > 0) {
-      income.push({ description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -Math.round(Number(depositAmount)) });
+    if (deposit && deposit.input > 0) {
+      income.push(deposit.inclVat
+        ? { description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -deposit.input, vatType: 1 }
+        : { description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -deposit.preVat });
     }
     return sendMorningDocument(income, customer);
   };
@@ -5449,11 +5474,11 @@ export default function App() {
     }
     
     const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
-    // מקדמה (₪ לפני מע"מ, כמו כל השורות) — לא שלילית ולא מעבר לסכום ההזמנה
-    const depositAmount = Math.round(Number(quoteData.depositAmount) || 0);
+    // מקדמה — לא שלילית ולא מעבר לסכום ההזמנה (ההשוואה לפני מע"מ, כמו כל השורות)
+    const deposit = depositParts(quoteData);
     const orderTotal = (quoteData.items || []).reduce((sum: number, it: any) => sum + getEffectivePrice(it) * Number(it.qty), 0) + Number(quoteData.shippingCost || 0);
-    if (depositAmount < 0) { alert('סכום המקדמה לא יכול להיות שלילי.'); return; }
-    if (depositAmount > orderTotal) { alert('סכום המקדמה גבוה מסכום ההזמנה. בדוק את הסכום (לפני מע"מ).'); return; }
+    if (deposit.input < 0) { alert('סכום המקדמה לא יכול להיות שלילי.'); return; }
+    if (deposit.preVat > orderTotal + 0.005) { alert('סכום המקדמה גבוה מסכום ההזמנה. בדוק את הסכום ואת הסימון "כולל מע"מ".'); return; }
     setIsGeneratingPDF(true);
     try {
       const quotePayload = {
@@ -5464,7 +5489,9 @@ export default function App() {
         shippingCost: quoteData.shippingCost,
         warrantyMonths: Number(quoteData.warrantyMonths) || 0,
         campaignId: quoteData.campaignId || '',
-        depositAmount,
+        depositInput: deposit.input,
+        depositInclVat: deposit.inclVat,
+        depositAmount: deposit.preVat, // לפני מע"מ, נגזר
         // שינוי הזמנה: ההצעה המאושרת שזו באה להחליף. ההחלפה מתבצעת רק באישור.
         ...(quoteData.replacesQuoteId ? { replacesQuoteId: quoteData.replacesQuoteId } : {}),
         status: 'pending', 
@@ -5578,7 +5605,7 @@ export default function App() {
           testItems,
           Number(quote.shippingCost) || 0,
           testCustomer,
-          Number(quote.depositAmount) || 0
+          depositParts(quote)
         );
 
         if (invoiceUrl) {
@@ -5642,7 +5669,8 @@ export default function App() {
         customerId: quote.customerId,
         itemsToProcess,
         shippingCost: Number(quote.shippingCost) || 0,
-        depositAmount: Number(quote.depositAmount) || 0,
+        depositInput: Number(quote.depositInput) || 0,
+        depositInclVat: quote.depositInclVat !== false,
         replacesQuoteId: swapping ? original.id : '',
         replacesQuoteDate: swapping ? original.date : '',
         replacesMorningUrl: swapping ? (original.morningInvoiceUrl || '') : '',
@@ -6078,10 +6106,10 @@ export default function App() {
         const billedShippingCost = quoteApprovalData.deliveryMethod === 'pickup' ? 0 : (Number(quoteApprovalData.shippingCost) || 0);
         const isPickup = quoteApprovalData.deliveryMethod === 'pickup';
         const deliveryCity = (quoteApprovalData.deliveryCity || '').trim();
-        const depositAmount = Math.round(Number(quoteApprovalData.depositAmount) || 0);
+        const deposit = depositParts(quoteApprovalData);
         const billedTotal = quoteApprovalData.itemsToProcess.reduce((s: number, l: any) => s + (Number(l.salePrice) || 0) * (Number(l.qty) || 0), 0) + billedShippingCost;
-        if (depositAmount > billedTotal) {
-          throw new Error(`המקדמה (₪${depositAmount.toLocaleString()} לפני מע"מ) גבוהה מסכום ההזמנה לחיוב (₪${billedTotal.toLocaleString()}). תקן את ההצעה לפני האישור.`);
+        if (deposit.preVat > billedTotal + 0.005) {
+          throw new Error(`המקדמה (₪${fmtMoney(deposit.preVat)} לפני מע"מ) גבוהה מסכום ההזמנה לחיוב (₪${fmtMoney(billedTotal)}). תקן את ההצעה לפני האישור.`);
         }
         // הובלות של ההזמנה המקורית — נקראות שוב בתוך הטרנזקציה (כדי לתפוס מסירה ממכשיר אחר)
         const originalDeliveryIds: string[] = replacesId
@@ -6218,7 +6246,7 @@ export default function App() {
               quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
               billedShippingCost,
               customer,
-              depositAmount
+              deposit
             );
             if (invoiceUrl) {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
@@ -9707,8 +9735,8 @@ export default function App() {
                      <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : selectedQuote.status === 'replaced' ? 'bg-slate-100 text-slate-700' : 'bg-orange-100 text-orange-800'}`}>
                        סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status ? selectedQuote.status : 'pending']}
                      </span>
-                     {Number(selectedQuote.depositAmount) > 0 && (
-                       <div className="text-xs text-slate-600 mt-1">מקדמה ששולמה: ₪{Math.round(Number(selectedQuote.depositAmount) * 1.18).toLocaleString()} כולל מע"מ</div>
+                     {depositParts(selectedQuote).input > 0 && (
+                       <div className="text-xs text-slate-600 mt-1">מקדמה ששולמה: ₪{fmtMoney(depositParts(selectedQuote).withVat)} כולל מע"מ</div>
                      )}
                   </div>
                 </div>
@@ -10596,9 +10624,9 @@ export default function App() {
                       <div className="mt-2 font-bold">אחרי האישור: לבטל ידנית ב-Morning את דרישת התשלום הקודמת.</div>
                     </div>
                   )}
-                  {Number(quoteApprovalData.depositAmount) > 0 && (
+                  {depositParts(quoteApprovalData).input > 0 && (
                     <div className="bg-slate-50 text-slate-700 p-3 rounded-lg text-sm border border-slate-200">
-                      מקדמה ששולמה: ₪{Math.round(Number(quoteApprovalData.depositAmount)).toLocaleString()} לפני מע"מ (₪{Math.round(Number(quoteApprovalData.depositAmount) * 1.18).toLocaleString()} כולל). תנוכה מדרישת התשלום ב-Morning.
+                      מקדמה ששולמה: ₪{fmtMoney(depositParts(quoteApprovalData).withVat)} כולל מע"מ (₪{fmtMoney(depositParts(quoteApprovalData).preVat)} לפני). תנוכה מדרישת התשלום ב-Morning.
                     </div>
                   )}
                   
@@ -10838,11 +10866,15 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-1">מקדמה ששולמה (₪ לפני מע"מ)</label>
-                  <input data-testid="quote-deposit" type="number" min="0" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.depositAmount || 0} onChange={e => setQuoteData({...quoteData, depositAmount: Number(e.target.value)})} />
-                  {Number(quoteData.depositAmount) > 0 && (
-                    <p className="text-[11px] text-slate-500 mt-1">כולל מע"מ: ₪{Math.round(Number(quoteData.depositAmount) * 1.18).toLocaleString()}. תנוכה מדרישת התשלום ב-Morning באישור.</p>
-                  )}
+                  <label className="block text-sm font-bold text-slate-700 mb-1">מקדמה ששולמה (₪)</label>
+                  <input data-testid="quote-deposit" type="number" min="0" step="0.01" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.depositInput || 0} onChange={e => setQuoteData({...quoteData, depositInput: Number(e.target.value)})} />
+                  <label className="flex items-center gap-2 mt-2 text-sm text-slate-700 cursor-pointer">
+                    <input data-testid="quote-deposit-incl-vat" type="checkbox" checked={quoteData.depositInclVat !== false} onChange={e => setQuoteData({...quoteData, depositInclVat: e.target.checked})} />
+                    הסכום כולל מע"מ (כמו בקבלה)
+                  </label>
+                  {(() => { const d = depositParts(quoteData); return d.input > 0 ? (
+                    <p data-testid="quote-deposit-breakdown" className="text-[11px] text-slate-500 mt-1">לפני מע"מ: ₪{fmtMoney(d.preVat)} · כולל מע"מ: ₪{fmtMoney(d.withVat)}. ינוכה מדרישת התשלום ב-Morning באישור.</p>
+                  ) : null; })()}
                 </div>
 
                 <div>
