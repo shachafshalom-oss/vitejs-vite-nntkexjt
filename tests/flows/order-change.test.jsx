@@ -130,7 +130,7 @@ T.setNav('sales', 'quotes');
   T.check(T.docs('crm_customers').C1.status === 'active' && T.docs('crm_customers').C1.previousStatusBeforeActive === 'lead' && NQa.previousCustomerStatus === 'lead', 'הסטטוס הקודם של הלקוח נדרס ב"פעיל"');
   T.check(morningCalls.length === 1, `צפוי מסמך Morning אחד, נשלחו ${morningCalls.length}`);
   const inc = morningCalls[0]?.income || [];
-  T.check(inc.some(r => r.description.includes('מקדמה') && r.price === -2000 && r.vatType === 1) && inc.filter(r => r.description.includes('Prime')).length === 2 && inc.some(r => r.description === 'הובלה' && r.price === 400), `שורות Morning שגויות: ${JSON.stringify(inc)}`);
+  T.check(inc.some(r => r.description.includes('מקדמה') && r.price === -1694.92 && r.vatType === undefined) && inc.filter(r => r.description.includes('Prime')).length === 2 && inc.some(r => r.description === 'הובלה' && r.price === 400), `שורות Morning שגויות: ${JSON.stringify(inc)}`);
   T.check(T.ui.alerts.slice(alertsBefore4).some(a => a.includes('לבטל ידנית') && a.includes('https://morning.test/old-QA')), 'לא הוזכר לבטל ב-Morning את דרישת התשלום הקודמת');
 
   T.describe('5. ההזמנה שהוחלפה — היסטוריה בלבד');

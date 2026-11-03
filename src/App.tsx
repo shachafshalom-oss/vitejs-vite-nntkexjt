@@ -5060,9 +5060,8 @@ export default function App() {
   // מסלול הצעות המחיר — בונה את שורות ה-income בדיוק כפי שהיה קודם, ומעביר לליבה.
   // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט.
   // deposit: מקדמה שכבר שולמה — יורדת כשורה שלילית, כמו במסלול פרויקטי הקוסטום.
-  // מקדמה שהוזנה כולל מע"מ נשלחת כמו שהיא עם vatType=1 ברמת השורה (INCLUDED: המחיר כולל מע"מ),
-  // כך שהניכוי ב-Morning שווה בדיוק לסכום שבקבלה ולא תלוי בעיגול. מקור: שדה income.vatType
-  // (Default/Included/Exempt = 0/1/2). מקדמה לפני מע"מ נשלחת כרגיל (vatType ברירת מחדל).
+  // כל השורות במסמך הן לפני מע"מ ו-Morning מוסיף מע"מ על הסך, ולכן גם המקדמה נשלחת לפני מע"מ
+  // (החלטת שחף 3.11.2026): מקדמה של 6,000 כולל מע"מ (שעליה כבר יצאה חשבונית) יורדת כ-5,084.75.
   const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any, deposit?: { input: number; inclVat: boolean; preVat: number }): Promise<{url: string|null, error: string|null}> => {
     const income: any[] = quoteItems.map((item: any) => ({
       description: `עמדת נירוסטה דגם ${item.model}`,
@@ -5073,9 +5072,7 @@ export default function App() {
       income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
     }
     if (deposit && deposit.input > 0) {
-      income.push(deposit.inclVat
-        ? { description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -deposit.input, vatType: 1 }
-        : { description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -deposit.preVat });
+      income.push({ description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -deposit.preVat });
     }
     return sendMorningDocument(income, customer);
   };
