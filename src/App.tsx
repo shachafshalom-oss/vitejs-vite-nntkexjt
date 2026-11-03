@@ -8,7 +8,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs, getDoc, runTransaction, deleteField, FieldPath, query, where, arrayUnion } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Instagram, Globe, Truck, PackageCheck, Clock, History, PencilRuler } from 'lucide-react';
+import { Plus, Edit, Trash2, Send, Package, TrendingUp, DollarSign, Activity, X, Ship, Megaphone, Settings, Layers, ChevronDown, ChevronUp, AlertTriangle, Sparkles, LogOut, Lock, ShoppingCart, PlusCircle, Users, Phone, MapPin, Mail, User, UserPlus, ShieldCheck, ShieldAlert, FileText, Download, Image as ImageIcon, CheckCircle, Eye, MessageSquare, CalendarDays, CalendarPlus, ChevronLeft, GitMerge, Wallet, Banknote, TrendingDown, Receipt, Building2, ArrowUpRight, ArrowDownRight, BarChart2, ExternalLink, Upload, Bell, BellOff, Facebook, Instagram, Globe, Truck, PackageCheck, Clock, History, PencilRuler, ArrowLeftRight } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 // @ts-ignore — ל-bidi-js אין קובץ טיפוסים משלו; זה תקין, לא משפיע על ריצה
@@ -608,7 +608,10 @@ const QUOTE_STATUS_MAP: Record<string, string> = {
   'approved': 'מאושרת (מלאי נגרע)', 
   'approved_no_stock': 'מאושרת (ללא גריעת מלאי)',
   'approved_test': 'מאושרת (בדיקה בלבד)',
-  'rejected': 'נדחתה' 
+  'rejected': 'נדחתה',
+  // 'replaced' — ההזמנה שונתה: הצעה חדשה אושרה במקומה (replacedByQuoteId). נקבע רק באישור של
+  // הצעת השינוי, לא ידנית. לא נספרת כהפסד — הלקוח לא דחה, הוא שינה הזמנה.
+  'replaced': 'הוחלפה (שינוי הזמנה)'
 };
 
 const AGENTS = [
@@ -1304,6 +1307,7 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
   const totalDiscount = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.discount || 0) * Number(item.qty)), 0) || 0;
   const listTotal = quote?.items?.reduce((sum: number, item: any) => sum + (Number(item.listPrice ?? item.price ?? 0) * Number(item.qty)), 0) || 0;
   const grandTotal = itemsTotal + Number(quote?.shippingCost || 0);
+  const depositAmount = Math.round(Number(quote?.depositAmount) || 0); // ₪ לפני מע"מ
 
   // חודשי אחריות בפועל על ההזמנה. 0 (או ריק) = אין אחריות כלל, רלוונטי אך ורק למוצרי מדף קיימים במלאי -
   // הזמנה אישית/קסטום תמיד כוללת אחריות, ולכן במצב הזה גם סעיפי האחריות למוצרי מדף/מוגבלת לא רלוונטיים.
@@ -1440,6 +1444,21 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '15px' }}>
               <span>סה"כ כולל מע"מ (18%):</span><span>{(grandTotal * 1.18).toLocaleString()} ₪</span>
             </div>
+            {depositAmount > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', color: '#555' }}>
+                  <span>בניכוי מקדמה ששולמה (כולל מע"מ):</span><span>−{Math.round(depositAmount * 1.18).toLocaleString()} ₪</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '15px', color: '#7B1315' }}>
+                  <span>יתרה לתשלום כולל מע"מ:</span><span>{Math.round((grandTotal - depositAmount) * 1.18).toLocaleString()} ₪</span>
+                </div>
+              </>
+            )}
+            {quote?.replacesQuoteDate && (
+              <div style={{ marginTop: '8px', fontSize: '12px', color: '#555' }}>
+                הצעה זו מחליפה את ההזמנה מתאריך {new Date(quote.replacesQuoteDate).toLocaleDateString('he-IL')}.
+              </div>
+            )}
         </div>
         {/* פרטי תשלום */}
         <div style={{ marginTop: '14px', background: 'rgba(255,255,255,0.85)', border: '1px solid #7B1315', borderRadius: '6px', padding: '12px 14px', fontSize: '12.5px' }}>
@@ -4625,6 +4644,59 @@ export default function App() {
     } catch (err) { console.error(err); }
   };
 
+  // מחיקת הצעת מחיר. הצעה מאושרת עם גריעת מלאי (או הצעה שהוחלפה בשינוי הזמנה) לא נמחקת:
+  // מחיקה הייתה משאירה את היחידות "נמכרו" ללקוח בלי הצעה, ואת ההובלה בלי מקור.
+  // הבדיקה נעשית מול השרת בתוך טרנזקציה — כדי שאישור שנעשה ממכשיר אחר בזמן שהחלון פתוח ייתפס.
+  const deleteQuoteHandler = async (q: any) => {
+    const blockedMsg = (s: any) => s?.status === 'replaced'
+      ? 'ההצעה הזו הוחלפה בשינוי הזמנה ונשמרת כהיסטוריה. אי אפשר למחוק אותה.'
+      : 'אי אפשר למחוק הצעה שאושרה עם גריעת מלאי — היחידות היו נשארות "נמכרו" ללקוח בלי הצעה.\nבטל קודם את האישור (שנה סטטוס), היחידות יחזרו למלאי, ואז אפשר למחוק.';
+    const isBlocked = (s: any) => s?.status === 'approved' || s?.status === 'replaced' || (Array.isArray(s?.approvedItemIds) && s.approvedItemIds.length > 0);
+    if (isBlocked(q)) { alert(blockedMsg(q)); return; }
+    if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול.")) return;
+    try {
+      const ref = doc(db, 'crm_quotes', q.id);
+      const outcome: any = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return { kind: 'gone' };
+        const s: any = snap.data();
+        if (isBlocked(s)) return { kind: 'blocked', s };
+        tx.delete(ref);
+        return { kind: 'ok' };
+      });
+      if (outcome.kind === 'blocked') alert(blockedMsg(outcome.s));
+    } catch (err) { alert('שגיאה במחיקת ההצעה. לא בוצע שינוי.'); }
+  };
+
+  // שינוי הזמנה מאושרת (למשל Prime במקום Night). פותח את מחולל ההצעות עם עותק של ההזמנה.
+  // שום דבר לא זז במלאי בשלב הזה: נוצרת הצעה חדשה "ממתינה" שמסומנת replacesQuoteId.
+  // ההחלפה עצמה (שחרור יחידות, גריעה, הובלה, סימון "הוחלפה") קורית רק באישור ההצעה החדשה,
+  // בטרנזקציה אחת ב-executeQuoteApproval. עד אז ההזמנה המקורית נשארת בתוקף.
+  const startOrderChange = (q: any) => {
+    const dels = customerDeliveries.filter((d: any) => d.quoteId === q.id);
+    const delivered = dels.find((d: any) => d.deliveryStatus === 'delivered');
+    if (delivered) { alert('ההזמנה כבר נמסרה ללקוח. שינוי אחרי מסירה הוא החזרת מוצר ומטופל ידנית.'); return; }
+    const noted = dels.find((d: any) => Number(d.deliveryNoteNumber) > 0);
+    if (noted) { alert(`כבר הונפקה להזמנה תעודת משלוח מספר ${formatDeliveryNoteNumber(noted.deliveryNoteNumber)}.\nתעודה ממוספרת היא מסמך רשמי ולא נמחקת, ולכן אי אפשר לשנות את ההזמנה מכאן.`); return; }
+    const draft = quotes.find((x: any) => x.replacesQuoteId === q.id && (x.status || 'pending') === 'pending');
+    if (draft) {
+      alert(`כבר קיימת טיוטת שינוי להזמנה הזו (מ-${new Date(draft.date).toLocaleDateString('he-IL')}), בסטטוס "ממתינה".\nכשהלקוח מאשר — אשר אותה. כדי להתחיל שינוי אחר — מחק אותה קודם.`);
+      return;
+    }
+    setQuoteData({
+      customerId: q.customerId,
+      items: (q.items || []).map((it: any) => ({ ...it })),
+      shippingCost: Number(q.shippingCost) || 0,
+      date: todayStr,
+      campaignId: q.campaignId || '',
+      warrantyMonths: Number(q.warrantyMonths) || 0,
+      depositAmount: Number(q.depositAmount) || 0,
+      replacesQuoteId: q.id,
+      replacesQuoteDate: q.date, // לתצוגה במחולל וב-PDF בלבד, לא נשמר
+    });
+    setIsQuoteModalOpen(true);
+  };
+
   const handleResetSystem = async () => {
     const userConfirm = window.prompt("אזהרה קריטית! 🛑\nפעולה זו תמחק את *כל* המשלוחים, הפריטים, הקמפיינים וההוצאות.\nלהמשך, הקלד את המילה 'מחק':");
     if (userConfirm !== 'מחק') return;
@@ -4967,7 +5039,8 @@ export default function App() {
 
   // מסלול הצעות המחיר — בונה את שורות ה-income בדיוק כפי שהיה קודם, ומעביר לליבה.
   // שדה השורות ב-Morning נקרא "income" (לא "items" כמו ב-Finbot), ומבנה השדות שונה במעט.
-  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any): Promise<{url: string|null, error: string|null}> => {
+  // depositAmount (₪ לפני מע"מ): מקדמה שכבר שולמה — יורדת כשורה שלילית, כמו במסלול פרויקטי הקוסטום.
+  const sendToMorning = async (quoteItems: any[], shippingCost: number, customer: any, depositAmount = 0): Promise<{url: string|null, error: string|null}> => {
     const income = quoteItems.map((item: any) => ({
       description: `עמדת נירוסטה דגם ${item.model}`,
       quantity: Number(item.qty),
@@ -4975,6 +5048,9 @@ export default function App() {
     }));
     if (Number(shippingCost) > 0) {
       income.push({ description: 'הובלה', quantity: 1, price: Number(shippingCost) });
+    }
+    if (Math.round(Number(depositAmount) || 0) > 0) {
+      income.push({ description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -Math.round(Number(depositAmount)) });
     }
     return sendMorningDocument(income, customer);
   };
@@ -5373,6 +5449,11 @@ export default function App() {
     }
     
     const currentCustomer = customers.find(c => c.id === quoteData.customerId) || {};
+    // מקדמה (₪ לפני מע"מ, כמו כל השורות) — לא שלילית ולא מעבר לסכום ההזמנה
+    const depositAmount = Math.round(Number(quoteData.depositAmount) || 0);
+    const orderTotal = (quoteData.items || []).reduce((sum: number, it: any) => sum + getEffectivePrice(it) * Number(it.qty), 0) + Number(quoteData.shippingCost || 0);
+    if (depositAmount < 0) { alert('סכום המקדמה לא יכול להיות שלילי.'); return; }
+    if (depositAmount > orderTotal) { alert('סכום המקדמה גבוה מסכום ההזמנה. בדוק את הסכום (לפני מע"מ).'); return; }
     setIsGeneratingPDF(true);
     try {
       const quotePayload = {
@@ -5383,6 +5464,9 @@ export default function App() {
         shippingCost: quoteData.shippingCost,
         warrantyMonths: Number(quoteData.warrantyMonths) || 0,
         campaignId: quoteData.campaignId || '',
+        depositAmount,
+        // שינוי הזמנה: ההצעה המאושרת שזו באה להחליף. ההחלפה מתבצעת רק באישור.
+        ...(quoteData.replacesQuoteId ? { replacesQuoteId: quoteData.replacesQuoteId } : {}),
         status: 'pending', 
         createdAt: new Date().toISOString()
       };
@@ -5468,6 +5552,9 @@ export default function App() {
   };
 
   const handleQuoteStatusChange = async (quote: any, newStatus: string) => {
+    // הצעה שהוחלפה בשינוי הזמנה היא היסטוריה — היחידות שלה כבר עברו להצעה החדשה.
+    if (quote.status === 'replaced') { alert('ההצעה הוחלפה בשינוי הזמנה ונשמרת כהיסטוריה. כל שינוי נעשה בהצעה החדשה.'); return; }
+    if (newStatus === 'replaced') return; // נקבע רק באישור הצעת השינוי
     // נתיב 0: אישור בדיקה בלבד — לא נוגע במלאי (crm_items) ולא בלקוח (crm_customers).
     // רק שולח קריאה ל-Morning (עם קידומת [TEST] לשם הלקוח) ומעדכן את סטטוס ההצעה עצמה.
     // מקדים במפורש את נתיב 1/2 כדי שלעולם לא ייכנס בטעות ללוגיקת האישור/ביטול המלאה.
@@ -5490,7 +5577,8 @@ export default function App() {
         const { url: invoiceUrl, error: morningErr } = await sendToMorning(
           testItems,
           Number(quote.shippingCost) || 0,
-          testCustomer
+          testCustomer,
+          Number(quote.depositAmount) || 0
         );
 
         if (invoiceUrl) {
@@ -5532,15 +5620,37 @@ export default function App() {
       // ערכי ברירת מחדל להובלה ללקוח. העיר נמשכת מכרטיס הלקוח (שדה city הייעודי) וניתנת
       // לעריכה — הובלה לאולם אירועים או לאתר אחר היא מצב אמיתי ולא חריג.
       const approvalCustomer = customers.find(c => c.id === quote.customerId);
+      // שינוי הזמנה: ההזמנה המקורית צריכה להיות עדיין מאושרת ולא נמסרה. אם היא כבר לא מאושרת
+      // (בוטלה בינתיים) — זו פשוט הצעה רגילה. אם הוחלפה כבר בהצעה אחרת — עוצרים.
+      const original = quote.replacesQuoteId ? quotes.find((x: any) => x.id === quote.replacesQuoteId) : null;
+      if (original?.status === 'replaced') {
+        alert('ההזמנה המקורית כבר הוחלפה בהצעה אחרת. אי אפשר להחליף אותה פעם שנייה — בדוק את ההצעות של הלקוח.');
+        return;
+      }
+      const swapping = original?.status === 'approved';
+      const originalDelivery = swapping ? customerDeliveries.find((d: any) => d.quoteId === original.id) : null;
+      if (originalDelivery?.deliveryStatus === 'delivered') {
+        alert('ההזמנה המקורית כבר נמסרה ללקוח. שינוי אחרי מסירה הוא החזרת מוצר ומטופל ידנית.');
+        return;
+      }
+      if (Number(originalDelivery?.deliveryNoteNumber) > 0) {
+        alert(`כבר הונפקה להזמנה המקורית תעודת משלוח מספר ${formatDeliveryNoteNumber(originalDelivery.deliveryNoteNumber)}, ולכן אי אפשר להחליף אותה מכאן.`);
+        return;
+      }
       setQuoteApprovalData({
         quoteId: quote.id,
         customerId: quote.customerId,
         itemsToProcess,
         shippingCost: Number(quote.shippingCost) || 0,
-        deliveryMethod: 'delivery',
-        shippingTiming: 'immediate',
-        shippingDate: '',
-        deliveryCity: approvalCustomer?.city || '',
+        depositAmount: Number(quote.depositAmount) || 0,
+        replacesQuoteId: swapping ? original.id : '',
+        replacesQuoteDate: swapping ? original.date : '',
+        replacesMorningUrl: swapping ? (original.morningInvoiceUrl || '') : '',
+        // בשינוי הזמנה — פרטי ההובלה נלקחים מההזמנה המקורית (עיר, מועד, אופן מסירה)
+        deliveryMethod: originalDelivery?.deliveryMethod || 'delivery',
+        shippingTiming: originalDelivery?.shippingTiming || 'immediate',
+        shippingDate: originalDelivery?.shippingDate || '',
+        deliveryCity: originalDelivery?.deliveryCity || approvalCustomer?.city || '',
         deliveryCost: Number(quote.shippingCost) || 0,
       });
       setIsQuoteApprovalModalOpen(true);
@@ -5916,19 +6026,27 @@ export default function App() {
       try {
         const nowIso = new Date().toISOString();
         const updatesToMake: { id: string; data: any }[] = [];
+        // שינוי הזמנה: היחידות של ההזמנה המקורית זמינות לגריעה מחדש (ועדיפות להן — אותה יחידה
+        // פיזית נשארת בהזמנה). מה שלא נדרש יותר חוזר למלאי בתוך אותה טרנזקציה.
+        const replacesId: string = quoteApprovalData.replacesQuoteId || '';
+        const originalLocal: any = replacesId ? quotes.find((x: any) => x.id === replacesId) : null;
+        const reusable = new Set<string>(originalLocal?.status === 'approved' && Array.isArray(originalLocal.approvedItemIds) ? originalLocal.approvedItemIds : []);
+        const isFreeForThis = (i: any) => i.status === 'in_warehouse' || (reusable.has(i.id) && i.status === 'sold' && i.customerId === originalLocal?.customerId);
         // יחידות שכבר שובצו באישור הזה. בלי זה, שתי שורות מאותו דגם בחרו את אותה יחידה (SALES-2).
         const taken = new Set<string>();
         for (const line of quoteApprovalData.itemsToProcess) {
             // התאמה לפי מזהה דגם קבוע (עם נפילה-לאחור לשם עבור נתונים שטרם עברו מיגרציה).
             // זה הלב של התיקון: שינוי שם דגם כבר לא מנתק פריטי מלאי מהצעת המחיר.
-            const availableItems = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse' && !taken.has(i.id));
+            const availableItems = items
+              .filter(i => isSameModel(i, line, settings.models) && isFreeForThis(i) && !taken.has(i.id))
+              .sort((a: any, b: any) => Number(reusable.has(b.id)) - Number(reusable.has(a.id)));
             const qty = Number(line.qty) || 0;
             if (availableItems.length < qty) {
                 // ההודעה מתייחסת לכל השורות מאותו דגם בהצעה — זה מה שהמשתמש צריך לתקן
                 const totalNeeded = quoteApprovalData.itemsToProcess
                   .filter((l: any) => isSameModel(l, line, settings.models))
                   .reduce((s: number, l: any) => s + (Number(l.qty) || 0), 0);
-                const totalFree = items.filter(i => isSameModel(i, line, settings.models) && i.status === 'in_warehouse').length;
+                const totalFree = items.filter(i => isSameModel(i, line, settings.models) && isFreeForThis(i)).length;
                 throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${totalNeeded}, פנוי: ${totalFree})`);
             }
             for (let i = 0; i < qty; i++) {
@@ -5960,6 +6078,15 @@ export default function App() {
         const billedShippingCost = quoteApprovalData.deliveryMethod === 'pickup' ? 0 : (Number(quoteApprovalData.shippingCost) || 0);
         const isPickup = quoteApprovalData.deliveryMethod === 'pickup';
         const deliveryCity = (quoteApprovalData.deliveryCity || '').trim();
+        const depositAmount = Math.round(Number(quoteApprovalData.depositAmount) || 0);
+        const billedTotal = quoteApprovalData.itemsToProcess.reduce((s: number, l: any) => s + (Number(l.salePrice) || 0) * (Number(l.qty) || 0), 0) + billedShippingCost;
+        if (depositAmount > billedTotal) {
+          throw new Error(`המקדמה (₪${depositAmount.toLocaleString()} לפני מע"מ) גבוהה מסכום ההזמנה לחיוב (₪${billedTotal.toLocaleString()}). תקן את ההצעה לפני האישור.`);
+        }
+        // הובלות של ההזמנה המקורית — נקראות שוב בתוך הטרנזקציה (כדי לתפוס מסירה ממכשיר אחר)
+        const originalDeliveryIds: string[] = replacesId
+          ? (await getDocs(query(collection(db, 'crm_customer_deliveries'), where('quoteId', '==', replacesId)))).docs.map((d: any) => d.id)
+          : [];
 
         // הכול בטרנזקציה אחת: היחידות, ההצעה, הלקוח וההובלה נשמרים יחד או שלא נשמר כלום.
         // לפני הכתיבה בודקים מול השרת (ולא מול המסך) שהיחידות עדיין פנויות ושההצעה עוד לא אושרה —
@@ -5967,11 +6094,35 @@ export default function App() {
         const quoteRef = doc(db, 'crm_quotes', quoteApprovalData.quoteId);
         const customerRef = doc(db, 'crm_customers', quoteApprovalData.customerId);
         const deliveryRef = doc(collection(db, 'crm_customer_deliveries'));
-        await runTransaction(db, async (tx) => {
+        const swapOutcome: any = await runTransaction(db, async (tx) => {
           const itemSnaps = await Promise.all(approvedItemIds.map(id => tx.get(doc(db, 'crm_items', id))));
           const quoteSnap = await tx.get(quoteRef);
           const customerSnap = await tx.get(customerRef);
-          if (itemSnaps.some(s => !s.exists() || (s.data() as any)?.status !== 'in_warehouse')) {
+
+          // --- שינוי הזמנה: קריאת ההזמנה המקורית, ההובלות והיחידות שלה (כל הקריאות לפני כל כתיבה) ---
+          const origRef = replacesId ? doc(db, 'crm_quotes', replacesId) : null;
+          const origSnap = origRef ? await tx.get(origRef) : null;
+          const orig: any = origSnap?.exists() ? origSnap.data() : null;
+          if (orig?.status === 'replaced') throw new Error('ההזמנה המקורית כבר הוחלפה בהצעה אחרת. האישור לא נשמר.');
+          const swapping = !!orig && orig.status === 'approved';
+          if (swapping && orig.customerId !== quoteApprovalData.customerId) throw new Error('הצעת השינוי שייכת ללקוח אחר מההזמנה המקורית. האישור לא נשמר.');
+          const origItemIds: string[] = swapping && Array.isArray(orig.approvedItemIds) ? orig.approvedItemIds : [];
+          const origDelSnaps = swapping ? await Promise.all(originalDeliveryIds.map(id => tx.get(doc(db, 'crm_customer_deliveries', id)))) : [];
+          const origDels = origDelSnaps.filter(ds => ds.exists()).map(ds => ({ id: ds.id, ...(ds.data() as any) }));
+          if (origDels.some(d => d.deliveryStatus === 'delivered')) throw new Error('ההזמנה המקורית סומנה בינתיים כנמסרה. שינוי אחרי מסירה מטופל ידנית. האישור לא נשמר.');
+          const notedDel = origDels.find(d => Number(d.deliveryNoteNumber) > 0);
+          if (notedDel) throw new Error(`הונפקה בינתיים תעודת משלוח ${formatDeliveryNoteNumber(notedDel.deliveryNoteNumber)} להזמנה המקורית. האישור לא נשמר.`);
+          const releaseIds = origItemIds.filter(id => !approvedItemIds.includes(id));
+          const releaseSnaps = await Promise.all(releaseIds.map(id => tx.get(doc(db, 'crm_items', id))));
+
+          // יחידה כשירה: פנויה במחסן, או (בשינוי הזמנה) יחידה של ההזמנה המקורית שעדיין מכורה לאותו לקוח
+          const reusableOnServer = new Set(origItemIds);
+          if (itemSnaps.some(s => {
+            const d: any = s.exists() ? s.data() : null;
+            if (!d) return true;
+            if (d.status === 'in_warehouse') return false;
+            return !(reusableOnServer.has(s.id) && d.status === 'sold' && d.customerId === orig?.customerId);
+          })) {
             throw new Error('המלאי השתנה בינתיים (יחידה נמכרה או סומנה כתקולה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
           }
           if (!quoteSnap.exists()) throw new Error('הצעת המחיר לא נמצאה (ייתכן שנמחקה). האישור לא נשמר.');
@@ -5981,9 +6132,25 @@ export default function App() {
           }
           if (!customerSnap.exists()) throw new Error('הלקוח לא נמצא (ייתכן שנמחק או מוזג). האישור לא נשמר.');
           const serverCustomer: any = customerSnap.data() || {};
-          // שמירת סטטוס הלקוח לפני האישור — לפי השרת, לא לפי המסך
-          const previousCustomerStatus = serverCustomer.status || 'lead';
+          // שמירת סטטוס הלקוח לפני האישור — לפי השרת, לא לפי המסך.
+          // בשינוי הזמנה הלקוח כבר "פעיל" בגלל ההזמנה המקורית, ולכן הסטטוס שלפניה עובר הלאה —
+          // כך ביטול עתידי של ההזמנה המשונה מחזיר אותו למצב הנכון ולא משאיר אותו "פעיל".
+          const previousCustomerStatus = swapping ? (orig.previousCustomerStatus || 'lead') : (serverCustomer.status || 'lead');
 
+          // שחרור יחידות של ההזמנה המקורית שלא נכללות בהזמנה החדשה — אותו ניקוי כמו בביטול אישור
+          let releasedCount = 0;
+          releaseSnaps.forEach(snap => {
+            const it: any = snap.exists() ? snap.data() : null;
+            if (!it || it.status !== 'sold' || it.customerId !== orig.customerId) return;
+            releasedCount++;
+            tx.update(doc(db, 'crm_items', snap.id), {
+              status: 'in_warehouse',
+              saleDate: null, warrantyMonths: 0, salePrice: 0,
+              addOnPrice: 0, discountAmount: 0, customerId: '', campaignId: '',
+              awaitingDelivery: false, warrantyStartDate: null,
+              updatedAt: nowIso
+            });
+          });
           updatesToMake.forEach(update => tx.update(doc(db, 'crm_items', update.id), update.data));
           tx.update(quoteRef, {
             status: 'approved',
@@ -5993,9 +6160,20 @@ export default function App() {
             previousCustomerStatus: previousCustomerStatus,
             updatedAt: nowIso
           });
+          if (swapping && origRef) {
+            origDels.forEach(d => tx.delete(doc(db, 'crm_customer_deliveries', d.id)));
+            tx.update(origRef, {
+              status: 'replaced',
+              replacedByQuoteId: quoteApprovalData.quoteId,
+              replacedAt: nowIso,
+              approvedItemIdsBeforeReplace: origItemIds, // היסטוריה: מה היה בהזמנה לפני השינוי
+              approvedItemIds: [],
+              updatedAt: nowIso
+            });
+          }
           tx.update(customerRef, {
             status: 'active',
-            previousStatusBeforeActive: previousCustomerStatus,
+            ...(swapping ? {} : { previousStatusBeforeActive: previousCustomerStatus }),
             // שמירת העיר גם בכרטיס הלקוח, אם טרם הוזנה שם — כדי שהיא תישמר לפעם הבאה.
             ...(!isPickup && deliveryCity && !serverCustomer.city ? { city: deliveryCity } : {}),
             updatedAt: nowIso
@@ -6023,9 +6201,15 @@ export default function App() {
             createdBy: user?.email || '',
             updatedAt: nowIso,
           });
+          return { swapped: swapping, releasedCount };
         });
 
         setIsQuoteApprovalModalOpen(false);
+        // שינוי הזמנה: דרישת התשלום הקודמת ב-Morning לא מבוטלת אוטומטית — חובה לבטל ידנית
+        const swapNote = swapOutcome?.swapped
+          ? `\n\nשינוי הזמנה: ההזמנה הקודמת סומנה "הוחלפה"${swapOutcome.releasedCount ? ` ו-${swapOutcome.releasedCount} יחידות חזרו למלאי` : ''}.` +
+            `\n⚠️ ב-Morning יש לבטל ידנית את דרישת התשלום הקודמת${quoteApprovalData.replacesMorningUrl ? `:\n${quoteApprovalData.replacesMorningUrl}` : '.'}`
+          : '';
 
         // --- Morning Integration ---
         if (settings?.morningApiKeyId && settings?.morningApiKeySecret) {
@@ -6033,22 +6217,23 @@ export default function App() {
             const { url: invoiceUrl, error: morningErr } = await sendToMorning(
               quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
               billedShippingCost,
-              customer
+              customer,
+              depositAmount
             );
             if (invoiceUrl) {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.');
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.' + swapNote);
             } else {
               await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: morningErr, morningSentAt: new Date().toISOString() });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
+              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.' + swapNote);
             }
           } catch(err: any) {
             const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Morning.';
             await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: errMsg, morningSentAt: new Date().toISOString() });
-            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.');
+            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.' + swapNote);
           }
         } else {
-          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.');
+          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.' + swapNote);
         }
       } catch (err: any) { alert(err.message || "שגיאה בתהליך אישור ההצעה."); }
       setIsSaving(false);
@@ -6540,6 +6725,7 @@ export default function App() {
                 { val: 'approved_no_stock', label: `אושרו ללא מלאי (${quotes.filter(q=>q.status==='approved_no_stock').length})` },
                 { val: 'approved_test', label: `בדיקות בלבד (${quotes.filter(q=>q.status==='approved_test').length})` },
                 { val: 'rejected', label: `נדחו (${quotes.filter(q=>q.status==='rejected').length})` },
+                { val: 'replaced', label: `הוחלפו (${quotes.filter(q=>q.status==='replaced').length})` },
               ].map(f => (
                 <button
                   key={f.val}
@@ -6576,6 +6762,14 @@ export default function App() {
                         <td className="px-4 py-4 font-bold text-slate-800">{customer.businessName || customer.contactName || customer.name}</td>
                         <td className="px-4 py-4 font-bold text-[#651011]">₪{(grandTotal * 1.18).toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">(כולל מע"מ)</span></td>
                         <td className="px-4 py-4">
+                          {q.status === 'replaced' ? (
+                            // הצעה שהוחלפה היא היסטוריה: אין שינוי סטטוס ידני (אישור מחדש היה גורע מלאי פעמיים)
+                            <div data-testid={`quote-replaced-${q.id}`} className="text-xs">
+                              <span className="inline-block font-bold rounded-md border p-1.5 bg-slate-100 text-slate-600 border-slate-300">הוחלפה (שינוי הזמנה)</span>
+                              {(() => { const r = quotes.find((x: any) => x.id === q.replacedByQuoteId); return r ? <div className="text-[10px] text-slate-500 mt-1">← הוחלפה בהצעה מ-{new Date(r.date).toLocaleDateString('he-IL')}</div> : null; })()}
+                            </div>
+                          ) : (<>
+                          {q.replacesQuoteId && q.status !== 'approved' && (() => { const o = quotes.find((x: any) => x.id === q.replacesQuoteId); return <div data-testid={`quote-change-draft-${q.id}`} className="text-[10px] font-bold text-indigo-700 mb-1">שינוי להזמנה{o ? ` מ-${new Date(o.date).toLocaleDateString('he-IL')}` : ''}</div>; })()}
                           <select data-testid={`quote-status-${q.id}`} 
                             className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800 border-indigo-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
                             value={q.status ? q.status : 'pending'} 
@@ -6587,10 +6781,14 @@ export default function App() {
                             <option value="approved_test">מאושרת (בדיקה בלבד — Morning בלבד)</option>
                             <option value="rejected">נדחתה</option>
                           </select>
+                          </>)}
                         </td>
                         <td className="px-4 py-4 text-left flex items-center justify-end gap-2">
+                          {q.status === 'approved' && (
+                            <button data-testid={`quote-change-${q.id}`} onClick={() => startOrderChange(q)} className="text-slate-400 hover:text-indigo-700 p-1.5" title="שינוי הזמנה"><ArrowLeftRight className="w-5 h-5"/></button>
+                          )}
                           <button onClick={() => { setSelectedQuote({...q, customerInfo: customer}); setIsQuoteOverviewOpen(true); }} className="text-slate-400 hover:text-[#7B1315] p-1.5" title="מבט כולל"><Eye className="w-5 h-5"/></button>
-                          <button onClick={() => deleteDocHandler('crm_quotes', q.id)} className="text-slate-400 hover:text-red-500 p-1.5"><Trash2 className="w-5 h-5"/></button>
+                          <button data-testid={`quote-delete-${q.id}`} onClick={() => deleteQuoteHandler(q)} className="text-slate-400 hover:text-red-500 p-1.5"><Trash2 className="w-5 h-5"/></button>
                         </td>
                       </tr>
                     );
@@ -9506,9 +9704,12 @@ export default function App() {
                   </div>
                   <div className="text-left">
                      <div className="text-3xl font-black text-[#651011] mb-1">₪{Math.round(grandTotal).toLocaleString()}</div>
-                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'}`}>
+                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${selectedQuote.status === 'approved' || selectedQuote.status === 'approved_no_stock' ? 'bg-green-100 text-green-800' : selectedQuote.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800' : selectedQuote.status === 'rejected' ? 'bg-red-100 text-red-800' : selectedQuote.status === 'replaced' ? 'bg-slate-100 text-slate-700' : 'bg-orange-100 text-orange-800'}`}>
                        סטטוס נוכחי: {QUOTE_STATUS_MAP[selectedQuote.status ? selectedQuote.status : 'pending']}
                      </span>
+                     {Number(selectedQuote.depositAmount) > 0 && (
+                       <div className="text-xs text-slate-600 mt-1">מקדמה ששולמה: ₪{Math.round(Number(selectedQuote.depositAmount) * 1.18).toLocaleString()} כולל מע"מ</div>
+                     )}
                   </div>
                 </div>
 
@@ -10389,6 +10590,17 @@ export default function App() {
                 <button onClick={() => setIsQuoteApprovalModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
               </div>
               <form onSubmit={executeQuoteApproval} className="p-6 space-y-6">
+                  {quoteApprovalData.replacesQuoteId && (
+                    <div data-testid="quote-approve-swap-note" className="bg-indigo-50 text-indigo-900 p-4 rounded-lg text-sm border border-indigo-200 leading-relaxed">
+                      <b>שינוי הזמנה.</b> האישור מחליף את ההזמנה המאושרת מ-{quoteApprovalData.replacesQuoteDate ? new Date(quoteApprovalData.replacesQuoteDate).toLocaleDateString('he-IL') : ''}: יחידות שכבר לא בהזמנה יחזרו למלאי, יחידות שנשארות לא יזוזו, ההובלה הקודמת תוחלף בחדשה, וההזמנה הקודמת תסומן "הוחלפה". הכול נשמר יחד או שלא נשמר כלום.
+                      <div className="mt-2 font-bold">אחרי האישור: לבטל ידנית ב-Morning את דרישת התשלום הקודמת.</div>
+                    </div>
+                  )}
+                  {Number(quoteApprovalData.depositAmount) > 0 && (
+                    <div className="bg-slate-50 text-slate-700 p-3 rounded-lg text-sm border border-slate-200">
+                      מקדמה ששולמה: ₪{Math.round(Number(quoteApprovalData.depositAmount)).toLocaleString()} לפני מע"מ (₪{Math.round(Number(quoteApprovalData.depositAmount) * 1.18).toLocaleString()} כולל). תנוכה מדרישת התשלום ב-Morning.
+                    </div>
+                  )}
                   
                   <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm font-medium border border-blue-100">
                       אישור פעולה זו ישנה את הסטטוס של הצעת המחיר ל"אושרה", ויגרום לגריעה אוטומטית של הפריטים הבאים מהמלאי הפנוי ("במחסן") לסטטוס "נמכר ללקוח".
@@ -10545,6 +10757,14 @@ export default function App() {
                       <Plus className="w-3 h-3"/> הוסף לקוח
                     </button>
                   </div>
+                  {quoteData.replacesQuoteId ? (
+                    <div data-testid="quote-change-banner" className="text-sm">
+                      <div className="font-bold text-slate-800">{currentCustomer.businessName || currentCustomer.contactName || ''}</div>
+                      <div className="text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded p-2 mt-2 leading-relaxed">
+                        שינוי הזמנה מ-{quoteData.replacesQuoteDate ? new Date(quoteData.replacesQuoteDate).toLocaleDateString('he-IL') : ''}. ההצעה החדשה נשמרת כ"ממתינה" והמלאי לא משתנה. רק כשתאשר אותה: יחידות שכבר לא בהזמנה יחזרו למלאי, החדשות ייגרעו, וההזמנה הקודמת תסומן "הוחלפה".
+                      </div>
+                    </div>
+                  ) : (
                   <CustomerCombobox
                     customers={customers}
                     value={quoteData.customerId || ''}
@@ -10562,6 +10782,7 @@ export default function App() {
                       setIsCustomerModalOpen(true);
                     }}
                   />
+                  )}
                 </div>
 
                 <div className="space-y-4 border-b border-slate-200 pb-4">
@@ -10614,6 +10835,14 @@ export default function App() {
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-1">עלות משלוח כוללת (₪ לפני מע"מ)</label>
                   <input type="number" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.shippingCost || 0} onChange={e => setQuoteData({...quoteData, shippingCost: Number(e.target.value)})} />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">מקדמה ששולמה (₪ לפני מע"מ)</label>
+                  <input data-testid="quote-deposit" type="number" min="0" className="w-full border-slate-300 rounded p-2.5 font-bold" value={quoteData.depositAmount || 0} onChange={e => setQuoteData({...quoteData, depositAmount: Number(e.target.value)})} />
+                  {Number(quoteData.depositAmount) > 0 && (
+                    <p className="text-[11px] text-slate-500 mt-1">כולל מע"מ: ₪{Math.round(Number(quoteData.depositAmount) * 1.18).toLocaleString()}. תנוכה מדרישת התשלום ב-Morning באישור.</p>
+                  )}
                 </div>
 
                 <div>
