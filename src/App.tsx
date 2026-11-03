@@ -1889,6 +1889,8 @@ export default function App() {
   const [newNoteText, setNewNoteText] = useState('');
   const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false);
   const [editingData, setEditingData] = useState<any>(null);
+  // "דגם חדש" מתוך שורת משלוח: idx = השורה שתקבל את הדגם אחרי ההקמה
+  const [quickModel, setQuickModel] = useState<{ idx: number; name: string; listPrice: number; cbm: number } | null>(null);
   const [customerEditingData, setCustomerEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   // חלון "סמן כתקול" — נטרול סופי של יחידה מהמלאי
@@ -3512,6 +3514,60 @@ export default function App() {
     setQuickImportText('');
   };
 
+  // --- מכירה ממשלוח בדרך ---
+  // יחידה כשירה למכירה: במחסן, או במשלוח "בדרך לארץ" (החלטת שחף 3.11.2026 — לא "בייצור בסין").
+  // סדר עדיפות: מחסן קודם, ואז בדרך — כדי לא להבטיח סחורה שבים כשיש על המדף.
+  const SELLABLE_STATUSES = ['in_warehouse', 'in_transit'];
+  const sellRank = (status: string) => (status === 'in_warehouse' ? 0 : 1);
+  // לאן חוזרת יחידה שהמכירה שלה בוטלה: לסטטוס של המשלוח שלה. רכש מקומי / בלי משלוח — למחסן.
+  // לפני התיקון ביטול החזיר כל יחידה ל"במחסן", ויחידה שעוד בים הופיעה כזמינה למסירה מיידית.
+  const returnStatusFor = (it: any, shipmentStatus?: string) => {
+    if (!it?.shipmentId || it?.source === 'local') return { status: 'in_warehouse' };
+    const st = ['ordered', 'in_transit', 'in_warehouse'].includes(String(shipmentStatus)) ? String(shipmentStatus) : 'in_warehouse';
+    return st === 'in_warehouse' ? { status: st } : { status: st, arrivalDate: null };
+  };
+  // הובלה שיש בה יחידה ממשלוח שעוד לא הגיע: אי אפשר להנפיק לה תעודה או לסמן מסירה
+  const pendingShipmentsForDelivery = (d: any): any[] => {
+    const ids: string[] = Array.isArray(d?.itemIds) ? d.itemIds : [];
+    const pending: Record<string, any> = {};
+    ids.forEach(id => {
+      const it = items.find((x: any) => x.id === id);
+      if (!it || !it.shipmentId || it.source === 'local') return;
+      const sh = shipments.find((x: any) => x.id === it.shipmentId);
+      if (sh && sh.status !== 'in_warehouse') pending[sh.id] = sh;
+    });
+    return Object.values(pending);
+  };
+
+  // בחירת היחידות לאישור הצעה — משמשת גם את חלון האישור (תצוגה) וגם את האישור עצמו, כדי שמה
+  // שמוצג הוא בדיוק מה שנגרע. replacesId: שינוי הזמנה — יחידות ההזמנה המקורית זמינות ומועדפות.
+  const pickUnitsForApproval = (lines: any[], replacesId = '') => {
+    const original: any = replacesId ? quotes.find((x: any) => x.id === replacesId) : null;
+    const reusable = new Set<string>(original?.status === 'approved' && Array.isArray(original.approvedItemIds) ? original.approvedItemIds : []);
+    const isFree = (i: any) => SELLABLE_STATUSES.includes(i.status) || (reusable.has(i.id) && i.status === 'sold' && i.customerId === original?.customerId);
+    // יחידות שכבר שובצו באישור הזה. בלי זה, שתי שורות מאותו דגם בחרו את אותה יחידה (SALES-2).
+    const taken = new Set<string>();
+    const picks: { line: any; units: any[] }[] = [];
+    for (const line of lines || []) {
+      // התאמה לפי מזהה דגם קבוע (עם נפילה-לאחור לשם עבור נתונים שטרם עברו מיגרציה).
+      const available = items
+        .filter((i: any) => isSameModel(i, line, settings.models) && isFree(i) && !taken.has(i.id))
+        // עדיפות: יחידה שכבר בהזמנה (שינוי הזמנה) ← במחסן ← בדרך לארץ
+        .sort((a: any, b: any) => (Number(reusable.has(b.id)) - Number(reusable.has(a.id))) || (sellRank(a.status) - sellRank(b.status)));
+      const qty = Number(line.qty) || 0;
+      if (available.length < qty) {
+        // ההודעה מתייחסת לכל השורות מאותו דגם בהצעה — זה מה שהמשתמש צריך לתקן
+        const needed = (lines || []).filter((l: any) => isSameModel(l, line, settings.models)).reduce((s: number, l: any) => s + (Number(l.qty) || 0), 0);
+        const free = items.filter((i: any) => isSameModel(i, line, settings.models) && isFree(i)).length;
+        return { picks, shortage: { model: line.model, needed, free } };
+      }
+      const units = available.slice(0, qty);
+      units.forEach((u: any) => taken.add(u.id));
+      picks.push({ line, units });
+    }
+    return { picks, shortage: null as null | { model: string; needed: number; free: number } };
+  };
+
   const confirmShipmentStatusUpdate = async (shipment: any, newStatus: string, arrivalDate: string | null) => {
     setIsSaving(true);
     try {
@@ -4649,6 +4705,16 @@ export default function App() {
   };
 
   const deleteDocHandler = async (collectionName: string, id: string) => {
+    // משלוח/רכש מקומי שיש בו יחידות שנמכרו או נוטרלו לא נמחק: המחיקה מוחקת את כל היחידות שלו,
+    // כולל יחידות שכבר שייכות ללקוח (ועם מכירה ממשלוח בדרך — גם יחידות שעוד לא הגיעו).
+    if (collectionName === 'crm_shipments' || collectionName === 'crm_local_purchases') {
+      const key = collectionName === 'crm_shipments' ? 'shipmentId' : 'localPurchaseId';
+      const locked = items.filter((i: any) => i[key] === id && (i.status === 'sold' || i.status === 'defective'));
+      if (locked.length) {
+        alert(`אי אפשר למחוק: ${locked.length} יחידות כבר נמכרו או נוטרלו, והמחיקה הייתה מוחקת גם אותן.\nבטל קודם את המכירות (או ערוך את הכמויות), ואז מחק.`);
+        return;
+      }
+    }
     if (!window.confirm("בטוח שברצונך למחוק? הפעולה אינה ניתנת לביטול.")) return;
     try { 
       await deleteDoc(doc(db, collectionName, id)); 
@@ -5684,7 +5750,7 @@ export default function App() {
 
     // נתיב 2: Reverse — מ-approved (עם גריעה) לכל סטטוס אחר
     if (quote.status === 'approved') {
-      if (!window.confirm(`ביטול האישור יחזיר את כל הפריטים למלאי והלקוח יחזור לסטטוסו הקודם.\nהאם להמשיך?`)) return;
+      if (!window.confirm(`ביטול האישור יחזיר את כל הפריטים למלאי (יחידה ממשלוח שעוד בדרך — ל"בדרך") והלקוח יחזור לסטטוסו הקודם.\nהאם להמשיך?`)) return;
       setIsSaving(true);
       try {
         // הזמנה שכבר נמסרה, או שהונפקה לה תעודת משלוח ממוספרת, לא מבטלים מכאן (SALES-6):
@@ -5702,6 +5768,11 @@ export default function App() {
           if (!q || q.status !== 'approved') return { kind: 'changed' };
           const itemIds: string[] = Array.isArray(q.approvedItemIds) ? q.approvedItemIds : [];
           const itemSnaps = await Promise.all(itemIds.map(id => tx.get(doc(db, 'crm_items', id))));
+          // סטטוס המשלוח של כל יחידה — לפי השרת. יחידה ממשלוח שעוד בדרך חוזרת ל"בדרך", לא למחסן.
+          const shipIds = Array.from(new Set(itemSnaps.map(sn => (sn.exists() ? (sn.data() as any)?.shipmentId : '') || '').filter(Boolean))) as string[];
+          const shipSnaps = await Promise.all(shipIds.map(id => tx.get(doc(db, 'crm_shipments', id))));
+          const shipStatus: Record<string, string> = {};
+          shipSnaps.forEach(sn => { if (sn.exists()) shipStatus[sn.id] = (sn.data() as any)?.status || ''; });
           const customerRef = q.customerId ? doc(db, 'crm_customers', q.customerId) : null;
           const customerSnap = customerRef ? await tx.get(customerRef) : null;
 
@@ -5717,7 +5788,7 @@ export default function App() {
             const it: any = snap.exists() ? snap.data() : null;
             if (!it || it.status !== 'sold' || it.customerId !== q.customerId) { skipped++; return; }
             tx.update(doc(db, 'crm_items', snap.id), {
-              status: 'in_warehouse',
+              ...returnStatusFor(it, shipStatus[it.shipmentId]),
               saleDate: null, warrantyMonths: 0, salePrice: 0,
               // גם ההנחה מהמכירה שבוטלה מתאפסת — אחרת היא נגררת למכירה הבאה של היחידה (SALES-7)
               addOnPrice: 0, discountAmount: 0, customerId: '', campaignId: '',
@@ -5789,6 +5860,11 @@ export default function App() {
   // זו הנקודה היחידה במערכת שמתחילה את ספירת האחריות. עד לרגע הזה הפריט מסומן
   // awaitingDelivery ואין לו warrantyStartDate, ולכן מוצג כ"אחריות טרם החלה".
   const confirmDeliveryArrival = async (delivery: any) => {
+    const waiting = pendingShipmentsForDelivery(delivery);
+    if (waiting.length) {
+      alert(`היחידות של ההזמנה עוד לא הגיעו: ${waiting.map((x: any) => x.name || 'משלוח').join(', ')}.\nסמן קודם את המשלוח כ"הגיע למחסן".`);
+      return;
+    }
     const isPickup = delivery.deliveryMethod === 'pickup';
     const actionLabel = isPickup ? 'נאסף על ידי הלקוח' : 'הגיע ללקוח';
     if (!window.confirm(`לסמן שההזמנה של ${resolveDeliveryParty(delivery).name || 'הלקוח'} ${actionLabel}?\nפעולה זו תתחיל את ספירת האחריות על כל הפריטים בהזמנה.`)) return;
@@ -5988,6 +6064,14 @@ export default function App() {
 
   const handleGenerateDeliveryNote = async (delivery: any) => {
     if (generatingDeliveryNoteId) return;
+    // תעודה ראשונה רק אחרי שהסחורה הגיעה. הורדה חוזרת של תעודה קיימת — תמיד מותרת.
+    if (!delivery.deliveryNoteNumber) {
+      const waiting = pendingShipmentsForDelivery(delivery);
+      if (waiting.length) {
+        alert(`היחידות של ההזמנה עוד לא הגיעו: ${waiting.map((x: any) => x.name || 'משלוח').join(', ')}.\nסמן קודם את המשלוח כ"הגיע למחסן".`);
+        return;
+      }
+    }
     if (!customers.find((c: any) => c.id === delivery.customerId) && !delivery.deliveryNoteSnapshot) {
       alert('לא נמצא לקוח מקושר להובלה זו.');
       return;
@@ -6054,44 +6138,24 @@ export default function App() {
         // שינוי הזמנה: היחידות של ההזמנה המקורית זמינות לגריעה מחדש (ועדיפות להן — אותה יחידה
         // פיזית נשארת בהזמנה). מה שלא נדרש יותר חוזר למלאי בתוך אותה טרנזקציה.
         const replacesId: string = quoteApprovalData.replacesQuoteId || '';
-        const originalLocal: any = replacesId ? quotes.find((x: any) => x.id === replacesId) : null;
-        const reusable = new Set<string>(originalLocal?.status === 'approved' && Array.isArray(originalLocal.approvedItemIds) ? originalLocal.approvedItemIds : []);
-        const isFreeForThis = (i: any) => i.status === 'in_warehouse' || (reusable.has(i.id) && i.status === 'sold' && i.customerId === originalLocal?.customerId);
-        // יחידות שכבר שובצו באישור הזה. בלי זה, שתי שורות מאותו דגם בחרו את אותה יחידה (SALES-2).
-        const taken = new Set<string>();
-        for (const line of quoteApprovalData.itemsToProcess) {
-            // התאמה לפי מזהה דגם קבוע (עם נפילה-לאחור לשם עבור נתונים שטרם עברו מיגרציה).
-            // זה הלב של התיקון: שינוי שם דגם כבר לא מנתק פריטי מלאי מהצעת המחיר.
-            const availableItems = items
-              .filter(i => isSameModel(i, line, settings.models) && isFreeForThis(i) && !taken.has(i.id))
-              .sort((a: any, b: any) => Number(reusable.has(b.id)) - Number(reusable.has(a.id)));
-            const qty = Number(line.qty) || 0;
-            if (availableItems.length < qty) {
-                // ההודעה מתייחסת לכל השורות מאותו דגם בהצעה — זה מה שהמשתמש צריך לתקן
-                const totalNeeded = quoteApprovalData.itemsToProcess
-                  .filter((l: any) => isSameModel(l, line, settings.models))
-                  .reduce((s: number, l: any) => s + (Number(l.qty) || 0), 0);
-                const totalFree = items.filter(i => isSameModel(i, line, settings.models) && isFreeForThis(i)).length;
-                throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${line.model}. (נדרש: ${totalNeeded}, פנוי: ${totalFree})`);
-            }
-            for (let i = 0; i < qty; i++) {
-                taken.add(availableItems[i].id);
-                updatesToMake.push({
-                    id: availableItems[i].id,
-                    data: {
-                        status: 'sold', saleDate: line.saleDate, warrantyMonths: Number(line.warrantyMonths) || 0,
-                        salePrice: Number(line.salePrice) || 0,
-                        discountAmount: Number(line.discountAmount) || 0,
-                        campaignId: line.campaignId || '', customerId: quoteApprovalData.customerId,
-                        // הפריט נמכר אך טרם נמסר — האחריות עדיין לא התחילה לרוץ.
-                        // warrantyStartDate ייכתב רק באישור ההגעה ללקוח בטאב ההובלות.
-                        awaitingDelivery: true,
-                        warrantyStartDate: null,
-                        updatedAt: nowIso
-                    }
-                });
-            }
-        }
+        const { picks, shortage } = pickUnitsForApproval(quoteApprovalData.itemsToProcess, replacesId);
+        if (shortage) throw new Error(`אין מספיק פריטים פנויים במלאי מדגם ${shortage.model}. (נדרש: ${shortage.needed}, פנוי: ${shortage.free})`);
+        picks.forEach(({ line, units }) => units.forEach((u: any) => {
+            updatesToMake.push({
+                id: u.id,
+                data: {
+                    status: 'sold', saleDate: line.saleDate, warrantyMonths: Number(line.warrantyMonths) || 0,
+                    salePrice: Number(line.salePrice) || 0,
+                    discountAmount: Number(line.discountAmount) || 0,
+                    campaignId: line.campaignId || '', customerId: quoteApprovalData.customerId,
+                    // הפריט נמכר אך טרם נמסר — האחריות עדיין לא התחילה לרוץ.
+                    // warrantyStartDate ייכתב רק באישור ההגעה ללקוח בטאב ההובלות.
+                    awaitingDelivery: true,
+                    warrantyStartDate: null,
+                    updatedAt: nowIso
+                }
+            });
+        }));
 
         // שמירת IDs שנגרעו לצורך reverse עתידי
         const approvedItemIds = updatesToMake.map(u => u.id);
@@ -6140,12 +6204,18 @@ export default function App() {
           const releaseIds = origItemIds.filter(id => !approvedItemIds.includes(id));
           const releaseSnaps = await Promise.all(releaseIds.map(id => tx.get(doc(db, 'crm_items', id))));
 
-          // יחידה כשירה: פנויה במחסן, או (בשינוי הזמנה) יחידה של ההזמנה המקורית שעדיין מכורה לאותו לקוח
+          // סטטוס המשלוח (לפי השרת) של יחידות שמשתחררות — כדי להחזיר אותן ל"בדרך" ולא למחסן
+          const relShipIds = Array.from(new Set(releaseSnaps.map(sn => (sn.exists() ? (sn.data() as any)?.shipmentId : '') || '').filter(Boolean))) as string[];
+          const relShipSnaps = await Promise.all(relShipIds.map(id => tx.get(doc(db, 'crm_shipments', id))));
+          const relShipStatus: Record<string, string> = {};
+          relShipSnaps.forEach(sn => { if (sn.exists()) relShipStatus[sn.id] = (sn.data() as any)?.status || ''; });
+
+          // יחידה כשירה: פנויה (במחסן / בדרך לארץ), או (בשינוי הזמנה) יחידה של ההזמנה המקורית שעדיין מכורה לאותו לקוח
           const reusableOnServer = new Set(origItemIds);
           if (itemSnaps.some(s => {
             const d: any = s.exists() ? s.data() : null;
             if (!d) return true;
-            if (d.status === 'in_warehouse') return false;
+            if (SELLABLE_STATUSES.includes(d.status)) return false;
             return !(reusableOnServer.has(s.id) && d.status === 'sold' && d.customerId === orig?.customerId);
           })) {
             throw new Error('המלאי השתנה בינתיים (יחידה נמכרה או סומנה כתקולה ממכשיר אחר). האישור לא נשמר — רענן ונסה שוב.');
@@ -6169,7 +6239,7 @@ export default function App() {
             if (!it || it.status !== 'sold' || it.customerId !== orig.customerId) return;
             releasedCount++;
             tx.update(doc(db, 'crm_items', snap.id), {
-              status: 'in_warehouse',
+              ...returnStatusFor(it, relShipStatus[it.shipmentId]),
               saleDate: null, warrantyMonths: 0, salePrice: 0,
               addOnPrice: 0, discountAmount: 0, customerId: '', campaignId: '',
               awaitingDelivery: false, warrantyStartDate: null,
@@ -7192,6 +7262,11 @@ export default function App() {
                                   <a href={`tel:${resolveDeliveryParty(d).phone}`} className="flex items-center gap-1 text-slate-500 hover:text-[#7B1315]" dir="ltr"><Phone className="w-3.5 h-3.5"/> {resolveDeliveryParty(d).phone}</a>
                                 )}
                               </div>
+                              {deliveriesSubTab === 'awaiting' && pendingShipmentsForDelivery(d).length > 0 && (
+                                <p data-testid={`delivery-waiting-shipment-${d.id}`} className="text-[11px] font-bold text-amber-700 mt-1.5 flex items-center gap-1">
+                                  <Ship className="w-3.5 h-3.5"/> ממתין למשלוח: {pendingShipmentsForDelivery(d).map((x: any) => x.name || 'משלוח').join(', ')}
+                                </p>
+                              )}
                               {deliveriesSubTab === 'delivered' && d.deliveredAt && (
                                 <p className="text-[11px] text-green-700 mt-1.5 flex items-center gap-1">
                                   <ShieldCheck className="w-3.5 h-3.5"/> {isPickup ? 'נאסף' : 'נמסר'} ב-{new Date(d.deliveredAt).toLocaleDateString('he-IL')} · האחריות החלה
@@ -7359,7 +7434,7 @@ export default function App() {
                         <td className="px-4 py-3 text-slate-600"><div className="font-medium text-[#651011]">₪{shippingTotalILS.toLocaleString()}</div></td>
                         <td className="px-4 py-3 text-left">
                           <button data-testid={`shipment-edit-${s.id}`} onClick={() => { setEditingData(s); setIsShipmentModalOpen(true); }} className="text-[#7B1315] bg-[#F7F1F1] p-1.5 rounded ml-2"><Edit className="w-4 h-4"/></button>
-                          <button onClick={() => deleteDocHandler('crm_shipments', s.id)} className="text-red-500 bg-red-50 p-1.5 rounded"><Trash2 className="w-4 h-4"/></button>
+                          <button data-testid={`shipment-delete-${s.id}`} onClick={() => deleteDocHandler('crm_shipments', s.id)} className="text-red-500 bg-red-50 p-1.5 rounded"><Trash2 className="w-4 h-4"/></button>
                         </td>
                       </tr>
                     );
@@ -9105,6 +9180,45 @@ export default function App() {
       )}
 
       {/* SHIPMENT ADD/EDIT MODAL */}
+      {isShipmentModalOpen && editingData && quickModel && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center p-4 bg-slate-900/50">
+          <div data-testid="quick-model-modal" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-3" dir="rtl">
+            <h3 className="text-lg font-bold text-slate-800">דגם חדש</h3>
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1">שם הדגם</label>
+              <input data-testid="quick-model-name" className="w-full border border-slate-300 rounded p-2 text-sm" value={quickModel.name} onChange={e => setQuickModel({ ...quickModel, name: e.target.value })} placeholder="Prime 2.0" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">מחיר מחירון (₪)</label>
+                <input data-testid="quick-model-price" type="number" min="0" className="w-full border border-slate-300 rounded p-2 text-sm" value={quickModel.listPrice} onChange={e => setQuickModel({ ...quickModel, listPrice: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">CBM ליחידה</label>
+                <input data-testid="quick-model-cbm" type="number" min="0" step="0.01" className="w-full border border-slate-300 rounded p-2 text-sm" value={quickModel.cbm} onChange={e => setQuickModel({ ...quickModel, cbm: Number(e.target.value) })} />
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">תמונות, סרטון וספק — מהקטלוג, אחר כך.</p>
+            <div className="flex gap-2 pt-1">
+              <button type="button" data-testid="quick-model-save" disabled={isSaving} onClick={async () => {
+                const q = quickModel;
+                // אותה פונקציה של הקטלוג: בודקת שם כפול גם מול השרת ולא דורסת דגם קיים
+                const id = await createModel({ name: q.name, listPrice: q.listPrice, cbm: q.cbm });
+                if (!id) return;
+                const name = String(q.name).trim().replace(/\s+/g, ' ');
+                setEditingData((prev: any) => {
+                  const lines = [...(prev?.lines || [])];
+                  if (lines[q.idx]) lines[q.idx] = { ...lines[q.idx], model: name, modelId: id };
+                  return { ...prev, lines };
+                });
+                setQuickModel(null);
+              }} className="flex-1 bg-[#7B1315] text-white py-2 rounded-md font-bold disabled:opacity-50">הוסף ובחר</button>
+              <button type="button" onClick={() => setQuickModel(null)} className="px-4 py-2 rounded-md border border-slate-300 text-slate-600">ביטול</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isShipmentModalOpen && editingData && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
@@ -9157,12 +9271,13 @@ export default function App() {
                     {editingData.lines.length > 1 && <button type="button" data-testid={`shipment-remove-line-${idx}`} onClick={() => { const newLines = editingData.lines.filter((_: any, i: number) => i !== idx); setEditingData({...editingData, lines: newLines}); }} className="absolute top-2 left-2 text-red-500 hover:text-red-700"><X className="w-4 h-4"/></button>}
                     <div className="flex-1">
                       <label className="block text-xs font-bold text-slate-600 mb-1">דגם</label>
-                      <select data-testid={`shipment-line-model-${idx}`} className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>
+                      <select data-testid={`shipment-line-model-${idx}`} className="w-full border-slate-300 rounded p-2 text-sm border" value={line.model} onChange={e => { if (e.target.value === '__new__') { setQuickModel({ idx, name: '', listPrice: 0, cbm: 0 }); return; } const newLines = [...editingData.lines]; newLines[idx] = {...newLines[idx], model: e.target.value, modelId: getModelIdByName(settings?.models, e.target.value)}; setEditingData({...editingData, lines: newLines}); }}>
                         {modelsList.map((m: string) => {
                           // דגם שכבר יש לו שורה אחרת במשלוח — לא ניתן לבחירה (שורה אחת לכל דגם)
                           const usedElsewhere = (editingData.lines || []).some((l: any, j: number) => j !== idx && shipmentLineKey(l, settings?.models) === shipmentLineKey({ model: m }, settings?.models));
                           return <option key={m} value={m} disabled={usedElsewhere}>{m}{usedElsewhere ? ' — כבר במשלוח' : ''}</option>;
                         })}
+                        <option value="__new__">+ דגם חדש…</option>
                       </select>
                     </div>
                     <div className="w-20">
@@ -10621,6 +10736,28 @@ export default function App() {
                       <div className="mt-2 font-bold">אחרי האישור: לבטל ידנית ב-Morning את דרישת התשלום הקודמת.</div>
                     </div>
                   )}
+                  {(() => {
+                    // יחידות שייגרעו ממשלוח שעוד בדרך — לפי אותה בחירה שהאישור יבצע בפועל
+                    const { picks } = pickUnitsForApproval(quoteApprovalData.itemsToProcess, quoteApprovalData.replacesQuoteId || '');
+                    const byShipment: Record<string, { name: string; lines: Record<string, number> }> = {};
+                    picks.forEach(({ line, units }) => units.filter((u: any) => u.status === 'in_transit').forEach((u: any) => {
+                      const sh = shipments.find((x: any) => x.id === u.shipmentId);
+                      const key = u.shipmentId || '-';
+                      byShipment[key] = byShipment[key] || { name: sh?.name || 'משלוח', lines: {} };
+                      byShipment[key].lines[line.model] = (byShipment[key].lines[line.model] || 0) + 1;
+                    }));
+                    const list = Object.values(byShipment);
+                    if (!list.length) return null;
+                    return (
+                      <div data-testid="quote-approve-transit-note" className="bg-amber-50 text-amber-900 p-4 rounded-lg text-sm border border-amber-200 leading-relaxed">
+                        <b>חלק מהיחידות עוד בדרך לארץ:</b>
+                        {list.map((b, i) => (
+                          <div key={i}>{b.name}: {Object.entries(b.lines).map(([m, n]) => `${n} × ${m}`).join(', ')}</div>
+                        ))}
+                        <div className="mt-2">תעודת משלוח ומסירה ייפתחו רק כשהמשלוח יסומן "הגיע למחסן". <b>תאם עם הלקוח מועד אספקה בכתב</b> — סעיף ה-10 ימי עסקים בהצעה מתייחס למוצרים שבמלאי.</div>
+                      </div>
+                    );
+                  })()}
                   {depositParts(quoteApprovalData).input > 0 && (
                     <div className="bg-slate-50 text-slate-700 p-3 rounded-lg text-sm border border-slate-200">
                       מקדמה ששולמה: ₪{fmtMoney(depositParts(quoteApprovalData).withVat)} כולל מע"מ (₪{fmtMoney(depositParts(quoteApprovalData).preVat)} לפני). תנוכה מדרישת התשלום ב-Morning.
