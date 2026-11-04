@@ -1890,6 +1890,8 @@ export default function App() {
   const [isStockBreakdownModalOpen, setIsStockBreakdownModalOpen] = useState(false);
   const [editingData, setEditingData] = useState<any>(null);
   // "דגם חדש" מתוך שורת משלוח: idx = השורה שתקבל את הדגם אחרי ההקמה
+  // חלון תצוגה מקדימה לפני שליחת מסמך ל-Morning מהצעה רגילה (יתרה / הפקה מחדש)
+  const [morningDocModal, setMorningDocModal] = useState<{ quoteId: string; kind: 'deposit' | 'final'; reissue: boolean } | null>(null);
   const [quickModel, setQuickModel] = useState<{ idx: number; name: string; listPrice: number; cbm: number } | null>(null);
   const [customerEditingData, setCustomerEditingData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -4829,27 +4831,90 @@ export default function App() {
     setIsSaving(false);
   };
 
-  const retryMorning = async (quote: any, customer: any) => {
-    if (!settings?.morningApiKeyId || !settings?.morningApiKeySecret) { alert('אין מפתחות API של Morning בהגדרות.'); return; }
-    if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
-    try {
-      const { url: invoiceUrl, error: morningErr } = await sendToMorning(
-        (quote.items || []).map((i: any) => ({ model: i.model, qty: i.qty, price: getEffectivePrice(i) })),
-        Number(quote.approvedShippingCost) || 0,
-        customer
-      );
-      if (invoiceUrl) {
-        await updateDoc(doc(db, 'crm_quotes', quote.id), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
-        alert('✓ דרישת תשלום נוצרה ב-Morning בהצלחה!');
-      } else {
-        await updateDoc(doc(db, 'crm_quotes', quote.id), { morningError: morningErr, morningSentAt: new Date().toISOString() });
-        alert('⚠️ שליחה ל-Morning נכשלה שוב. ראה הודעת שגיאה בדף הלקוח.');
-      }
-    } catch(err: any) {
-      const errMsg = err?.message || 'שגיאת רשת.';
-      await updateDoc(doc(db, 'crm_quotes', quote.id), { morningError: errMsg, morningSentAt: new Date().toISOString() });
-      alert('⚠️ שגיאה: ' + errMsg);
+  // =========================================================================
+  // מסמכי Morning בהצעה רגילה — מקור אמת יחיד (4.11.2026)
+  // -------------------------------------------------------------------------
+  // kind 'deposit': דרישת מקדמה — שורה אחת, הסכום לפני מע"מ.
+  // kind 'final':   דרישת תשלום על ההזמנה, פחות מקדמה שנרשמה (אם יש — זו "דרישת יתרה").
+  // אותה פונקציה בונה את התצוגה המקדימה ואת מה שנשלח בפועל, כך שמה שמוצג הוא מה שנשלח.
+  // הקודם: "שלח שוב" בנה את השורות בעצמו ולא ניכה מקדמה.
+  const quoteShippingForMorning = (q: any) =>
+    q?.approvedShippingCost !== undefined && q?.approvedShippingCost !== null ? Number(q.approvedShippingCost) || 0 : Number(q?.shippingCost) || 0;
+  const quoteOrderTotalPreVat = (q: any) =>
+    round2((q?.items || []).reduce((s: number, it: any) => s + getEffectivePrice(it) * (Number(it.qty) || 0), 0) + quoteShippingForMorning(q));
+  const buildQuoteMorningRows = (q: any, kind: 'deposit' | 'final') => {
+    const dep = depositParts(q);
+    const total = quoteOrderTotalPreVat(q);
+    if (kind === 'deposit') {
+      const rows = dep.preVat > 0 ? [{ description: `מקדמה על חשבון הזמנה מתאריך ${q?.date ? new Date(q.date).toLocaleDateString('he-IL') : ''}`, quantity: 1, price: dep.preVat }] : [];
+      const invalidReason = !(dep.preVat > 0) ? 'סכום המקדמה חייב להיות גדול מאפס.' : dep.preVat > total + 0.005 ? 'סכום המקדמה גבוה מסכום ההזמנה.' : '';
+      return { rows, docTotal: dep.preVat, invalidReason };
     }
+    const rows: any[] = (q?.items || []).map((it: any) => ({ description: `עמדת נירוסטה דגם ${it.model}`, quantity: Number(it.qty), price: getEffectivePrice(it) }));
+    const ship = quoteShippingForMorning(q);
+    if (ship > 0) rows.push({ description: 'הובלה', quantity: 1, price: ship });
+    if (dep.preVat > 0) rows.push({ description: 'בניכוי מקדמה ששולמה', quantity: 1, price: -dep.preVat });
+    const docTotal = round2(total - dep.preVat);
+    const invalidReason = !rows.length ? 'אין שורות לשידור.' : docTotal < 0 ? 'המקדמה גבוהה מסכום ההזמנה — בדוק את הסכומים.' : !(docTotal > 0) ? 'אין סכום חיובי לגבייה.' : '';
+    return { rows, docTotal, invalidReason };
+  };
+  // מסמך פעיל אחרון מסוג מסוים (מסמכים שהוחלפו בהפקה מחדש נשארים בהיסטוריה בלבד)
+  const activeMorningDoc = (q: any, kind: 'deposit' | 'final') => {
+    const docs = (Array.isArray(q?.morningDocs) ? q.morningDocs : []).filter((d: any) => d.kind === kind && !d.replacedAt);
+    if (docs.length) return docs[docs.length - 1];
+    // הצעות מלפני ההיסטוריה: הקישור הישן נחשב מסמך תשלום פעיל
+    return kind === 'final' && q?.morningInvoiceUrl ? { kind: 'final', url: q.morningInvoiceUrl, sentAt: q.morningSentAt || '', legacy: true } : null;
+  };
+  // יתרה פתוחה: הוחלט על מקדמה-ואז-יתרה, ועוד לא נשלחה דרישת תשלום סופית
+  const balancePendingFor = (q: any) => !!q && q.status === 'approved' && q.paymentPlan === 'deposit_then_balance' && !activeMorningDoc(q, 'final');
+
+  // שליחת מסמך ושמירתו בהיסטוריה. reissue: המסמך הפעיל הקודם מאותו סוג מסומן "הוחלף".
+  const sendQuoteMorningDoc = async (q: any, kind: 'deposit' | 'final', opts: { reissue?: boolean; silent?: boolean } = {}): Promise<boolean> => {
+    if (!settings?.morningApiKeyId || !settings?.morningApiKeySecret) { if (!opts.silent) alert('אין מפתחות API של Morning בהגדרות.'); return false; }
+    const { rows, docTotal, invalidReason } = buildQuoteMorningRows(q, kind);
+    if (invalidReason) { if (!opts.silent) alert(invalidReason); return false; }
+    const customer = customers.find((c: any) => c.id === q.customerId) || {};
+    const nowIso = new Date().toISOString();
+    let url: string | null = null; let error: string | null = null;
+    try { ({ url, error } = await sendMorningDocument(rows, customer)); } catch (err: any) { error = err?.message || 'שגיאת רשת.'; }
+    const ref = doc(db, 'crm_quotes', q.id);
+    try {
+      if (!url) {
+        await updateDoc(ref, { morningError: error, morningSentAt: nowIso });
+        if (!opts.silent) alert('⚠️ השליחה ל-Morning נכשלה: ' + (error || '') + '\nאפשר לנסות שוב מדף הלקוח.');
+        return false;
+      }
+      const live: any = quotes.find((x: any) => x.id === q.id) || q;
+      const prev: any[] = Array.isArray(live.morningDocs) ? live.morningDocs : [];
+      const next = prev.map((d: any) => (opts.reissue && d.kind === kind && !d.replacedAt ? { ...d, replacedAt: nowIso } : d));
+      next.push({ kind, url, sentAt: nowIso, by: user?.email || '', amountPreVat: docTotal });
+      await updateDoc(ref, {
+        morningDocs: next,
+        ...(kind === 'final' ? { morningInvoiceUrl: url } : {}),
+        morningSentAt: nowIso, morningError: null, updatedAt: nowIso,
+      });
+      return true;
+    } catch (err: any) {
+      if (!opts.silent) alert('המסמך נוצר ב-Morning, אבל השמירה ב-CRM נכשלה: ' + (err?.message || '') + (url ? `\n${url}` : ''));
+      return false;
+    }
+  };
+
+  // "שלח שוב" אחרי כשל — עכשיו דרך אותו מסלול, כולל ניכוי מקדמה
+  const retryMorning = async (quote: any, _customer?: any) => {
+    if (quote.approvedShippingCost === undefined && quote.approvedShippingCost !== 0) { alert('חסרים נתוני משלוח — ייתכן שהצעה זו אושרה לפני עדכון המערכת.'); return; }
+    const ok = await sendQuoteMorningDoc(quote, 'final');
+    if (ok) alert('✓ דרישת תשלום נוצרה ב-Morning בהצלחה!');
+  };
+
+  // שליחה חוזרת של מסמך קיים ללקוח — בלי ליצור מסמך חדש
+  const shareMorningDoc = (q: any, d: any) => {
+    const cust: any = customers.find((c: any) => c.id === q.customerId) || {};
+    const rawPhone = (cust.phone || '').replace(/\D/g, '');
+    const waPhone = rawPhone.startsWith('0') ? '972' + rawPhone.slice(1) : rawPhone;
+    const label = d.kind === 'deposit' ? 'דרישת תשלום על המקדמה' : 'דרישת התשלום';
+    const msg = `שלום${cust.contactName ? ` ${cust.contactName}` : ''}, מצורפת ${label} מסטיל אנד ספיריט:\n${d.url}`;
+    window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
   const addSupplierNote = async () => {
@@ -5734,6 +5799,11 @@ export default function App() {
         shippingCost: Number(quote.shippingCost) || 0,
         depositInput: Number(quote.depositInput) || 0,
         depositInclVat: quote.depositInclVat !== false,
+        // תשלום: full — דרישה מלאה עכשיו (פחות מקדמה שכבר רשומה); deposit — דרישת מקדמה עכשיו,
+        // יתרה ביציאה מהמחסן; none — לא שולחים עכשיו (שינוי הזמנה שהמקדמה שלה כבר נדרשה).
+        paymentMode: swapping && original.paymentPlan === 'deposit_then_balance' ? 'none' : 'full',
+        payDepositInput: Number(quote.depositInput) || 0,
+        payDepositInclVat: quote.depositInclVat !== false,
         replacesQuoteId: swapping ? original.id : '',
         replacesQuoteDate: swapping ? original.date : '',
         replacesMorningUrl: swapping ? (original.morningInvoiceUrl || '') : '',
@@ -6076,6 +6146,15 @@ export default function App() {
       alert('לא נמצא לקוח מקושר להובלה זו.');
       return;
     }
+    // מקדמה-ואז-יתרה: תעודת המשלוח היא נקודת היציאה — הזמן לדרוש את היתרה, לפני שהמשאית זזה
+    const dq: any = !delivery.deliveryNoteNumber ? quotes.find((x: any) => x.id === delivery.quoteId) : null;
+    if (dq && balancePendingFor(dq) && settings?.morningApiKeyId && settings?.morningApiKeySecret) {
+      const bal = buildQuoteMorningRows(dq, 'final');
+      if (!bal.invalidReason && window.confirm(`לשלוח עכשיו ל-Morning את דרישת היתרה?\nסכום: ₪${fmtMoney(bal.docTotal)} לפני מע"מ (₪${fmtMoney(bal.docTotal * (1 + VAT_RATE))} כולל).\n\nביטול = הפקת התעודה בלי לשלוח (אפשר לשלוח אחר כך מהכפתור בהובלה).`)) {
+        const ok = await sendQuoteMorningDoc(dq, 'final', { silent: true });
+        alert(ok ? '✓ דרישת היתרה נוצרה ב-Morning.' : '⚠️ שליחת דרישת היתרה נכשלה. אפשר לשלוח שוב מהכפתור בהובלה. התעודה תופק כרגיל.');
+      }
+    }
     setGeneratingDeliveryNoteId(delivery.id);
     try {
       const snapshot = await issueDeliveryNote(delivery);
@@ -6160,14 +6239,18 @@ export default function App() {
         // שמירת IDs שנגרעו לצורך reverse עתידי
         const approvedItemIds = updatesToMake.map(u => u.id);
 
-        const customer = customers.find(c => c.id === quoteApprovalData.customerId);
 
         // סכום ההובלה שבאמת מחויב בחשבונית. באיסוף עצמי אין הובלה בפועל —
         // אומדן ההובלה שבהצעה לא אמור להצטרף לחשבונית, גם אם עדיין מוצג בהצעה עצמה.
         const billedShippingCost = quoteApprovalData.deliveryMethod === 'pickup' ? 0 : (Number(quoteApprovalData.shippingCost) || 0);
         const isPickup = quoteApprovalData.deliveryMethod === 'pickup';
         const deliveryCity = (quoteApprovalData.deliveryCity || '').trim();
-        const deposit = depositParts(quoteApprovalData);
+        const paymentMode: 'full' | 'deposit' | 'none' = quoteApprovalData.paymentMode || 'full';
+        // במצב "מקדמה עכשיו" — הסכום שהוזן בחלון הוא המקדמה של ההזמנה (מחליף מה שהיה רשום בהצעה)
+        const deposit = paymentMode === 'deposit'
+          ? depositParts({ depositInput: quoteApprovalData.payDepositInput, depositInclVat: quoteApprovalData.payDepositInclVat })
+          : depositParts(quoteApprovalData);
+        if (paymentMode === 'deposit' && !(deposit.preVat > 0)) throw new Error('בחרת "מקדמה עכשיו" — הזן את סכום המקדמה.');
         const billedTotal = quoteApprovalData.itemsToProcess.reduce((s: number, l: any) => s + (Number(l.salePrice) || 0) * (Number(l.qty) || 0), 0) + billedShippingCost;
         if (deposit.preVat > billedTotal + 0.005) {
           throw new Error(`המקדמה (₪${fmtMoney(deposit.preVat)} לפני מע"מ) גבוהה מסכום ההזמנה לחיוב (₪${fmtMoney(billedTotal)}). תקן את ההצעה לפני האישור.`);
@@ -6252,6 +6335,8 @@ export default function App() {
             approvedAt: nowIso,
             approvedItemIds: approvedItemIds,
             approvedShippingCost: billedShippingCost,
+            paymentPlan: paymentMode === 'full' ? 'full' : 'deposit_then_balance',
+            ...(paymentMode === 'deposit' ? { depositInput: deposit.input, depositInclVat: deposit.inclVat, depositAmount: deposit.preVat } : {}),
             previousCustomerStatus: previousCustomerStatus,
             updatedAt: nowIso
           });
@@ -6306,29 +6391,23 @@ export default function App() {
             `\n⚠️ ב-Morning יש לבטל ידנית את דרישת התשלום הקודמת${quoteApprovalData.replacesMorningUrl ? `:\n${quoteApprovalData.replacesMorningUrl}` : '.'}`
           : '';
 
-        // --- Morning Integration ---
-        if (settings?.morningApiKeyId && settings?.morningApiKeySecret) {
-          try {
-            const { url: invoiceUrl, error: morningErr } = await sendToMorning(
-              quoteApprovalData.itemsToProcess.map((l: any) => ({ model: l.model, qty: l.qty, price: l.salePrice })),
-              billedShippingCost,
-              customer,
-              deposit
-            );
-            if (invoiceUrl) {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningInvoiceUrl: invoiceUrl, morningSentAt: new Date().toISOString(), morningError: null });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי, הלקוח עודכן, ודרישת תשלום נוצרה ב-Morning בהצלחה.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.' + swapNote);
-            } else {
-              await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: morningErr, morningSentAt: new Date().toISOString() });
-              alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.' + swapNote);
-            }
-          } catch(err: any) {
-            const errMsg = err?.message || 'שגיאת רשת — לא ניתן להגיע לשרת Morning.';
-            await updateDoc(doc(db, 'crm_quotes', quoteApprovalData.quoteId), { morningError: errMsg, morningSentAt: new Date().toISOString() });
-            alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.\n⚠️ שליחת הנתונים ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.' + swapNote);
-          }
+        // --- Morning ---
+        // נשלח מהנתונים שנשמרו עכשיו (פריטים, משלוח לחיוב, מקדמה) דרך אותה פונקציה של דף הלקוח
+        const approvedQuote = {
+          ...(quotes.find((x: any) => x.id === quoteApprovalData.quoteId) || {}),
+          id: quoteApprovalData.quoteId, customerId: quoteApprovalData.customerId, status: 'approved',
+          approvedShippingCost: billedShippingCost, paymentPlan: paymentMode === 'full' ? 'full' : 'deposit_then_balance',
+          depositInput: deposit.input, depositInclVat: deposit.inclVat, depositAmount: deposit.preVat,
+        };
+        const head = 'הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב "הובלות ללקוחות" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.';
+        const hasKeys = !!(settings?.morningApiKeyId && settings?.morningApiKeySecret);
+        const balanceNote = paymentMode !== 'full' ? '\nדרישת היתרה תישלח בהפקת תעודת המשלוח (או מכפתור "שלח דרישת יתרה" בהובלות).' : '';
+        if (!hasKeys || paymentMode === 'none') {
+          alert(head + balanceNote + swapNote);
         } else {
-          alert('הצעת המחיר אושרה! הפריטים נגרעו מהמלאי בהצלחה והלקוח עודכן.\nההזמנה נפתחה בטאב \"הובלות ללקוחות\" — האחריות תתחיל לרוץ רק לאחר אישור ההגעה ללקוח.' + swapNote);
+          const ok = await sendQuoteMorningDoc(approvedQuote, paymentMode === 'deposit' ? 'deposit' : 'final', { silent: true });
+          const what = paymentMode === 'deposit' ? 'דרישת תשלום על המקדמה' : 'דרישת תשלום';
+          alert(head + (ok ? `\n✓ ${what} נוצרה ב-Morning.` : `\n⚠️ שליחת ${what} ל-Morning נכשלה — ניתן לנסות שוב מדף הלקוח.`) + balanceNote + swapNote);
         }
       } catch (err: any) { alert(err.message || "שגיאה בתהליך אישור ההצעה."); }
       setIsSaving(false);
@@ -7262,6 +7341,17 @@ export default function App() {
                                   <a href={`tel:${resolveDeliveryParty(d).phone}`} className="flex items-center gap-1 text-slate-500 hover:text-[#7B1315]" dir="ltr"><Phone className="w-3.5 h-3.5"/> {resolveDeliveryParty(d).phone}</a>
                                 )}
                               </div>
+                              {(() => {
+                                const dq: any = quotes.find((x: any) => x.id === d.quoteId);
+                                if (!dq || !balancePendingFor(dq)) return null;
+                                const bal = buildQuoteMorningRows(dq, 'final');
+                                return (
+                                  <div data-testid={`delivery-balance-due-${d.id}`} className="text-[11px] font-bold text-indigo-800 mt-1.5 flex items-center gap-2 flex-wrap">
+                                    <span>יתרה לגבייה: ₪{fmtMoney(bal.docTotal * (1 + VAT_RATE))} כולל מע"מ</span>
+                                    <button data-testid={`delivery-balance-${d.id}`} onClick={() => setMorningDocModal({ quoteId: dq.id, kind: 'final', reissue: false })} className="bg-indigo-50 border border-indigo-200 rounded px-2 py-0.5 hover:bg-indigo-100">שלח דרישת יתרה</button>
+                                  </div>
+                                );
+                              })()}
                               {deliveriesSubTab === 'awaiting' && pendingShipmentsForDelivery(d).length > 0 && (
                                 <p data-testid={`delivery-waiting-shipment-${d.id}`} className="text-[11px] font-bold text-amber-700 mt-1.5 flex items-center gap-1">
                                   <Ship className="w-3.5 h-3.5"/> ממתין למשלוח: {pendingShipmentsForDelivery(d).map((x: any) => x.name || 'משלוח').join(', ')}
@@ -9180,6 +9270,54 @@ export default function App() {
       )}
 
       {/* SHIPMENT ADD/EDIT MODAL */}
+      {morningDocModal && (() => {
+        const mq: any = quotes.find((x: any) => x.id === morningDocModal.quoteId);
+        if (!mq) return null;
+        const { rows, docTotal, invalidReason } = buildQuoteMorningRows(mq, morningDocModal.kind);
+        const prevDoc = morningDocModal.reissue ? activeMorningDoc(mq, morningDocModal.kind) : null;
+        const title = morningDocModal.kind === 'deposit' ? 'דרישת תשלום — מקדמה' : (Number(mq.depositAmount) > 0 ? 'דרישת תשלום — יתרה' : 'דרישת תשלום');
+        const cust: any = customers.find((c: any) => c.id === mq.customerId) || {};
+        return (
+          <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-slate-900/60">
+            <div data-testid="morning-doc-modal" className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-3" dir="rtl">
+              <h3 className="text-lg font-bold text-slate-800">{morningDocModal.reissue ? 'הפקה מחדש: ' : ''}{title}</h3>
+              <p className="text-xs text-slate-500">{cust.businessName || cust.contactName || ''} · נשלח ל-Morning כ"חשבון עסקה". השורות לפני מע"מ.</p>
+              <table className="w-full text-sm">
+                <tbody>
+                  {rows.map((r: any, i: number) => (
+                    <tr key={i} className="border-b border-slate-100"><td className="py-1">{r.description}{r.quantity > 1 ? ` × ${r.quantity}` : ''}</td><td className="py-1 text-left whitespace-nowrap" dir="ltr">{fmtMoney(r.price * r.quantity)} ₪</td></tr>
+                  ))}
+                  <tr className="font-bold"><td className="pt-2">סה"כ לפני מע"מ</td><td className="pt-2 text-left" dir="ltr">{fmtMoney(docTotal)} ₪</td></tr>
+                  <tr className="font-bold text-[#7B1315]"><td>כולל מע"מ</td><td className="text-left" dir="ltr">{fmtMoney(docTotal * (1 + VAT_RATE))} ₪</td></tr>
+                </tbody>
+              </table>
+              {invalidReason && <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">{invalidReason}</p>}
+              {morningDocModal.reissue && (
+                <div data-testid="morning-reissue-warning" className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded p-2 leading-relaxed">
+                  נוצר מסמך <b>חדש</b> ב-Morning. המסמך הקודם לא מבוטל אוטומטית — בטל אותו ב-Morning{prevDoc?.url ? <> (<a href={prevDoc.url} target="_blank" rel="noopener noreferrer" className="underline">פתח את הקודם</a>)</> : null}.
+                  <b className="block mt-1">אם כבר הוצאת עליו חשבונית מס — הוצא עליה חשבונית זיכוי ב-Morning. חשבונית מס לא מבטלים ולא מוחקים.</b>
+                </div>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button data-testid="morning-doc-send" disabled={isSaving || !!invalidReason} onClick={async () => {
+                  setIsSaving(true);
+                  const m = morningDocModal;
+                  const ok = await sendQuoteMorningDoc(mq, m.kind, { reissue: m.reissue });
+                  setIsSaving(false);
+                  if (ok) {
+                    setMorningDocModal(null);
+                    alert(m.reissue
+                      ? '✓ המסמך החדש נוצר ב-Morning. זכור: לבטל את הקודם, ואם יצאה עליו חשבונית מס — חשבונית זיכוי.'
+                      : '✓ המסמך נוצר ב-Morning.');
+                  }
+                }} className="flex-1 bg-[#7B1315] text-white py-2 rounded-md font-bold disabled:opacity-50">שלח ל-Morning</button>
+                <button onClick={() => setMorningDocModal(null)} className="px-4 py-2 rounded-md border border-slate-300 text-slate-600">ביטול</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {isShipmentModalOpen && editingData && quickModel && (
         <div className="fixed inset-0 z-[115] flex items-center justify-center p-4 bg-slate-900/50">
           <div data-testid="quick-model-modal" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-3" dir="rtl">
@@ -10220,6 +10358,7 @@ export default function App() {
                   ].map(tab => (
                     <button
                       key={tab.id}
+                      data-testid={`customer-tab-${tab.id}`}
                       onClick={() => setActiveCustomerOverviewTab(tab.id as any)}
                       className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeCustomerOverviewTab === tab.id ? 'border-[#7B1315] text-[#651011] bg-white' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
                     >
@@ -10344,12 +10483,43 @@ export default function App() {
                               >
                                 <Eye className="w-3.5 h-3.5"/> צפה בהצעה
                               </button>
-                              {q.morningInvoiceUrl && (
-                                <a href={q.morningInvoiceUrl} target="_blank" rel="noopener noreferrer"
-                                   className="mt-1 text-xs text-green-700 hover:text-green-900 font-medium flex items-center gap-1">
-                                  <ExternalLink className="w-3.5 h-3.5"/> פתח דרישת תשלום ב-Morning
-                                </a>
-                              )}
+                              {/* מסמכי Morning: היסטוריה, שליחה חוזרת ללקוח, הפקה מחדש, מקדמה/יתרה */}
+                              {(() => {
+                                const docs: any[] = Array.isArray(q.morningDocs) && q.morningDocs.length ? q.morningDocs
+                                  : (q.morningInvoiceUrl && q.status !== 'approved_test' ? [{ kind: 'final', url: q.morningInvoiceUrl, sentAt: q.morningSentAt || '', legacy: true }] : []);
+                                const hasKeys = !!(settings?.morningApiKeyId && settings?.morningApiKeySecret);
+                                const isApproved = q.status === 'approved';
+                                const showBalance = hasKeys && balancePendingFor(q);
+                                const showDeposit = hasKeys && isApproved && q.paymentPlan === 'deposit_then_balance' && !activeMorningDoc(q, 'deposit') && depositParts(q).input > 0 && !activeMorningDoc(q, 'final');
+                                if (!docs.length && !showBalance && !showDeposit) return null;
+                                const label = (d: any) => d.kind === 'deposit' ? 'מקדמה' : (Number(q.depositAmount) > 0 ? 'יתרה' : 'תשלום מלא');
+                                return (
+                                  <div data-testid={`morning-docs-${q.id}`} className="mt-2 border border-slate-200 rounded-md p-2 space-y-1.5 bg-slate-50/60">
+                                    <p className="text-[11px] font-bold text-slate-600">מסמכי Morning</p>
+                                    {docs.map((d: any, i: number) => (
+                                      <div key={i} className={`text-[11px] flex items-center gap-2 flex-wrap ${d.replacedAt ? 'text-slate-400' : 'text-slate-700'}`}>
+                                        <span className="font-bold">{label(d)}</span>
+                                        {d.sentAt && <span>{new Date(d.sentAt).toLocaleDateString('he-IL')}</span>}
+                                        {Number(d.amountPreVat) > 0 && <span>₪{fmtMoney(d.amountPreVat)} לפני מע"מ</span>}
+                                        {d.replacedAt ? <span data-testid={`morning-doc-replaced-${q.id}-${i}`}>(הוחלף)</span> : (<>
+                                          <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-green-700 hover:text-green-900 flex items-center gap-0.5"><ExternalLink className="w-3 h-3"/> פתח</a>
+                                          <button data-testid={`morning-share-${q.id}-${i}`} onClick={() => shareMorningDoc(q, d)} className="text-emerald-700 hover:text-emerald-900">וואטסאפ</button>
+                                          <button data-testid={`morning-copy-${q.id}-${i}`} onClick={async () => { try { await navigator.clipboard.writeText(d.url); alert('הקישור הועתק.'); } catch { alert(d.url); } }} className="text-slate-600 hover:text-slate-900">העתק קישור</button>
+                                          {hasKeys && isApproved && (
+                                            <button data-testid={`morning-reissue-${q.id}-${d.kind}`} onClick={() => setMorningDocModal({ quoteId: q.id, kind: d.kind, reissue: true })} className="text-amber-700 hover:text-amber-900">הפק מחדש</button>
+                                          )}
+                                        </>)}
+                                      </div>
+                                    ))}
+                                    {showDeposit && (
+                                      <button data-testid={`morning-deposit-${q.id}`} onClick={() => setMorningDocModal({ quoteId: q.id, kind: 'deposit', reissue: false })} className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-2 py-1">שלח דרישת מקדמה</button>
+                                    )}
+                                    {showBalance && (
+                                      <button data-testid={`morning-balance-${q.id}`} onClick={() => setMorningDocModal({ quoteId: q.id, kind: 'final', reissue: false })} className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-2 py-1">שלח דרישת יתרה</button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               {q.status === 'approved_test' && (
                                 <div className="mt-2 space-y-1">
                                   {q.morningError && (
@@ -10366,7 +10536,7 @@ export default function App() {
                                   </button>
                                 </div>
                               )}
-                              {q.status === 'approved' && !q.morningInvoiceUrl && settings?.morningApiKeyId && settings?.morningApiKeySecret && (
+                              {q.status === 'approved' && !activeMorningDoc(q, 'final') && q.paymentPlan !== 'deposit_then_balance' && settings?.morningApiKeyId && settings?.morningApiKeySecret && (
                                 <div className="mt-2 space-y-1">
                                   {q.morningError && (
                                     <div className="bg-red-50 border border-red-200 rounded p-2 text-[10px] text-red-700 font-mono leading-relaxed">
@@ -10375,6 +10545,7 @@ export default function App() {
                                     </div>
                                   )}
                                   <button
+                                    data-testid={`morning-retry-${q.id}`}
                                     onClick={() => retryMorning(q, selectedCustomer)}
                                     className="text-xs text-amber-700 hover:text-amber-900 font-medium flex items-center gap-1 bg-amber-50 border border-amber-200 rounded px-2 py-1"
                                   >
@@ -10758,7 +10929,33 @@ export default function App() {
                       </div>
                     );
                   })()}
-                  {depositParts(quoteApprovalData).input > 0 && (
+                  <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-2 text-sm">
+                    <p className="font-bold text-slate-800">תשלום</p>
+                    {[
+                      { v: 'full', t: 'מלא עכשיו', d: 'דרישת תשלום על כל ההזמנה (פחות מקדמה שכבר רשומה בהצעה)' },
+                      { v: 'deposit', t: 'מקדמה עכשיו, יתרה ביציאה מהמחסן', d: 'דרישת תשלום על המקדמה בלבד. היתרה — בהפקת תעודת המשלוח' },
+                      { v: 'none', t: 'לא לשלוח עכשיו', d: 'המקדמה כבר נדרשה (למשל בשינוי הזמנה). היתרה — בהפקת תעודת המשלוח' },
+                    ].map(o => (
+                      <label key={o.v} className="flex items-start gap-2 cursor-pointer">
+                        <input type="radio" name="paymentMode" data-testid={`approve-pay-${o.v}`} className="mt-1" checked={(quoteApprovalData.paymentMode || 'full') === o.v} onChange={() => setQuoteApprovalData({ ...quoteApprovalData, paymentMode: o.v })} />
+                        <span><b>{o.t}</b><span className="block text-xs text-slate-500">{o.d}</span></span>
+                      </label>
+                    ))}
+                    {quoteApprovalData.paymentMode === 'deposit' && (
+                      <div className="pr-6 pt-1">
+                        <label className="block text-xs font-bold text-slate-700 mb-1">סכום המקדמה (₪)</label>
+                        <input data-testid="approve-deposit-amount" type="number" min="0" step="0.01" className="w-full border border-slate-300 rounded p-2 font-bold" value={quoteApprovalData.payDepositInput || 0} onChange={e => setQuoteApprovalData({ ...quoteApprovalData, payDepositInput: Number(e.target.value) })} />
+                        <label className="flex items-center gap-2 mt-2 text-xs text-slate-700 cursor-pointer">
+                          <input data-testid="approve-deposit-incl-vat" type="checkbox" checked={quoteApprovalData.payDepositInclVat !== false} onChange={e => setQuoteApprovalData({ ...quoteApprovalData, payDepositInclVat: e.target.checked })} />
+                          הסכום כולל מע"מ
+                        </label>
+                        {(() => { const d = depositParts({ depositInput: quoteApprovalData.payDepositInput, depositInclVat: quoteApprovalData.payDepositInclVat }); return d.input > 0 ? (
+                          <p className="text-[11px] text-slate-500 mt-1">יישלח ל-Morning: ₪{fmtMoney(d.preVat)} לפני מע"מ (₪{fmtMoney(d.withVat)} כולל). היתרה תנכה אותו אוטומטית.</p>
+                        ) : null; })()}
+                      </div>
+                    )}
+                  </div>
+                  {quoteApprovalData.paymentMode !== 'deposit' && depositParts(quoteApprovalData).input > 0 && (
                     <div className="bg-slate-50 text-slate-700 p-3 rounded-lg text-sm border border-slate-200">
                       מקדמה ששולמה: ₪{fmtMoney(depositParts(quoteApprovalData).withVat)} כולל מע"מ (₪{fmtMoney(depositParts(quoteApprovalData).preVat)} לפני). תנוכה מדרישת התשלום ב-Morning.
                     </div>
