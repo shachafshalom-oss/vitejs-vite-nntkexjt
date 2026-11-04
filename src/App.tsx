@@ -3,6 +3,8 @@ import { ISRAELI_CITIES } from './israeliCities';
 import SalesDashboard from './components/SalesDashboard';
 import SalesAnalytics from './components/SalesAnalytics';
 import { buildDeals, type ProjectEconomics } from './lib/metrics';
+// תוקף הצעה (מודפס ב-PDF) וימי הגרייס עד דחייה אוטומטית — משותף עם netlify/functions/quote-expirer.js
+import QUOTE_POLICY from './lib/quote-policy.json';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getMessaging, getToken, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
@@ -1386,14 +1388,14 @@ const QuoteDocument = ({ quote, customer, settings, innerRef }: { quote: any, cu
       {(() => {
         const validUntil = quote?.date ? (() => {
           const d = new Date(quote.date);
-          d.setDate(d.getDate() + 10);
+          d.setDate(d.getDate() + QUOTE_POLICY.validDays);
           return d.toLocaleDateString('he-IL');
         })() : null;
         return (
           <div style={{ background: 'rgba(123,19,21,0.07)', border: '1px solid #7B1315', borderRadius: '6px', padding: '12px 16px', marginBottom: '20px', fontSize: '12.5px', lineHeight: '1.7' }}>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px' }}>
               <span style={{ fontWeight: 'bold', color: '#7B1315', whiteSpace: 'nowrap' }}>⏱ תוקף ההצעה:</span>
-              <span>הצעת מחיר זו תקפה ל-<strong>10 ימים בלבד</strong> ממועד הפקתה{validUntil ? `, עד לתאריך: ${validUntil}` : ''}. לאחר מועד זה תידרש הצעת מחיר מעודכנת.</span>
+              <span>הצעת מחיר זו תקפה ל-<strong>{QUOTE_POLICY.validDays} ימים בלבד</strong> ממועד הפקתה{validUntil ? `, עד לתאריך: ${validUntil}` : ''}. לאחר מועד זה תידרש הצעת מחיר מעודכנת.</span>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
               <span style={{ fontWeight: 'bold', color: '#7B1315', whiteSpace: 'nowrap' }}>📦 זמינות מלאי:</span>
@@ -1940,6 +1942,8 @@ export default function App() {
   const [customerGroupFilter, setCustomerGroupFilter] = useState('');
   const [groupEdit, setGroupEdit] = useState<any>(null); // { id?, name, contactName, phone, notes, fromCustomerForm? }
   const [groupFileId, setGroupFileId] = useState<string | null>(null);
+  const [groupAddBranchOpen, setGroupAddBranchOpen] = useState(false);
+  const [groupAssignFor, setGroupAssignFor] = useState<string | null>(null); // לקוח שמשייכים מתוך תיק הלקוח
   const [quoteStatusFilter, setQuoteStatusFilter] = useState<string>('all');
 
   const [editingModelName, setEditingModelName] = useState<{old: string, newVal: string} | null>(null);
@@ -4068,8 +4072,26 @@ export default function App() {
       if (id) await updateDoc(doc(db, 'crm_customer_groups', id), payload);
       else id = (await addDoc(collection(db, 'crm_customer_groups'), { ...payload, createdAt: nowIso, createdBy: user?.email || '' })).id;
       if (g.fromCustomerForm) setCustomerEditingData((prev: any) => ({ ...prev, groupId: id }));
+      if (g.assignCustomerId) { await updateDoc(doc(db, 'crm_customers', g.assignCustomerId), { groupId: id, updatedAt: nowIso }); setGroupAssignFor(null); }
       setGroupEdit(null);
     } catch (err: any) { alert('שגיאה בשמירת הקבוצה: ' + (err?.message || '')); }
+  };
+
+  // שיוך / הסרה של לקוח מקבוצה. לקוח שייך לקבוצה אחת — העברה מקבוצה אחרת דורשת אישור.
+  const assignCustomerToGroup = async (customerId: string, groupId: string | null): Promise<boolean> => {
+    const c: any = customers.find((x: any) => x.id === customerId);
+    if (!c) return false;
+    const name = c.businessName || c.contactName || 'הלקוח';
+    if (groupId && c.groupId && c.groupId !== groupId) {
+      const from = customerGroups.find((x: any) => x.id === c.groupId)?.name || 'קבוצה אחרת';
+      const to = customerGroups.find((x: any) => x.id === groupId)?.name || '';
+      if (!window.confirm(`${name} משויך כרגע ל"${from}". להעביר אותו ל"${to}"?`)) return false;
+    }
+    if (!groupId && !window.confirm(`להסיר את ${name} מהקבוצה? הלקוח עצמו לא נמחק.`)) return false;
+    try {
+      await updateDoc(doc(db, 'crm_customers', customerId), { groupId: groupId || null, updatedAt: new Date().toISOString() });
+      return true;
+    } catch (err: any) { alert('שגיאה בשיוך: ' + (err?.message || '')); return false; }
   };
 
   // מחיקת קבוצה רק כשאין בה סניפים — נבדק מול השרת, לא מול המסך. הלקוחות עצמם לא נמחקים לעולם.
@@ -6986,6 +7008,11 @@ export default function App() {
                               {(() => { const r = quotes.find((x: any) => x.id === q.replacedByQuoteId); return r ? <div className="text-[10px] text-slate-500 mt-1">← הוחלפה בהצעה מ-{new Date(r.date).toLocaleDateString('he-IL')}</div> : null; })()}
                             </div>
                           ) : (<>
+                          {q.status === 'rejected' && q.rejectReason === 'expired' && (
+                            <div data-testid={`quote-auto-rejected-${q.id}`} className="text-[10px] font-bold text-slate-500 mb-1" title={q.autoRejectedAt ? `נדחתה אוטומטית ב-${new Date(q.autoRejectedAt).toLocaleDateString('he-IL')}` : ''}>
+                              נדחתה אוטומטית (פג תוקף, יום {QUOTE_POLICY.validDays + QUOTE_POLICY.graceDays})
+                            </div>
+                          )}
                           {q.replacesQuoteId && q.status !== 'approved' && (() => { const o = quotes.find((x: any) => x.id === q.replacesQuoteId); return <div data-testid={`quote-change-draft-${q.id}`} className="text-[10px] font-bold text-indigo-700 mb-1">שינוי להזמנה{o ? ` מ-${new Date(o.date).toLocaleDateString('he-IL')}` : ''}</div>; })()}
                           <select data-testid={`quote-status-${q.id}`} 
                             className={`text-xs font-bold rounded-md border p-1.5 shadow-sm cursor-pointer ${q.status === 'approved' ? 'bg-green-100 text-green-800 border-green-300' : q.status === 'approved_no_stock' ? 'bg-yellow-100 text-yellow-800 border-yellow-300' : q.status === 'approved_test' ? 'bg-indigo-100 text-indigo-800 border-indigo-300' : q.status === 'rejected' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`} 
@@ -9326,6 +9353,29 @@ export default function App() {
       )}
 
       {/* SHIPMENT ADD/EDIT MODAL */}
+      {groupAssignFor && !groupEdit && (() => {
+        const c: any = customers.find((x: any) => x.id === groupAssignFor);
+        if (!c) return null;
+        return (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60">
+            <div data-testid="group-assign-modal" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-3" dir="rtl">
+              <h3 className="text-lg font-bold text-slate-800">שיוך לרשת</h3>
+              <p className="text-sm text-slate-500">{c.businessName || c.contactName}</p>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {customerGroups.map((g: any) => (
+                  <button key={g.id} data-testid={`group-assign-${g.id}`} onClick={async () => { if (await assignCustomerToGroup(c.id, g.id)) setGroupAssignFor(null); }} className="w-full text-right border border-slate-200 rounded-md px-3 py-2 text-sm hover:bg-indigo-50">{g.name}</button>
+                ))}
+                {!customerGroups.length && <p className="text-xs text-slate-400">אין עדיין קבוצות.</p>}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button data-testid="group-assign-new" onClick={() => setGroupEdit({ name: '', contactName: '', phone: '', notes: '', assignCustomerId: c.id })} className="flex-1 bg-[#7B1315] text-white py-2 rounded-md font-bold">+ רשת חדשה</button>
+                <button onClick={() => setGroupAssignFor(null)} className="px-4 py-2 rounded-md border border-slate-300 text-slate-600">ביטול</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {groupEdit && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60">
           <div data-testid="group-edit-modal" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-3" dir="rtl">
@@ -9372,18 +9422,31 @@ export default function App() {
                   <p className="text-sm text-slate-500">{[g.contactName, g.phone].filter(Boolean).join(' · ') || 'אין איש קשר רשתי'}</p>
                   {g.notes && <p className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{g.notes}</p>}
                 </div>
-                <button onClick={() => setGroupFileId(null)} className="text-slate-400 hover:text-slate-600" aria-label="סגור"><X className="w-5 h-5"/></button>
+                <button onClick={() => { setGroupFileId(null); setGroupAddBranchOpen(false); }} className="text-slate-400 hover:text-slate-600" aria-label="סגור"><X className="w-5 h-5"/></button>
               </div>
               <div className="flex gap-2 flex-wrap">
                 <button data-testid="group-edit" onClick={() => setGroupEdit({ ...g })} className="text-sm border border-slate-300 rounded px-3 py-1.5">ערוך פרטים</button>
+                <button data-testid="group-add-branch" onClick={() => setGroupAddBranchOpen(v => !v)} className="text-sm font-bold text-indigo-700 border border-indigo-200 bg-indigo-50 rounded px-3 py-1.5">+ הוסף סניף</button>
                 <button data-testid="group-delete" onClick={() => deleteCustomerGroup(g)} className="text-sm text-red-600 border border-red-200 bg-red-50 rounded px-3 py-1.5">מחק קבוצה</button>
               </div>
+              {groupAddBranchOpen && (
+                <div data-testid="group-add-branch-picker" className="border border-indigo-200 rounded-lg p-3 bg-indigo-50/40">
+                  <p className="text-xs font-bold text-slate-600 mb-1">חפש לקוח לפי שם או טלפון</p>
+                  <CustomerCombobox
+                    customers={customers.filter((c: any) => c.groupId !== g.id)}
+                    value=""
+                    onChange={async (id) => { if (await assignCustomerToGroup(id, g.id)) setGroupAddBranchOpen(false); }}
+                    onCreateNew={() => alert('הלקוח לא קיים עדיין. צור אותו קודם ("הוסף לקוח"), ואז הוסף אותו לרשת.')}
+                    placeholder="שם עסק / איש קשר / טלפון"
+                  />
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-500">סניפים</p><p className="text-xl font-bold">{members.length}</p></div>
                 <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-500">סה"כ קניות (לפני מע"מ, בלי הובלה)</p><p data-testid="group-total" className="text-xl font-bold text-[#651011]">₪{Math.round(total).toLocaleString()}</p></div>
               </div>
               <table className="w-full text-sm">
-                <thead className="text-xs text-slate-500 bg-slate-50"><tr><th className="p-2 text-right font-medium">סניף</th><th className="p-2 text-right font-medium">ח.פ</th><th className="p-2 text-center font-medium">עסקאות</th><th className="p-2 text-right font-medium">קניות</th><th className="p-2 text-right font-medium">אחרונה</th></tr></thead>
+                <thead className="text-xs text-slate-500 bg-slate-50"><tr><th className="p-2 text-right font-medium">סניף</th><th className="p-2 text-right font-medium">ח.פ</th><th className="p-2 text-center font-medium">עסקאות</th><th className="p-2 text-right font-medium">קניות</th><th className="p-2 text-right font-medium">אחרונה</th><th className="p-2"></th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {rows.map((r: any) => (
                     <tr key={r.c.id} data-testid="group-branch-row" className="hover:bg-slate-50 cursor-pointer" onClick={() => { setGroupFileId(null); setSelectedCustomer(r.c); setActiveCustomerOverviewTab('log'); setIsCustomerOverviewOpen(true); }}>
@@ -9392,9 +9455,10 @@ export default function App() {
                       <td className="p-2 text-center">{r.count}</td>
                       <td className="p-2 font-bold">₪{Math.round(r.revenue).toLocaleString()}</td>
                       <td className="p-2 text-slate-500">{r.last ? new Date(r.last).toLocaleDateString('he-IL') : '—'}</td>
+                      <td className="p-2 text-left"><button data-testid={`group-remove-${r.c.id}`} onClick={e => { e.stopPropagation(); assignCustomerToGroup(r.c.id, null); }} className="text-xs text-slate-400 hover:text-red-600">הסר</button></td>
                     </tr>
                   ))}
-                  {!rows.length && <tr><td colSpan={5} className="p-4 text-center text-slate-400">אין עדיין סניפים. שייך לקוחות מתוך כרטיס הלקוח.</td></tr>}
+                  {!rows.length && <tr><td colSpan={6} className="p-4 text-center text-slate-400">אין עדיין סניפים. לחץ "+ הוסף סניף".</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -10199,7 +10263,18 @@ export default function App() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><User className="w-5 h-5 text-[#7B1315]"/> תיק לקוח / ליד</h3>
+                {(() => {
+                  const live: any = customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer;
+                  const g = live.groupId ? customerGroups.find((x: any) => x.id === live.groupId) : null;
+                  return g ? (
+                    <button data-testid="customer-panel-group" onClick={() => setGroupFileId(g.id)} className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">רשת: {g.name}</button>
+                  ) : (
+                    <button data-testid="customer-panel-group-assign" onClick={() => setGroupAssignFor(live.id)} className="text-xs px-2 py-0.5 rounded-full border border-dashed border-slate-300 text-slate-500 hover:text-indigo-700">+ שייך לרשת</button>
+                  );
+                })()}
+              </div>
               <div className="flex items-center gap-1">
                 <button data-testid="customer-panel-catalog" title="שלח קטלוג בוואטסאפ" aria-label="שלח קטלוג בוואטסאפ" className="text-slate-400 hover:text-green-600 p-1"
                   onClick={() => { setCatalogSendTarget(customers.find((c: any) => c.id === selectedCustomer.id) || selectedCustomer); setCatalogSelectedModels(modelsList.filter(m => settings?.models?.[m]?.videoUrl)); setIsCatalogSendModalOpen(true); }}>

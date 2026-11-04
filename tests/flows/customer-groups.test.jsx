@@ -91,5 +91,58 @@ const groups = () => T.docsWhere('crm_customer_groups', () => true);
   const top = T.allById('an-top-row').map(r => r.textContent);
   T.check(top.length === 2 && top[0].includes('רשת הבירה') && top[0].includes('2 סניפים'), `הרשת צריכה להופיע כשורה אחת ראשונה: ${JSON.stringify(top)}`);
 
+  T.describe('7. "+ הוסף סניף" מתוך תיק הקבוצה');
+  if (T.byId('space-sales')) await T.click(T.byId('space-sales'));
+  await T.nav('customers');
+  await T.select(T.byId('customer-group-filter'), '');
+  await T.click(T.byId('customer-group-badge-B1'));
+  await T.click(T.byId('group-add-branch'));
+  const picker = T.byId('group-add-branch-picker');
+  const inp = T.byId('customer-combobox-input', picker);
+  await T.focus(inp);
+  await T.type(inp, 'בר עצמאי');
+  await T.mouseDown(T.$$('div', picker).find(d => d.children.length === 0 && d.textContent.includes('בר עצמאי')));
+  T.check(T.docs('crm_customers').SOLO.groupId === G.id && T.allById('group-branch-row', T.byId('group-file')).length === 3, 'הסניף לא נוסף מתוך תיק הקבוצה');
+
+  T.describe('8. הסרת סניף מהקבוצה — הלקוח עצמו נשאר');
+  T.answerConfirms(true);
+  await T.click(T.byId('group-remove-SOLO'));
+  T.check(T.docs('crm_customers').SOLO.groupId === null && !!T.docs('crm_customers').SOLO.businessName && T.allById('group-branch-row', T.byId('group-file')).length === 2, 'ההסרה לא עבדה / הלקוח נפגע');
+  await T.click(T.$('button[aria-label="סגור"]', T.byId('group-file')));
+
+  T.describe('9. מתוך תיק הלקוח: "+ שייך לרשת" ← רשת חדשה');
+  await T.click(rowOf('בר עצמאי'));
+  await T.click(T.byId('customer-panel-group-assign'));
+  T.check(!!T.byId('group-assign-modal') && !!T.byId(`group-assign-${G.id}`), 'חלון השיוך לא נפתח / לא מציג את הרשתות הקיימות');
+  await T.click(T.byId('group-assign-new'));
+  await T.type(T.byId('group-name'), 'רשת שנייה');
+  await T.click(T.byId('group-save'));
+  const G2 = groups().find(g => g.name === 'רשת שנייה');
+  T.check(!!G2 && T.docs('crm_customers').SOLO.groupId === G2.id && !T.byId('group-assign-modal'), 'רשת חדשה לא נוצרה / הלקוח לא שויך אליה');
+  T.check(T.text(T.byId('customer-panel-group')).includes('רשת שנייה'), 'בכותרת תיק הלקוח לא מוצגת הרשת');
+
+  T.describe('10. העברה מרשת לרשת — באישור');
+  await T.click(T.byId('customer-panel-group'));
+  await T.click(T.$('button[aria-label="סגור"]', T.byId('group-file')));
+  T.ui.confirmAnswers.length = 0; // תשובות שלא נוצלו בסעיפים קודמים
+  T.answerConfirms(false);
+  const confirmsBefore = T.ui.confirms.length;
+  await T.select(T.byId('customer-group-filter'), G.id);
+  await T.click(T.byId('group-open-file'));
+  await T.click(T.byId('group-add-branch'));
+  const p2 = T.byId('group-add-branch-picker');
+  const inp2 = T.byId('customer-combobox-input', p2);
+  await T.focus(inp2);
+  await T.type(inp2, 'בר עצמאי');
+  await T.mouseDown(T.$$('div', p2).find(d => d.children.length === 0 && d.textContent.includes('בר עצמאי')));
+  T.check(T.ui.confirms.slice(confirmsBefore).some(c => c.includes('משויך כרגע ל"רשת שנייה"')) && T.docs('crm_customers').SOLO.groupId === G2.id, `העברה מרשת אחרת לא ביקשה אישור / בוצעה למרות ביטול: ${JSON.stringify(T.ui.confirms.slice(confirmsBefore))} ${T.docs('crm_customers').SOLO.groupId} ${!!T.byId('group-file')} ${!!p2}`);
+
+  T.answerConfirms(true);
+  const inp3 = T.byId('customer-combobox-input', T.byId('group-add-branch-picker'));
+  await T.focus(inp3);
+  await T.type(inp3, 'בר עצמאי');
+  await T.mouseDown(T.$$('div', T.byId('group-add-branch-picker')).find(d => d.children.length === 0 && d.textContent.includes('בר עצמאי')));
+  T.check(T.docs('crm_customers').SOLO.groupId === G.id, 'העברה באישור לא בוצעה');
+
   T.finish();
 })().catch(e => { T.check(false, 'HARNESS_CRASH ' + (e && e.stack ? e.stack.split('\n').slice(0, 5).join(' | ') : e)); T.finish(); });

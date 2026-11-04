@@ -1,0 +1,6 @@
+{
+  "_comment": "מדיניות תוקף הצעת מחיר (שחף, 4.11.2026). משותף ל-PDF (src/App.tsx) ולדחייה האוטומטית (netlify/functions/quote-expirer.js) — כדי שהמסמך והמערכת לא יסתרו. validDays = מה שמודפס ללקוח; graceDays = ימים שקטים אחרי התוקף; ביום validDays+graceDays מתאריך ההצעה, הצעה ממתינה הופכת לנדחתה. autoRejectFrom = רק הצעות שנוצרו מהרגע הזה (הצעות ישנות לא נדחות).",
+  "validDays": 10,
+  "graceDays": 3,
+  "autoRejectFrom": "2026-11-04T18:30:00.000Z"
+}
