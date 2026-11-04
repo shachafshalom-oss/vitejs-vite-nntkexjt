@@ -99,7 +99,9 @@ const cust = (id) => T.docs('crm_customers')[id];
   T.check(T.byId('analytics-seg-stock')?.getAttribute('aria-pressed') === 'true', 'ברירת מחדל: מוצרי מלאי');
   T.check(v('an-count') === '1' && T.amountShown(9500, T.byId('an-revenue')), `מלאי: מכירה אחת, 9,500: ${v('an-count')} ${v('an-revenue')}`);
   T.check(T.amountShown(5000, T.byId('an-profit')) && v('an-margin') === '53%', `מלאי: רווח 5,000 (בלי 3,000 שיווק), מרווח 53%: ${v('an-profit')} ${v('an-margin')}`);
-  T.check(T.amountShown(9500, T.byId('an-avg-deal')) && T.amountShown(5000, T.byId('an-profit-unit')), 'מלאי: ממוצע לעסקה 9,500, רווח לעמדה 5,000');
+  // ממוצע לעסקה הוסר (4.11.2026) — במקומו ממוצע וחציון ללקוח
+  T.check(!T.byId('an-avg-deal') && v('an-customers') === '1' && T.amountShown(9500, T.byId('an-avg-customer')) && T.amountShown(9500, T.byId('an-median-customer')) && T.amountShown(5000, T.byId('an-profit-unit')), 'מלאי: לקוח אחד, ממוצע וחציון ללקוח 9,500, רווח לעמדה 5,000');
+  T.check(T.byId('an-top-customers')?.textContent.includes('לקוח מלאי'), 'טבלת לקוחות מובילים מציגה את הלקוח');
   T.check(T.byId('an-models')?.textContent.includes('Prime') && !T.byId('an-models').textContent.includes('פרויקט קסטום'), 'טבלת דגמים במלאי — בלי קסטום');
   T.check(!T.byId('an-kind-custom'), 'השוואת מלאי/קסטום מוצגת רק ב"הכול"');
 
@@ -109,9 +111,9 @@ const cust = (id) => T.docs('crm_customers')[id];
 
   await T.click(T.byId('analytics-seg-all'));
   T.check(v('an-count') === '2' && T.amountShown(21500, T.byId('an-revenue')) && T.amountShown(10000, T.byId('an-profit')), `הכול: 2 מכירות, 21,500, רווח 10,000: ${v('an-count')} ${v('an-revenue')}`);
-  T.check(v('an-avg-deal')?.includes('₪9,500') && v('an-avg-deal')?.includes('₪12,000'), `הכול: ממוצע לעסקה בנפרד למלאי ולקסטום, לא מספר מעורבב: ${v('an-avg-deal')}`);
+  T.check(v('an-avg-customer')?.includes('₪9,500') && v('an-avg-customer')?.includes('₪12,000'), `הכול: ממוצע ללקוח בנפרד למלאי ולקסטום, לא מספר מעורבב: ${v('an-avg-customer')}`);
   T.check(v('an-margin')?.includes('53%') && v('an-margin')?.includes('42%'), `הכול: מרווח בנפרד: ${v('an-margin')}`);
-  T.check(T.byId('an-kind-custom')?.textContent.includes('1 עסקאות'), 'השוואת מלאי מול קסטום');
+  T.check(T.byId('an-kind-custom')?.textContent.includes('1 לקוחות') && T.byId('an-kind-custom')?.textContent.includes('ממוצע ללקוח'), 'השוואת מלאי מול קסטום — פר לקוח');
   T.check(T.byId('an-pipeline')?.textContent.includes('ממתינות מעל 14 יום') && T.amountShown(18000, T.byId('an-pipeline')), 'הצעות פתוחות: 18,000');
   T.check(T.byId('an-conv-source')?.textContent.includes('אתר') && T.byId('an-conv-source').textContent.includes('פייסבוק'), 'המרה לפי מקור');
   T.check(!!T.byId('an-chart-avg') && !!T.byId('an-chart-profit'), 'שני הגרפים מוצגים');

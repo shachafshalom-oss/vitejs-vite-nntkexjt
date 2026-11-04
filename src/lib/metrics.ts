@@ -34,6 +34,9 @@ export interface Deal {
   profit: number | null;
   units: number;
   lines: DealLine[];
+  // מפתח "לקוח כלכלי" לניתוח פר לקוח: רשת (g:<groupId>) או אדם (p:<root>, כרטיסים עם אותו טלפון).
+  // נקבע ב-withCustomerKeys. בלי מפתח — נופל ל-customerId.
+  ck?: string;
 }
 
 const ISRAEL_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -139,11 +142,22 @@ function finishDeal(id: string, kind: DealKind, date: string, customerId: string
 // =========================================================================
 // ניתוח
 // =========================================================================
+// --- ניתוח פר לקוח (שחף, 4.11.2026) ---
+// ממוצע לעסקה הוסר: תוספת קטנה בחשבון נפרד היא "עסקה" נוספת שמורידה את הממוצע, למרות שהלקוח קנה יותר.
+// לכן כל הממוצעים הם פר לקוח: סך ההכנסה בטווח חלקי מספר הלקוחות שקנו בטווח.
+// לקוח = רשת (כל הסניפים יחד) או אדם (כרטיסים עם אותו טלפון / כפילות מסומנת).
 export interface Summary {
-  count: number; revenue: number; units: number; avgDeal: number;
-  profitDeals: number; profit: number; marginPct: number; avgProfitPerDeal: number; avgProfitPerUnit: number;
+  count: number; revenue: number; units: number;
+  customers: number; avgCustomer: number; medianCustomer: number;
+  profitDeals: number; profit: number; marginPct: number; avgProfitPerCustomer: number; avgProfitPerUnit: number;
   missingCost: number;
 }
+export const dealKey = (d: Deal) => d.ck || d.customerId || `deal:${d.id}`;
+const median = (xs: number[]) => {
+  if (!xs.length) return 0;
+  const a = [...xs].sort((x, y) => x - y), m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
 export function summarize(deals: Deal[]): Summary {
   const count = deals.length;
   const revenue = deals.reduce((s, d) => s + d.revenue, 0);
@@ -152,19 +166,51 @@ export function summarize(deals: Deal[]): Summary {
   const pRevenue = withCost.reduce((s, d) => s + d.revenue, 0);
   const profit = withCost.reduce((s, d) => s + (d.profit as number), 0);
   const pUnits = withCost.reduce((s, d) => s + d.units, 0);
+  const perCustomer: Record<string, number> = {};
+  deals.forEach(d => { const k = dealKey(d); perCustomer[k] = (perCustomer[k] || 0) + d.revenue; });
+  const customers = Object.keys(perCustomer).length;
+  const profitCustomers = new Set(withCost.map(dealKey)).size;
   return {
-    count, revenue, units, avgDeal: count ? revenue / count : 0,
+    count, revenue, units,
+    customers, avgCustomer: customers ? revenue / customers : 0, medianCustomer: median(Object.values(perCustomer)),
     profitDeals: withCost.length, profit,
     marginPct: pRevenue > 0 ? (profit / pRevenue) * 100 : 0,
-    avgProfitPerDeal: withCost.length ? profit / withCost.length : 0,
+    avgProfitPerCustomer: profitCustomers ? profit / profitCustomers : 0,
     avgProfitPerUnit: pUnits ? profit / pUnits : 0,
     missingCost: count - withCost.length,
   };
 }
 
+// מפתח לקוח לכל עסקה: רשת קודמת לאדם. groupId נלקח מהכרטיס של הלקוח בעסקה.
+export function withCustomerKeys(deals: Deal[], customers: any[]): Deal[] {
+  const people = groupPeople(customers);
+  const byId: Record<string, any> = {};
+  customers.forEach((c: any) => { byId[c.id] = c; });
+  return deals.map(d => {
+    const c = byId[d.customerId];
+    const ck = c?.groupId ? `g:${c.groupId}` : (people[d.customerId] ? `p:${people[d.customerId]}` : d.customerId);
+    return { ...d, ck };
+  });
+}
+
+// לקוחות מובילים בטווח: הכנסה, עסקאות, רווח (רק עסקאות עם עלות ידועה), קנייה אחרונה, סניפים/כרטיסים
+export interface CustomerRow { key: string; deals: number; revenue: number; profit: number; profitKnown: boolean; lastDate: string; customerIds: string[]; }
+export function topCustomers(deals: Deal[], limit = 10): CustomerRow[] {
+  const map: Record<string, CustomerRow> = {};
+  deals.forEach(d => {
+    const k = dealKey(d);
+    const r = (map[k] = map[k] || { key: k, deals: 0, revenue: 0, profit: 0, profitKnown: false, lastDate: '', customerIds: [] });
+    r.deals++; r.revenue += d.revenue;
+    if (d.profit !== null) { r.profit += d.profit; r.profitKnown = true; }
+    if (d.date > r.lastDate) r.lastDate = d.date;
+    if (d.customerId && !r.customerIds.includes(d.customerId)) r.customerIds.push(d.customerId);
+  });
+  return Object.values(map).sort((a, b) => b.revenue - a.revenue).slice(0, limit);
+}
+
 export const inRange = (deals: Deal[], from: string, to: string) => deals.filter(d => (!from || d.date >= from) && (!to || d.date <= to));
 
-export interface MonthRow { month: string; count: number; revenue: number; avgDeal: number; profit: number; marginPct: number; }
+export interface MonthRow { month: string; count: number; revenue: number; customers: number; avgCustomer: number; profit: number; marginPct: number; }
 export function monthly(deals: Deal[], from: string, to: string): MonthRow[] {
   const sel = inRange(deals, from, to);
   if (!sel.length) return [];
@@ -176,15 +222,15 @@ export function monthly(deals: Deal[], from: string, to: string): MonthRow[] {
     const key = `${y}-${String(m).padStart(2, '0')}`;
     if (key > end) break;
     const s = summarize(sel.filter(d => d.date.startsWith(key)));
-    rows.push({ month: key, count: s.count, revenue: s.revenue, avgDeal: s.avgDeal, profit: s.profit, marginPct: s.marginPct });
+    rows.push({ month: key, count: s.count, revenue: s.revenue, customers: s.customers, avgCustomer: s.avgCustomer, profit: s.profit, marginPct: s.marginPct });
     m++; if (m > 12) { m = 1; y++; }
   }
   return rows;
 }
 
-// שיפוע (₪ לחודש) של ממוצע העסקה — ריבועים פחותים על חודשים שיש בהם מכירות
-export function trendSlope(rows: { avgDeal: number; count: number }[]): number | null {
-  const pts = rows.map((r, i) => ({ x: i, y: r.avgDeal, c: r.count })).filter(p => p.c > 0);
+// שיפוע (₪ לחודש) של הממוצע ללקוח — ריבועים פחותים על חודשים שיש בהם מכירות
+export function trendSlope(rows: { avgCustomer: number; count: number }[]): number | null {
+  const pts = rows.map((r, i) => ({ x: i, y: r.avgCustomer, c: r.count })).filter(p => p.c > 0);
   if (pts.length < 3) return null;
   const n = pts.length;
   const mx = pts.reduce((s, p) => s + p.x, 0) / n;
@@ -319,11 +365,12 @@ export function insights(args: { deals: Deal[]; months: MonthRow[]; models: Mode
   const active = months.filter(m => m.count > 0);
   if (active.length >= 4) {
     const recent = active.slice(-3), prev = active.slice(-6, -3);
-    const avg = (rs: MonthRow[]) => { const c = rs.reduce((s, r) => s + r.count, 0); return c ? rs.reduce((s, r) => s + r.revenue, 0) / c : 0; };
+    // ממוצע ללקוח על פני חלון של 3 חודשים: הכנסה חלקי לקוחות שונים שקנו בחלון (לא סכום ממוצעים חודשיים)
+    const avg = (rs: MonthRow[]) => summarize(deals.filter(d => rs.some(r => d.date.startsWith(r.month)))).avgCustomer;
     const a = avg(recent), b = avg(prev);
     if (b > 0) {
       const pct = ((a - b) / b) * 100;
-      if (Math.abs(pct) >= 5) out.push({ tone: pct > 0 ? 'good' : 'warn', text: `ממוצע העסקה ב-3 חודשי המכירה האחרונים ${pct > 0 ? 'עלה' : 'ירד'} ב-${Math.abs(Math.round(pct))}% (${ils(b)} ← ${ils(a)}).` });
+      if (Math.abs(pct) >= 5) out.push({ tone: pct > 0 ? 'good' : 'warn', text: `הממוצע ללקוח ב-3 חודשי המכירה האחרונים ${pct > 0 ? 'עלה' : 'ירד'} ב-${Math.abs(Math.round(pct))}% (${ils(b)} ← ${ils(a)}).` });
     }
   }
   const solid = models.filter(m => m.profitUnits >= 3);
@@ -341,7 +388,7 @@ export function insights(args: { deals: Deal[]; months: MonthRow[]; models: Mode
   if (pipe.staleCount > 0) out.push({ tone: 'warn', text: `${pipe.staleCount === 1 ? 'הצעה אחת ממתינה' : `${pipe.staleCount} הצעות ממתינות`} יותר מ-14 יום, בשווי ${ils(pipe.staleValue)}. זה הכסף הכי קרוב לסגירה.` });
   const kinds = (k: DealKind) => summarize(deals.filter(d => d.kind === k));
   const st = kinds('stock'), cu = kinds('custom');
-  if (st.profitDeals >= 3 && cu.profitDeals >= 2) out.push({ tone: 'info', text: `מרווח של ${Math.round(st.marginPct)}% במלאי מול ${Math.round(cu.marginPct)}% בקסטום, וממוצע עסקה של ${ils(st.avgDeal)} מול ${ils(cu.avgDeal)} בקסטום.` });
+  if (st.profitDeals >= 3 && cu.profitDeals >= 2) out.push({ tone: 'info', text: `מרווח של ${Math.round(st.marginPct)}% במלאי מול ${Math.round(cu.marginPct)}% בקסטום, וממוצע ללקוח של ${ils(st.avgCustomer)} מול ${ils(cu.avgCustomer)} בקסטום.` });
   if (summary.missingCost > 0) out.push({ tone: 'info', text: `${summary.missingCost} עסקאות בלי עלות ידועה (אושרו ללא מלאי, או יחידה בלי עלות מפעל). הן לא נכנסות לחישובי הרווח.` });
   return out.slice(0, 5);
 }

@@ -69,8 +69,9 @@ try {
   const months = M.monthly(deals, '2026-08-01', '2026-10-31');
   check(months.map(m => m.month).join(',') === '2026-08,2026-09,2026-10', `חודשים רציפים כולל חודש ריק: ${months.map(m => m.month)}`);
   check(months[0].count === 0 && months[1].count === 1 && months[2].count === 4, `ספירה לפי חודש: ${months.map(m => m.count)}`);
-  check(M.trendSlope([{ avgDeal: 1000, count: 1 }, { avgDeal: 2000, count: 1 }, { avgDeal: 3000, count: 1 }]) === 1000, 'שיפוע +1,000 לחודש');
-  check(M.trendSlope([{ avgDeal: 1000, count: 1 }, { avgDeal: 2000, count: 1 }]) === null, 'פחות מ-3 חודשים — אין מגמה');
+  // המגמה מחושבת על הממוצע ללקוח (4.11.2026 — ממוצע לעסקה הוסר)
+  check(M.trendSlope([{ avgCustomer: 1000, count: 1 }, { avgCustomer: 2000, count: 1 }, { avgCustomer: 3000, count: 1 }]) === 1000, 'שיפוע +1,000 לחודש');
+  check(M.trendSlope([{ avgCustomer: 1000, count: 1 }, { avgCustomer: 2000, count: 1 }]) === null, 'פחות מ-3 חודשים — אין מגמה');
   const models = M.byModel(deals);
   const prime = models.find(m => m.model === 'Prime');
   check(prime && prime.units === 2 && prime.profitUnits === 1, `Prime: 2 יחידות, רק אחת עם עלות: ${prime?.units}/${prime?.profitUnits}`);
@@ -174,5 +175,31 @@ try {
   describe('7. עזרים');
   check(M.toWhatsAppNumber('054-805-0870') === '972548050870' && M.toWhatsAppNumber('+972548050870') === '972548050870', 'מספר וואטסאפ בינלאומי');
   check(M.addDaysYmd('2026-10-31', 1) === '2026-11-01' && M.addDaysYmd('2026-12-31', 3) === '2027-01-03', 'הוספת ימים לתאריך');
+  describe('9. ממוצע פר לקוח: תוספת בחשבון נפרד לא מורידה את הממוצע; רשת = לקוח אחד');
+  const mk = (id, customerId, revenue, profit = null, date = '2026-10-01') => ({ id, kind: 'stock', date, customerId, owner: '', revenue, cost: profit === null ? null : revenue - profit, profit, units: 1, lines: [] });
+  // A קנה בר ב-10,000 ואחר כך תוספת 3,000 בחשבון נפרד; B קנה ב-9,000
+  const pc = M.summarize([mk('1', 'A', 10000, 4000), mk('2', 'A', 3000, 1000), mk('3', 'B', 9000, 3000)]);
+  check(pc.count === 3 && pc.customers === 2, `3 עסקאות, 2 לקוחות: ${pc.count} ${pc.customers}`);
+  check(pc.avgCustomer === 11000 && pc.medianCustomer === 11000, `ממוצע וחציון ללקוח (13,000 + 9,000) / 2 = 11,000: ${pc.avgCustomer} ${pc.medianCustomer}`);
+  check(pc.avgProfitPerCustomer === 4000, `רווח ממוצע ללקוח (5,000 + 3,000) / 2: ${pc.avgProfitPerCustomer}`);
+  check(!('avgDeal' in pc), 'ממוצע לעסקה הוסר מהסיכום');
+  // חציון לא מתנפח מלקוח גדול אחד
+  const big = M.summarize([mk('1', 'A', 5000), mk('2', 'B', 6000), mk('3', 'C', 100000)]);
+  check(big.medianCustomer === 6000 && near(big.avgCustomer, 37000), `חציון 6,000 מול ממוצע 37,000: ${big.medianCustomer} ${big.avgCustomer}`);
+  // רשת: שני סניפים = לקוח אחד; אותו טלפון בשני כרטיסים = לקוח אחד
+  const custs = [
+    { id: 'S1', groupId: 'G', phone: '0501111111' }, { id: 'S2', groupId: 'G', phone: '0502222222' },
+    { id: 'P1', phone: '050-3333333' }, { id: 'P2', phone: '+972503333333' }, { id: 'Z', phone: '0504444444' },
+  ];
+  const keyed = M.withCustomerKeys([mk('a', 'S1', 8000), mk('b', 'S2', 7000), mk('c', 'P1', 5000), mk('d', 'P2', 1000), mk('e', 'Z', 4000)], custs);
+  const kg = M.summarize(keyed);
+  check(kg.customers === 3 && kg.avgCustomer === 25000 / 3, `רשת + אותו טלפון: 3 לקוחות (רשת 15,000, אדם 6,000, Z 4,000): ${kg.customers}`);
+  const top = M.topCustomers(keyed, 10);
+  check(top[0].key === 'g:G' && top[0].revenue === 15000 && top[0].deals === 2 && top[0].customerIds.length === 2, `הרשת ראשונה בטבלה, שורה אחת לשני הסניפים: ${JSON.stringify(top[0])}`);
+  check(top[1].revenue === 6000 && top[1].customerIds.length === 2, `אותו אדם בשני כרטיסים = שורה אחת: ${JSON.stringify(top[1])}`);
+  // חודשי: ממוצע ללקוח לפי חודש
+  const mo = M.monthly(keyed, '2026-10-01', '2026-10-31');
+  check(mo.length === 1 && mo[0].customers === 3 && near(mo[0].avgCustomer, 25000 / 3), `חודש: 3 לקוחות: ${JSON.stringify(mo)}`);
+
   finish();
 } catch (e) { crash(e); }

@@ -2,11 +2,12 @@
 // מכירה = תשלום/מקדמה, שווי לפני מע"מ בלי הובלה, רווח גולמי = בלי שיווק והוצאות כלליות.
 import { useMemo, useState } from 'react';
 import { Sparkles, TrendingUp, TrendingDown, Lightbulb, AlertTriangle, Info, Users } from 'lucide-react';
-import { inRange, summarize, monthly, trendSlope, byModel, conversion, pipeline, insights, sourceLabel, addDaysYmd, untaggedBuyers, LEAD_SOURCES, type Deal, type MonthRow } from '../lib/metrics';
+import { inRange, summarize, monthly, trendSlope, byModel, conversion, pipeline, insights, sourceLabel, addDaysYmd, untaggedBuyers, withCustomerKeys, topCustomers, LEAD_SOURCES, type Deal, type MonthRow } from '../lib/metrics';
 
 interface Props {
   deals: Deal[];
   customers: any[];
+  groups?: any[]; // קבוצות / רשתות (crm_customer_groups) — לשמות בטבלת הלקוחות המובילים
   quotes: any[];
   agents: { name: string; email: string }[];
   today: string;
@@ -112,21 +113,24 @@ export default function SalesAnalytics(p: Props) {
   const to = p.today;
 
   const data = useMemo(() => {
-    const segDeals = p.deals.filter(d => seg === 'all' || (seg === 'custom' ? d.kind === 'custom' : d.kind !== 'custom'));
+    // כל עסקה מקבלת מפתח "לקוח": רשת (כל הסניפים יחד) או אדם (אותו טלפון) — בסיס לממוצע פר לקוח
+    const keyed = withCustomerKeys(p.deals, p.customers);
+    const segDeals = keyed.filter(d => seg === 'all' || (seg === 'custom' ? d.kind === 'custom' : d.kind !== 'custom'));
     const sel = inRange(segDeals, from, to);
     const summary = summarize(sel);
     const mFrom = from || (p.deals[0]?.date ?? '');
     const months = monthly(segDeals, mFrom, to);
     // ב"הכול": חודשים לכל סוג בנפרד, על אותו ציר (לגרף דו-סדרתי)
-    const monthsStock = seg === 'all' ? monthly(p.deals.filter(d => d.kind !== 'custom'), mFrom, to) : [];
-    const monthsCustom = seg === 'all' ? monthly(p.deals.filter(d => d.kind === 'custom'), mFrom, to) : [];
-    const align = (rows: MonthRow[]) => months.map(m => rows.find(r => r.month === m.month) || { ...m, count: 0, revenue: 0, avgDeal: 0, profit: 0, marginPct: 0 });
+    const monthsStock = seg === 'all' ? monthly(keyed.filter(d => d.kind !== 'custom'), mFrom, to) : [];
+    const monthsCustom = seg === 'all' ? monthly(keyed.filter(d => d.kind === 'custom'), mFrom, to) : [];
+    const align = (rows: MonthRow[]) => months.map(m => rows.find(r => r.month === m.month) || { ...m, count: 0, revenue: 0, customers: 0, avgCustomer: 0, profit: 0, marginPct: 0 });
     const slope = trendSlope(months);
     const models = byModel(sel);
     const sources = conversion(p.customers, p.deals, from, to, 'source');
     const owners = conversion(p.customers, p.deals, from, to, 'owner');
     const pipe = pipeline(p.quotes, p.price, p.today);
-    const allSel = inRange(p.deals, from, to);
+    const allSel = inRange(keyed, from, to);
+    const top = topCustomers(sel, 10);
     const stock = summarize(allSel.filter(d => d.kind !== 'custom'));
     const custom = summarize(allSel.filter(d => d.kind === 'custom'));
     // השוואה לתקופה הקודמת באותו אורך
@@ -135,7 +139,7 @@ export default function SalesAnalytics(p: Props) {
       const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
       prev = summarize(inRange(segDeals, addDaysYmd(from, -days - 1), addDaysYmd(from, -1)));
     }
-    return { summary, months, monthsStock: align(monthsStock), monthsCustom: align(monthsCustom), slope, models, sources, owners, pipe, stock, custom, prev, found: insights({ deals: sel, months, models, sources, pipe, summary }) };
+    return { summary, top, months, monthsStock: align(monthsStock), monthsCustom: align(monthsCustom), slope, models, sources, owners, pipe, stock, custom, prev, found: insights({ deals: sel, months, models, sources, pipe, summary }) };
   }, [p.deals, p.customers, p.quotes, p.price, p.today, from, to, seg]);
 
   const { summary: s, prev } = data;
@@ -177,23 +181,30 @@ export default function SalesAnalytics(p: Props) {
         <div data-testid="analytics-empty" className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500">אין מכירות בטווח הזה.</div>
       ) : (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-            <Tile id="an-count" label="מכירות" value={String(s.count)} sub={delta(s.count, prev?.count)} />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <Tile id="an-revenue" label="הכנסה" value={ils(s.revenue)} sub={delta(s.revenue, prev?.revenue)} />
+            <Tile id="an-customers" label="לקוחות שקנו" value={String(s.customers)} sub={delta(s.customers, prev?.customers)} />
+            <Tile id="an-count" label="עסקאות" value={String(s.count)} sub={delta(s.count, prev?.count)} />
             {seg === 'all' ? (
-              <SplitTile id="an-avg-deal" label="ממוצע לעסקה" stock={ils(data.stock.avgDeal)} custom={ils(data.custom.avgDeal)} />
+              <>
+                <SplitTile id="an-avg-customer" label="ממוצע ללקוח" stock={ils(data.stock.avgCustomer)} custom={ils(data.custom.avgCustomer)} />
+                <SplitTile id="an-median-customer" label="חציון ללקוח" stock={ils(data.stock.medianCustomer)} custom={ils(data.custom.medianCustomer)} />
+              </>
             ) : (
-              <Tile id="an-avg-deal" label="ממוצע לעסקה" value={ils(s.avgDeal)} sub={delta(s.avgDeal, prev?.avgDeal)} />
+              <>
+                <Tile id="an-avg-customer" label="ממוצע ללקוח" value={ils(s.avgCustomer)} sub={delta(s.avgCustomer, prev?.avgCustomer)} />
+                <Tile id="an-median-customer" label="חציון ללקוח" value={ils(s.medianCustomer)} sub={<span className="text-[11px] text-slate-400">הלקוח האמצעי</span>} />
+              </>
             )}
             <Tile id="an-profit" label="רווח גולמי" value={ils(s.profit)} sub={delta(s.profit, prev?.profit)} />
             {seg === 'all' ? (
               <>
                 <SplitTile id="an-margin" label="מרווח גולמי" stock={pct(data.stock.marginPct)} custom={pct(data.custom.marginPct)} />
-                <SplitTile id="an-profit-unit" label="רווח ממוצע לעסקה" stock={ils(data.stock.avgProfitPerDeal)} custom={ils(data.custom.avgProfitPerDeal)} />
+                <SplitTile id="an-profit-unit" label="רווח ממוצע ללקוח" stock={ils(data.stock.avgProfitPerCustomer)} custom={ils(data.custom.avgProfitPerCustomer)} />
               </>
             ) : (
               <>
-                <Tile id="an-margin" label="מרווח גולמי" value={pct(s.marginPct)} sub={<span className="text-[11px] text-slate-400">רווח ממוצע לעסקה {ils(s.avgProfitPerDeal)}</span>} />
+                <Tile id="an-margin" label="מרווח גולמי" value={pct(s.marginPct)} sub={<span className="text-[11px] text-slate-400">רווח ממוצע ללקוח {ils(s.avgProfitPerCustomer)}</span>} />
                 <Tile id="an-profit-unit" label={seg === 'custom' ? 'רווח ממוצע ליחידה' : 'רווח ממוצע לעמדה'} value={ils(s.avgProfitPerUnit)} sub={<span className="text-[11px] text-slate-400">{s.units} יחידות</span>} />
               </>
             )}
@@ -201,7 +212,7 @@ export default function SalesAnalytics(p: Props) {
           {prev && <p className="text-[11px] text-slate-400 -mt-4">החצים: שינוי לעומת התקופה הקודמת באותו אורך.</p>}
           {s.missingCost > 0 && (
             <p data-testid="an-missing-cost" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 -mt-2 flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {s.missingCost} עסקאות בלי עלות ידועה. הן נכללות בהכנסה ובממוצע לעסקה, אבל לא ברווח ובמרווח.
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {s.missingCost} עסקאות בלי עלות ידועה. הן נכללות בהכנסה ובממוצע ללקוח, אבל לא ברווח ובמרווח.
             </p>
           )}
 
@@ -222,7 +233,7 @@ export default function SalesAnalytics(p: Props) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="bg-white border border-slate-200 rounded-xl p-4">
               <div className="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
-                <h3 className="text-sm font-bold text-slate-700">ממוצע לעסקה לפי חודש</h3>
+                <h3 className="text-sm font-bold text-slate-700">ממוצע ללקוח לפי חודש</h3>
                 {seg !== 'all' && data.slope !== null && (
                   <span data-testid="an-trend" className={`text-xs font-bold ${data.slope >= 0 ? 'text-green-700' : 'text-red-600'}`}>
                     מגמה: {data.slope >= 0 ? '+' : '−'}{ils(Math.abs(data.slope))} לחודש
@@ -233,13 +244,13 @@ export default function SalesAnalytics(p: Props) {
                 <>
                   {/* שני גרפים נפרדים, כל אחד בסקאלה שלו — עסקת קסטום גדולה פי ~20 ובגרף משותף המלאי נעלם */}
                   <p className="text-xs font-bold text-[#7B1315] mt-1">מוצרי מלאי</p>
-                  <BarChart testId="an-chart-avg" rows={data.monthsStock} value={r => r.avgDeal} color="#7B1315" trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                  <BarChart testId="an-chart-avg" rows={data.monthsStock} value={r => r.avgCustomer} color="#7B1315" trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
                   <p className="text-xs font-bold text-[#2A3134] mt-3">קסטום</p>
-                  <BarChart testId="an-chart-avg-custom" rows={data.monthsCustom} value={r => r.avgDeal} color="#2A3134" fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                  <BarChart testId="an-chart-avg-custom" rows={data.monthsCustom} value={r => r.avgCustomer} color="#2A3134" fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
                 </>
               ) : (
                 <>
-                  <BarChart testId="an-chart-avg" rows={data.months} value={r => r.avgDeal} color={seg === 'custom' ? '#2A3134' : '#7B1315'} trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
+                  <BarChart testId="an-chart-avg" rows={data.months} value={r => r.avgCustomer} color={seg === 'custom' ? '#2A3134' : '#7B1315'} trend fmt={n => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)))} />
                   <p className="text-[11px] text-slate-400 mt-1">הקו המקווקו: מגמה על פני חודשים עם מכירות.</p>
                 </>
               )}
@@ -283,12 +294,48 @@ export default function SalesAnalytics(p: Props) {
             </div>
           </div>
 
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <h3 className="text-sm font-bold text-slate-700 p-4 pb-1">לקוחות מובילים</h3>
+            <p className="text-[11px] text-slate-400 px-4 pb-2">רשת = שורה אחת לכל הסניפים. אותו טלפון = אותו לקוח.</p>
+            <div className="overflow-x-auto">
+              <table data-testid="an-top-customers" className="w-full table-fixed text-xs">
+                <colgroup><col className="w-[38%]" /><col className="w-[12%]" /><col className="w-[18%]" /><col className="w-[16%]" /><col className="w-[16%]" /></colgroup>
+                <thead className="bg-slate-50 text-[11px] text-slate-500">
+                  <tr>
+                    <th className="px-1.5 py-2 text-right font-medium">לקוח</th>
+                    <th className="px-1 py-2 text-center font-medium">עסקאות</th>
+                    <th className="px-1 py-2 text-right font-medium">הכנסה</th>
+                    <th className="px-1 py-2 text-right font-medium">רווח</th>
+                    <th className="px-1 py-2 text-right font-medium">אחרונה</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {data.top.map(r => {
+                    const grp = r.key.startsWith('g:') ? (p.groups || []).find((g: any) => g.id === r.key.slice(2)) : null;
+                    const c = p.customers.find((x: any) => x.id === r.customerIds[0]);
+                    const name = grp ? grp.name : (c?.businessName || c?.contactName || c?.companyName || 'לקוח');
+                    const branches = grp ? p.customers.filter((x: any) => x.groupId === grp.id).length : 0;
+                    return (
+                      <tr key={r.key} data-testid="an-top-row" className="align-top">
+                        <td className="px-1.5 py-2 font-bold text-slate-800 break-words leading-snug">{name}{grp ? <span className="block text-[10px] font-normal text-indigo-700">רשת · {branches} סניפים</span> : null}</td>
+                        <td className="px-1 py-2 text-center">{r.deals}</td>
+                        <td className="px-1 py-2 whitespace-nowrap">{kShort(r.revenue)}</td>
+                        <td className="px-1 py-2 whitespace-nowrap">{r.profitKnown ? kShort(r.profit) : '—'}</td>
+                        <td className="px-1 py-2 whitespace-nowrap text-slate-500">{r.lastDate ? r.lastDate.slice(8, 10) + '.' + r.lastDate.slice(5, 7) + '.' + r.lastDate.slice(2, 4) : ''}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {seg === 'all' && <div className="grid grid-cols-2 gap-3">
             {([['מלאי', data.stock, 'an-kind-stock'], ['קסטום', data.custom, 'an-kind-custom']] as const).map(([label, k, id]) => (
               <div key={id} data-testid={id} className="bg-white border border-slate-200 rounded-xl p-3.5">
                 <p className="text-sm font-bold text-slate-700">{label}</p>
-                <p className="text-xs text-slate-500 mt-1">{k.count} עסקאות · {ils(k.revenue)}</p>
-                <p className="text-xs text-slate-500">ממוצע {ils(k.avgDeal)}</p>
+                <p className="text-xs text-slate-500 mt-1">{k.customers} לקוחות · {k.count} עסקאות · {ils(k.revenue)}</p>
+                <p className="text-xs text-slate-500">ממוצע ללקוח {ils(k.avgCustomer)}</p>
                 <p className="text-xs font-bold text-slate-700">{k.profitDeals ? `מרווח ${pct(k.marginPct)}` : 'אין נתוני עלות'}</p>
               </div>
             ))}
